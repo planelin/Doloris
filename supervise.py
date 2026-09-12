@@ -307,8 +307,10 @@ class CodexDriver:
         if not self.session_id:
             raise RuntimeError("resume 前必须先发现 session_id")
         self.jsonl = None  # resume 可能新建 rollout, 重新发现
+        # 注意: resume 子命令不认 -C/-s (继承原会话的cwd与沙箱), 只认这些:
         self._spawn_once(["exec", "resume", self.session_id,
-                          *self._common(), "-"], prompt_path)
+                          "--skip-git-repo-check", "--json",
+                          "-o", str(self.last_msg), "-"], prompt_path)
         log(f"RESUME  codex session={self.session_id[:8]}")
         return self.proc
 
@@ -474,8 +476,9 @@ def main():
             ivl("HEARTBEAT", alive=alive, stale_sec=round(hb))
             last_hb_log = now
 
-        # 错误模式扫描 (会话日志尾部)
-        if driver.jsonl.exists() and driver.jsonl.stat().st_size > 0:
+        # 错误模式扫描 (会话日志尾部; codex resume 期间 jsonl 可能为 None)
+        if driver.jsonl is not None and driver.jsonl.exists() \
+                and driver.jsonl.stat().st_size > 0:
             tail = driver.jsonl.read_bytes()[-4096:].decode("utf-8", errors="replace")
             hits = [p for p in ERROR_PATTERNS if p in tail]
             if hits and hits[0] != last_error_note:
