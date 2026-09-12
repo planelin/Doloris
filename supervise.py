@@ -321,6 +321,41 @@ def find_codex_session_by_id(sid: str):
     return None
 
 
+def find_connected_adapter():
+    """netsh 找已连接的网卡名 (GBK/UTF-8 双解码容错)。"""
+    try:
+        r = subprocess.run(["netsh", "interface", "show", "interface"],
+                           capture_output=True, timeout=10)
+    except Exception:
+        return None
+    out = ""
+    for enc in ("gbk", "utf-8"):
+        try:
+            out = r.stdout.decode(enc)
+            break
+        except Exception:
+            continue
+    for line in out.splitlines():
+        if ("已连接" in line or "connected" in line.lower()) and line.strip():
+            cols = line.split()
+            if len(cols) >= 4:
+                return cols[-1]
+    return None
+
+
+def net_disable(adapter):
+    r = subprocess.run(["netsh", "interface", "set", "interface",
+                        f"interface={adapter}", "admin=disable"],
+                       capture_output=True, timeout=15)
+    return r.returncode == 0
+
+
+def net_enable(adapter):
+    subprocess.run(["netsh", "interface", "set", "interface",
+                    f"interface={adapter}", "admin=enable"],
+                   capture_output=True, timeout=15)
+
+
 def wait_session_quiet(rollout: Path, quiet_sec=15, max_wait=90):
     """接管前等待原会话静默: 同一会话不能有两个写入者。"""
     log(f"ADOPT   等待会话静默(最多{max_wait}s)——请确认原界面已停止输入")
@@ -544,8 +579,11 @@ def main():
 
     chaos = None
     if args.chaos:
-        kind, _, val = args.chaos.partition(":")
-        chaos = (kind, int(val))
+        parts = args.chaos.split(":")
+        try:
+            chaos = (parts[0],) + tuple(int(x) for x in parts[1:])
+        except ValueError:
+            ap.error('chaos 格式: kill:30 (杀进程) 或 net:30:120 (30秒时断网120秒)')
 
     # 任务提示词: quick=内置接管指令; 任务模式=任务书+行为约束
     prompt_path = run_dir / "prompt.txt"
@@ -638,8 +676,11 @@ def main():
     worker_runtime = 0.0        # 累计运行时间(不含resume退避), chaos计时基准
     chaos_fired = False
     resumes = 0
+    busy_waits = 0              # SESSION_BUSY 耐心等待次数(不占resume预算)
     early_exits = 0             # worker空转退出(rc=0但验收不过)计数→矛盾态熔断
     total_kills = 0             # 梯度心跳阈值基准
+    net_off_adapter = None      # 断网chaos: 当前被断的网卡
+    net_on_wall = 0.0           # 恢复时刻(wall clock, worker死了也要恢复)
     fails_on_provider = 0       # 当前供应商连续死亡计数
     providers_tried = [driver.provider_name]
     last_hb_log = 0.0
@@ -662,12 +703,29 @@ def main():
         if alive:
             worker_runtime += 5
 
-        # --- chaos 注入 (一次性: 只模拟一次随机崩溃, 不重复触发) ---
-        if chaos and chaos[0] == "kill" and not chaos_fired \
-                and worker_runtime >= chaos[1] and alive:
-            chaos_fired = True
-            ivl("CHAOS_KILL", at_sec=worker_runtime)
-            driver.kill_tree()
+        # --- chaos 注入 (一次性) ---
+        if chaos and not chaos_fired and alive:
+            if chaos[0] == "kill" and worker_runtime >= chaos[1]:
+                chaos_fired = True
+                ivl("CHAOS_KILL", at_sec=worker_runtime)
+                driver.kill_tree()
+            elif chaos[0] == "net" and worker_runtime >= chaos[1]:
+                chaos_fired = True
+                adapter = find_connected_adapter()
+                if adapter and net_disable(adapter):
+                    net_off_adapter = adapter
+                    net_on_wall = time.time() + chaos[2]
+                    ivl("CHAOS_NET_OFF", at_sec=worker_runtime,
+                        adapter=adapter, duration_sec=chaos[2])
+                else:
+                    ivl("CHAOS_NET_FAIL",
+                        reason="断网失败: 未找到已连接网卡或需管理员权限")
+
+        # --- 断网chaos恢复 (按墙钟, worker死了也恢复) ---
+        if net_off_adapter and time.time() >= net_on_wall:
+            net_enable(net_off_adapter)
+            ivl("CHAOS_NET_ON", at_sec=worker_runtime)
+            net_off_adapter = None
 
         # --- 心跳 ---
         hb = driver.heartbeat_age(launched_at)
@@ -719,14 +777,32 @@ def main():
                 if "already has an active writer" in err_tail:
                     ivl("SESSION_BUSY",
                         hint="原会话仍被桌面/界面占用(codex单写者锁)。请停止或关闭原Codex"
-                             "界面中的该会话, 看门狗将自动重试接管")
-                outcome, outcome_detail = "crash", f"exit_code={rc}"
+                             "界面中的该会话, 看门狗将耐心重试(不占续跑预算)")
+                    outcome, outcome_detail = "busy", "会话被占用"
+                else:
+                    outcome, outcome_detail = "crash", f"exit_code={rc}"
 
-        # --- 验收前置守卫: worker死亡/空转, 但产物已齐 → 免唤醒直接成功 ---
-        if outcome in ("crash", "hang", "early_exit"):
+        # --- 验收前置守卫: worker死亡/空转/被锁, 但产物已齐 → 免唤醒直接成功 ---
+        if outcome in ("crash", "hang", "early_exit", "busy"):
             ok, detail = verify()
             if ok:
                 outcome, outcome_detail = "success", "验收通过(免唤醒): " + detail
+
+        # --- busy 耐心通道: 等人关闭原界面, 20秒一试, 不占续跑预算 ---
+        if outcome == "busy":
+            if time.time() - run_started_at > args.max_run_sec:
+                ivl("TERMINAL", state="FAILED",
+                    detail=f"会话始终被占用(耐心等待{busy_waits}次)")
+                break
+            ivl("BUSY_WAIT", wait_sec=20, n=busy_waits + 1)
+            time.sleep(20)
+            busy_waits += 1
+            driver.resume(resume_path)
+            ivl("RESUMED_BUSY", pid=driver.proc.pid, provider=driver.provider_name)
+            launched_at = time.time()
+            outcome, outcome_detail = None, ""
+            last_error_note = ""
+            continue
 
         # --- 终态判定 ---
         if outcome == "success":

@@ -3,182 +3,198 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Agent监管系统监控台：统一查看心跳、接管、轮换、审计与授权边界。">
-  <title>Agent监管系统监控台</title>
+  <meta name="description" content="Agent 监管系统监控台：以心跳、退避、接管、轮换、探针和授权边界构成完整监管闭环。">
+  <meta name="theme-color" content="#07110f">
+  <title>Agent 监管系统监控台</title>
   <link rel="stylesheet" href="assets/style.css">
-  <script src="assets/app.js" defer></script>
 </head>
-<body data-page="index">
-  <a class="skip-link" href="#main">跳到主要内容</a>
-  <div class="page-noise" aria-hidden="true"></div>
+<body class="dashboard-page">
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+  <div class="ambient ambient-a" aria-hidden="true"></div>
+  <div class="ambient ambient-b" aria-hidden="true"></div>
 
-  <header class="site-header">
-    <a class="brand" href="index.html" aria-label="返回监控台总览">
-      <span class="brand-mark">AM</span>
-      <span class="brand-copy">
-        <strong>AGENT MONITOR</strong>
+  <header class="topbar">
+    <a class="brand" href="index.html" aria-label="Agent 监管系统监控台首页">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="brand-type">
+        <strong>Agent Oversight</strong>
         <small>监管系统监控台</small>
       </span>
     </a>
-    <nav class="site-nav" aria-label="主导航">
-      <a class="is-active" href="#overview">总览</a>
-      <a href="#mechanisms">监管机制</a>
-      <a href="#control-loop">控制回路</a>
+    <nav class="topnav" aria-label="页面导航">
+      <a class="is-active" href="#mechanisms">机制矩阵</a>
+      <a href="#control-loop">监管闭环</a>
+      <a href="pages/12-report.html">终态报告</a>
     </nav>
-    <div class="system-state" aria-label="系统状态正常">
-      <span class="pulse-dot" aria-hidden="true"></span>
-      <span>系统在线</span>
+    <div class="topbar-meta">
+      <span class="live-indicator"><i></i><span>监督链路在线</span></span>
+      <time id="clock" datetime="">--:--:--</time>
+      <button class="icon-button" type="button" id="refresh-button" aria-label="刷新机制状态" title="刷新机制状态">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg>
+      </button>
     </div>
   </header>
 
-  <main id="main">
-    <section class="hero section-shell" id="overview">
+  <main id="main-content">
+    <section class="hero section-shell">
       <div class="hero-copy reveal">
-        <p class="eyebrow"><span>CONTROL PLANE</span> / LIVE</p>
-        <h1>把代理的每一步<br><em>置于可观测边界内</em></h1>
-        <p class="hero-lead">从心跳存活到终态交付，持续检测异常、限制越权、保留证据，并在必要时接管执行。</p>
+        <p class="eyebrow"><span>CONTROL PLANE</span> / STATIC OBSERVATORY</p>
+        <h1>让每一次 Agent 运行<br><em>可检测、可接管、可追溯。</em></h1>
+        <p class="hero-lead">集中查看监管机制的健康度、控制点与失效路径。这里是系统状态的快速入口，也是十二项机制的说明索引。</p>
         <div class="hero-actions">
-          <a class="button button-primary" href="#mechanisms">查看监管机制 <span aria-hidden="true">↓</span></a>
-          <a class="button button-ghost" href="pages/12-report.html">打开终态报告</a>
+          <a class="button button-primary" href="#mechanisms">查看监管机制 <span aria-hidden="true">↘</span></a>
+          <a class="button button-ghost" href="pages/01-heartbeat.html">从心跳检测开始</a>
         </div>
-        <div class="hero-stamp">
-          <span>监管策略</span>
-          <strong>12 项机制</strong>
-          <span class="separator" aria-hidden="true"></span>
-          <span>最近校准</span>
-          <strong>持续同步</strong>
-        </div>
+        <dl class="hero-facts" aria-label="监控台属性">
+          <div><dt>数据源</dt><dd>本地 JSON</dd></div>
+          <div><dt>依赖</dt><dd>零后端</dd></div>
+          <div><dt>周期</dt><dd>全生命周期</dd></div>
+        </dl>
       </div>
 
-      <div class="console-card reveal" aria-label="监管运行概览">
-        <div class="console-topline">
-          <span>LIVE CONTROL SURFACE</span>
-          <span class="console-code">SYS-01</span>
+      <div class="hero-radar reveal" aria-label="系统健康概览">
+        <div class="radar-caption">
+          <span>OVERALL HEALTH</span>
+          <strong>监管面稳定</strong>
         </div>
-        <div class="radar" aria-hidden="true">
-          <span class="radar-ring radar-ring-a"></span>
-          <span class="radar-ring radar-ring-b"></span>
-          <span class="radar-ring radar-ring-c"></span>
-          <span class="radar-axis radar-axis-x"></span>
-          <span class="radar-axis radar-axis-y"></span>
-          <span class="radar-sweep"></span>
-          <span class="radar-core">AM</span>
-          <span class="node node-a"></span>
-          <span class="node node-b"></span>
-          <span class="node node-c"></span>
+        <div class="radar-grid" aria-hidden="true"></div>
+        <div class="radar-ring radar-ring-outer" aria-hidden="true"></div>
+        <div class="radar-ring radar-ring-middle" aria-hidden="true"></div>
+        <div class="radar-ring radar-ring-inner" aria-hidden="true"></div>
+        <div class="radar-sweep" aria-hidden="true"></div>
+        <div class="radar-axis radar-axis-x" aria-hidden="true"></div>
+        <div class="radar-axis radar-axis-y" aria-hidden="true"></div>
+        <div class="radar-core">
+          <span>12 / 12</span>
+          <strong>已登记</strong>
+          <small id="radar-status-copy">正在读取机制清单</small>
         </div>
-        <div class="console-readout">
-          <div><span>链路状态</span><strong>稳态</strong></div>
-          <div><span>接管阈值</span><strong>3 次</strong></div>
-          <div><span>审计留存</span><strong>启用</strong></div>
-        </div>
+        <span class="radar-node node-1" title="心跳检测"><i></i>心跳</span>
+        <span class="radar-node node-2" title="端点探针"><i></i>探针</span>
+        <span class="radar-node node-3" title="会话接管"><i></i>接管</span>
+        <span class="radar-node node-4" title="授权边界"><i></i>边界</span>
       </div>
     </section>
 
-    <section class="metric-strip section-shell reveal" aria-label="关键指标">
-      <article class="metric">
+    <section class="metrics section-shell" aria-label="关键指标">
+      <article class="metric-card reveal">
         <span class="metric-index">01</span>
-        <div><strong data-count="12">12</strong><small>受控机制</small></div>
-        <p>覆盖检测、恢复、审计与授权。</p>
+        <span class="metric-label">监督机制</span>
+        <strong id="metric-mechanisms">12</strong>
+        <small>覆盖运行全周期</small>
       </article>
-      <article class="metric">
+      <article class="metric-card reveal">
         <span class="metric-index">02</span>
-        <div><strong data-count="3">3</strong><small>级异常响应</small></div>
-        <p>观察、降级、接管可按级触发。</p>
+        <span class="metric-label">在线状态</span>
+        <strong id="metric-online">--</strong>
+        <small>来自机制清单</small>
       </article>
-      <article class="metric">
+      <article class="metric-card reveal">
         <span class="metric-index">03</span>
-        <div><strong>24/7</strong><small>持续观测</small></div>
-        <p>关键窗口保持代理与证据链活跃。</p>
+        <span class="metric-label">接管目标</span>
+        <strong>≤ 60s</strong>
+        <small>失联后的响应窗口</small>
       </article>
-      <article class="metric">
+      <article class="metric-card reveal">
         <span class="metric-index">04</span>
-        <div><strong>100%</strong><small>干预留档</small></div>
-        <p>所有人工决策均可回溯、可追责。</p>
+        <span class="metric-label">审计留痕</span>
+        <strong>100%</strong>
+        <small>关键动作可回溯</small>
       </article>
     </section>
 
-    <section class="mechanism-section section-shell" id="mechanisms">
+    <section class="section-shell mechanism-section" id="mechanisms">
       <div class="section-heading reveal">
         <div>
-          <p class="eyebrow"><span>MECHANISM INDEX</span> / 12</p>
+          <p class="eyebrow"><span>MECHANISM MAP</span> / 01—12</p>
           <h2>监管机制矩阵</h2>
+          <p>从存活确认到授权边界，每张卡片对应一项可独立验证的控制能力。</p>
         </div>
-        <p>每个机制负责一个明确的控制面，组合后形成从发现异常到闭环交付的监管路径。</p>
+        <div class="legend" aria-label="状态图例">
+          <span><i class="status-dot status-online"></i>在线</span>
+          <span><i class="status-dot status-watch"></i>观察</span>
+          <span><i class="status-dot status-standby"></i>待命</span>
+        </div>
       </div>
-
-      <div class="mechanism-toolbar reveal" aria-label="卡片说明">
-        <span><i class="legend-dot legend-live"></i>运行中</span>
-        <span><i class="legend-dot legend-standby"></i>待命 / 条件触发</span>
-        <span class="toolbar-note">点击卡片进入机制详情</span>
-      </div>
-
-      <div class="mechanism-grid" id="mechanism-grid" aria-live="polite">
+      <div class="mechanism-grid" id="mechanism-grid" aria-live="polite" aria-busy="true">
         <div class="loading-card">
-          <span class="loading-line"></span>
-          <span class="loading-line loading-line-short"></span>
-          <p>正在同步机制清单…</p>
+          <span class="loader" aria-hidden="true"></span>
+          <p>正在载入机制摘要…</p>
         </div>
       </div>
-      <noscript>
-        <p class="notice">浏览器脚本已关闭，无法从 <code>data/mechanisms.json</code> 渲染机制卡片。</p>
-      </noscript>
+      <p class="data-note" id="data-note" role="status"></p>
     </section>
 
-    <section class="control-loop section-shell" id="control-loop">
-      <div class="section-heading reveal">
+    <section class="section-shell flow-section reveal" id="control-loop">
+      <div class="section-heading compact">
         <div>
-          <p class="eyebrow"><span>CONTROL LOOP</span> / CLOSED</p>
-          <h2>闭环监管链路</h2>
+          <p class="eyebrow"><span>CONTROL LOOP</span> / SIGNAL PATH</p>
+          <h2>监管闭环</h2>
         </div>
-        <p>监管不是单点告警，而是持续重复的五个控制动作。</p>
+        <p class="section-note">一次信号从产生到落档的典型路径。</p>
       </div>
+      <ol class="flow-track">
+        <li>
+          <span class="flow-index">01</span>
+          <div><strong>观测</strong><small>心跳与端点探针采集状态</small></div>
+        </li>
+        <li>
+          <span class="flow-index">02</span>
+          <div><strong>判定</strong><small>阈值、退避与授权边界比对</small></div>
+        </li>
+        <li>
+          <span class="flow-index">03</span>
+          <div><strong>控制</strong><small>接管会话或切换可用供应商</small></div>
+        </li>
+        <li>
+          <span class="flow-index">04</span>
+          <div><strong>归档</strong><small>干预记录与终态报告沉淀</small></div>
+        </li>
+      </ol>
+    </section>
 
-      <div class="loop-grid reveal">
-        <article class="loop-step" data-step="01">
-          <span class="loop-number">01</span>
-          <h3>观测</h3>
-          <p>采集心跳、延迟、配额、端点和执行状态。</p>
-        </article>
-        <article class="loop-step" data-step="02">
-          <span class="loop-number">02</span>
-          <h3>判定</h3>
-          <p>按阈值和授权边界识别偏差与风险等级。</p>
-        </article>
-        <article class="loop-step" data-step="03">
-          <span class="loop-number">03</span>
-          <h3>干预</h3>
-          <p>触发退避、轮换、代理或人工审批。</p>
-        </article>
-        <article class="loop-step" data-step="04">
-          <span class="loop-number">04</span>
-          <h3>验证</h3>
-          <p>用探针与验收清单证明恢复结果真实有效。</p>
-        </article>
-        <article class="loop-step" data-step="05">
-          <span class="loop-number">05</span>
-          <h3>归档</h3>
-          <p>保存干预证据，汇总偏差并生成终态报告。</p>
-        </article>
-      </div>
-
-      <div class="boundary-note reveal">
-        <span class="boundary-icon" aria-hidden="true">↳</span>
-        <div>
-          <strong>默认拒绝越界执行</strong>
-          <p>授权边界不是事后检查，而是代理行动前的硬约束。</p>
+    <section class="section-shell console-grid">
+      <article class="panel reveal">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow"><span>STATUS BOARD</span></p>
+            <h3>机制状态概览</h3>
+          </div>
+          <span class="panel-code">LIVE / LOCAL</span>
         </div>
-        <a href="pages/12-authorization-boundary.html">查看边界规则</a>
-      </div>
+        <div class="status-list" id="status-list" aria-live="polite">
+          <p class="muted">状态数据载入中…</p>
+        </div>
+      </article>
+
+      <article class="panel reveal">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow"><span>OPERATING RULES</span></p>
+            <h3>监管原则</h3>
+          </div>
+          <span class="panel-code">POLICY</span>
+        </div>
+        <div class="principle-list">
+          <div><span>01</span><p><strong>先观测，再干预</strong>任何自动动作都必须来自可复现的信号。</p></div>
+          <div><span>02</span><p><strong>最小授权</strong>接管与轮换只在预定义边界内发生。</p></div>
+          <div><span>03</span><p><strong>终态可见</strong>成功、失败与放弃都必须留下明确结论。</p></div>
+        </div>
+      </article>
     </section>
   </main>
 
   <footer class="site-footer section-shell">
     <div>
-      <span class="brand-mark brand-mark-small">AM</span>
-      <p>Agent监管系统监控台<br><small>可观测 · 可干预 · 可追责</small></p>
+      <a class="brand footer-brand" href="index.html">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span><strong>Agent Oversight</strong><small>静态监控台</small></span>
+      </a>
+      <p>纯静态界面，无后端依赖；机制摘要由本地 JSON 驱动。</p>
     </div>
-    <p class="footer-meta">STATIC CONTROL SURFACE / 2026</p>
+    <p class="footer-meta">12 MECHANISMS / CONTROL PLANE<br><span id="footer-time">本地时间 --:--</span></p>
   </footer>
+
+  <script src="assets/app.js" defer></script>
 </body>
 </html>

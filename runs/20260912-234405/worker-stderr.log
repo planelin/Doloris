@@ -1,0 +1,24 @@
+2026-09-12T15:45:05.748153Z ERROR codex_core::session::session: failed to initialize thread persistence: thread-store conflict: thread 01a09646-9d87-77f2-b5fc-d903e91d3223 already has an active writer
+2026-09-12T15:45:05.748421Z ERROR codex_core::session: Failed to create session: thread-store conflict: thread 01a09646-9d87-77f2-b5fc-d903e91d3223 already has an active writer
+Error: thread/resume: thread/resume failed: thread 01a09646-9d87-77f2-b5fc-d903e91d3223 already has an active writer (code -32600)
+2026-09-12T15:45:25.709135Z ERROR codex_core::session::session: failed to initialize thread persistence: thread-store conflict: thread 01a09646-9d87-77f2-b5fc-d903e91d3223 already has an active writer
+2026-09-12T15:45:25.709424Z ERROR codex_core::session: Failed to create session: thread-store conflict: thread 01a09646-9d87-77f2-b5fc-d903e91d3223 already has an active writer
+Error: thread/resume: thread/resume failed: thread 01a09646-9d87-77f2-b5fc-d903e91d3223 already has an active writer (code -32600)
+2026-09-12T15:46:15.720494Z ERROR codex_core::session::session: failed to initialize thread persistence: thread-store conflict: thread 01a09646-9d87-77f2-b5fc-d903e91d3223 already has an active writer
+2026-09-12T15:46:15.720774Z ERROR codex_core::session: Failed to create session: thread-store conflict: thread 01a09646-9d87-77f2-b5fc-d903e91d3223 already has an active writer
+Error: thread/resume: thread/resume failed: thread 01a09646-9d87-77f2-b5fc-d903e91d3223 already has an active writer (code -32600)
+2026-09-12T15:47:50.821114Z ERROR codex_core::session::session: failed to initialize thread persistence: thread-store conflict: thread 01a09646-9d87-77f2-b5fc-d903e91d3223 already has an active writer
+2026-09-12T15:47:50.821371Z ERROR codex_core::session: Failed to create session: thread-store conflict: thread 01a09646-9d87-77f2-b5fc-d903e91d3223 already has an active writer
+Error: thread/resume: thread/resume failed: thread 01a09646-9d87-77f2-b5fc-d903e91d3223 already has an active writer (code -32600)
+2026-09-12T15:49:55.793230Z ERROR codex_core::session::session: failed to initialize thread persistence: thread-store conflict: thread 01a09646-9d87-77f2-b5fc-d903e91d3223 already has an active writer
+2026-09-12T15:49:55.793428Z ERROR codex_core::session: Failed to create session: thread-store conflict: thread 01a09646-9d87-77f2-b5fc-d903e91d3223 already has an active writer
+Error: thread/resume: thread/resume failed: thread 01a09646-9d87-77f2-b5fc-d903e91d3223 already has an active writer (code -32600)
+2026-09-12T15:52:00.817002Z ERROR codex_core::session::session: failed to initialize thread persistence: thread-store conflict: thread 01a09646-9d87-77f2-b5fc-d903e91d3223 already has an active writer
+2026-09-12T15:52:00.817191Z ERROR codex_core::session: Failed to create session: thread-store conflict: thread 01a09646-9d87-77f2-b5fc-d903e91d3223 already has an active writer
+Error: thread/resume: thread/resume failed: thread 01a09646-9d87-77f2-b5fc-d903e91d3223 already has an active writer (code -32600)
+2026-09-12T15:54:05.831759Z ERROR codex_core::session::session: failed to initialize thread persistence: thread-store conflict: thread 01a09646-9d87-77f2-b5fc-d903e91d3223 already has an active writer
+2026-09-12T15:54:05.832087Z ERROR codex_core::session: Failed to create session: thread-store conflict: thread 01a09646-9d87-77f2-b5fc-d903e91d3223 already has an active writer
+Error: thread/resume: thread/resume failed: thread 01a09646-9d87-77f2-b5fc-d903e91d3223 already has an active writer (code -32600)
+2026-09-12T15:56:10.901019Z ERROR codex_core::session::session: failed to initialize thread persistence: thread-store conflict: thread 01a09646-9d87-77f2-b5fc-d903e91d3223 already has an active writer
+2026-09-12T15:56:10.901192Z ERROR codex_core::session: Failed to create session: thread-store conflict: thread 01a09646-9d87-77f2-b5fc-d903e91d3223 already has an active writer
+Error: thread/resume: thread/resume failed: thread 01a09646-9d87-77f2-b5fc-d903e91d3223 already has an active writer (code -32600)
