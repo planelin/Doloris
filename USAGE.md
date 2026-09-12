@@ -9,6 +9,14 @@
 ```bash
 cd C:\Agents\zcode\double
 
+# ── 主工作流: 托管你干到一半的会话 ──
+# 在 Codex 界面推进项目 → 要出门 → 关掉该会话输入(或留着不动), 然后一键托管:
+python supervise.py --adopt last --task tasks/<你的任务>/task.md --driver codex --work-dir work-我的任务
+# --adopt last  = 接管本目录(或全局)最近一个 codex 会话, 验收锚点自动跟随会话的工作目录
+# --adopt <session-id>  = 接管指定会话
+# 接管前看门狗会等会话静默(同一会话不能有两个写入者); task.md 此时是"续作指示"
+
+# ── 发车模型: 从零启动新任务挂机 ──
 # codex 驱动（走 cc-switch 本地代理，无需额外配置）
 python supervise.py --task tasks/<你的任务>/task.md --driver codex --work-dir work-我的任务
 

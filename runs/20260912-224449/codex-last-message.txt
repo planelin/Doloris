@@ -1,0 +1,1 @@
+已按要求完成 `work-adopt/chapters/ch01.md` 至 `ch06.md`，并更新 `work-adopt/PROGRESS.md` 为 6 项全部勾选。
