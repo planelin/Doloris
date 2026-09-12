@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="睡眠抑制：在关键任务运行期间阻止设备或进程被意外挂起。">
+  <title>09 睡眠抑制 · Agent 监管系统监控台</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body data-page="sleep-suppression">
+  <header class="site-header">
+    <a class="brand" href="../index.html" aria-label="返回 Agent 监管系统首页"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span><strong>AGENT WATCH</strong><small>监管系统监控台</small></span></a>
+    <nav class="top-nav" aria-label="页面导航"><a href="../index.html">返回总览</a><a class="active" href="09-sleep-suppression.html">睡眠抑制</a></nav>
+    <div class="live-pill"><span class="pulse-dot"></span> 正常</div>
+  </header>
+  <main>
+    <section class="detail-hero">
+      <nav class="breadcrumb" aria-label="面包屑"><a href="../index.html">总览</a><span>/</span><span>监管机制 09</span></nav>
+      <p class="detail-index">09 / SLEEP SUPPRESSION</p>
+      <h1>睡眠抑制</h1>
+      <p class="summary">在长任务关键阶段保持设备与执行进程清醒，防止系统休眠、资源回收或空闲判定把正在运行的 Agent 静默中断。</p>
+      <div class="detail-meta"><span>运行保障层</span><span>活动租约：6 分钟</span><span>续约：60 秒</span><span>当前状态：正常</span></div>
+    </section>
+    <div class="detail-layout">
+      <div class="detail-content">
+        <section class="detail-section"><h2>机制目标</h2><p>睡眠抑制并不永久阻止电源管理，而是在有真实工作存在时申请短时租约。租约必须持续续约，任务结束后立即释放，避免形成“忘记关闭”的永久唤醒。</p></section>
+        <section class="detail-section"><h2>租约规则</h2><ul><li>仅对运行中或等待外部回调的任务申请抑制锁。</li><li>每次租约最长 6 分钟，由活跃心跳每 60 秒续约。</li><li>心跳中断后不再续约，设备按操作系统策略自然休眠。</li><li>任务完成、接管或终止时主动释放所有抑制句柄。</li></ul></section>
+        <section class="detail-section"><h2>处理系统事件</h2><p>系统仍可能因电量、热保护或强制关机进入低功耗状态。恢复后 Agent 会重新校验单调时钟、网络连接和外部副作用，而不是直接假设暂停期间一切未变。</p></section>
+        <section class="detail-section"><h2>可观测性</h2><p>监控台记录抑制原因、剩余租约、续约者和释放结果。任何租约超期都会生成告警，防止设备长时间保持唤醒并产生不必要的能耗。</p></section>
+      </div>
+      <aside class="detail-side">
+        <div class="side-card"><h3>当前租约</h3><div class="signal-box"><div><small>剩余</small><strong>276s</strong></div><div><small>续约</small><strong>60s</strong></div><div><small>句柄</small><strong>1</strong></div></div></div>
+        <div class="side-card"><h3>核心原则</h3><p>有工作才保持清醒；续约失败就及时放手，避免永久唤醒。</p></div>
+        <div class="side-card"><h3>继续浏览</h3><a class="side-link" href="08-intervention-log.html"><span>←</span> 干预存档</a><a class="side-link" href="10-chaos-test.html">下一机制：混沌测试 <span>→</span></a></div>
+      </aside>
+    </div>
+  </main>
+  <footer class="site-footer"><span>Agent Watch / 监管系统监控台</span><span class="mono">MECHANISM 09</span></footer>
+</body>
+</html>

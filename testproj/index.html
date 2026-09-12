@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Agent 监管系统监控台：观察、判断并接管自主代理运行状态。">
+  <title>Agent 监管系统监控台</title>
+  <link rel="stylesheet" href="assets/style.css">
+  <script src="assets/app.js" defer></script>
+</head>
+<body data-page="overview">
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+
+  <header class="site-header">
+    <a class="brand" href="index.html" aria-label="Agent 监管系统首页">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span>
+        <strong>AGENT WATCH</strong>
+        <small>监管系统监控台</small>
+      </span>
+    </a>
+    <nav class="top-nav" aria-label="主导航">
+      <a class="active" href="index.html">总览</a>
+      <a href="#mechanisms">监管机制</a>
+      <a href="#health">系统健康</a>
+    </nav>
+    <div class="live-pill"><span class="pulse-dot"></span> 运行中</div>
+  </header>
+
+  <main id="main-content">
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow"><span>CONTROL PLANE</span> / AGENT SUPERVISION</p>
+        <h1>让自主运行<br><em>始终处于可观测、可约束、可接管。</em></h1>
+        <p class="hero-lead">监控台汇总 Agent 的心跳、重试、接管、供应商与终态报告，用明确的授权边界守住每一次自动决策。</p>
+        <div class="hero-actions">
+          <a class="button primary" href="#mechanisms">查看监管机制 <span aria-hidden="true">→</span></a>
+          <a class="button ghost" href="pages/12-report.html">阅读终态报告</a>
+        </div>
+      </div>
+      <div class="hero-panel" aria-label="监管系统实时摘要">
+        <div class="panel-head">
+          <span>SUPERVISION PULSE</span>
+          <span class="mono">LIVE / 01</span>
+        </div>
+        <div class="radar" aria-hidden="true">
+          <span class="radar-ring ring-one"></span>
+          <span class="radar-ring ring-two"></span>
+          <span class="radar-ring ring-three"></span>
+          <span class="radar-sweep"></span>
+          <span class="radar-core"></span>
+          <i class="node n1"></i><i class="node n2"></i><i class="node n3"></i><i class="node n4"></i>
+        </div>
+        <dl class="signal-list">
+          <div><dt>事件采样</dt><dd>持续</dd></div>
+          <div><dt>授权边界</dt><dd>锁定</dd></div>
+          <div><dt>异常升级</dt><dd>就绪</dd></div>
+        </dl>
+      </div>
+    </section>
+
+    <section class="metric-strip" aria-label="关键指标">
+      <article>
+        <span class="metric-label">受监机制</span>
+        <strong data-count="12">12</strong>
+        <small>覆盖全生命周期</small>
+      </article>
+      <article>
+        <span class="metric-label">活动告警</span>
+        <strong class="accent">02</strong>
+        <small>均未越过授权边界</small>
+      </article>
+      <article>
+        <span class="metric-label">最近接管</span>
+        <strong>00:42</strong>
+        <small>会话上下文已保留</small>
+      </article>
+      <article>
+        <span class="metric-label">终态可信度</span>
+        <strong>98.6<sup>%</sup></strong>
+        <small>验收清单通过</small>
+      </article>
+    </section>
+
+    <section class="section-block" id="mechanisms">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">MECHANISM MATRIX</p>
+          <h2>监管机制矩阵</h2>
+        </div>
+        <p>从检测、恢复到治理，12 项机制共同构成 Agent 的控制闭环。</p>
+      </div>
+      <div class="filter-row" role="group" aria-label="机制状态筛选">
+        <button class="filter active" type="button" data-filter="all">全部</button>
+        <button class="filter" type="button" data-filter="normal">正常</button>
+        <button class="filter" type="button" data-filter="watch">观察中</button>
+        <button class="filter" type="button" data-filter="active">已介入</button>
+      </div>
+      <div class="mechanism-grid" id="mechanism-grid" aria-live="polite">
+        <div class="loading-card">正在载入监管机制…</div>
+      </div>
+    </section>
+
+    <section class="section-block health-section" id="health">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">SYSTEM HEALTH</p>
+          <h2>控制链路健康度</h2>
+        </div>
+        <p>以可解释信号代替“看起来正常”，让每次判断都有依据。</p>
+      </div>
+      <div class="health-grid">
+        <article class="health-card">
+          <header><span>心跳覆盖率</span><strong>100%</strong></header>
+          <div class="meter"><i style="--value:100%"></i></div>
+          <p>所有活跃会话均在阈值内上报。</p>
+        </article>
+        <article class="health-card">
+          <header><span>退避命中率</span><strong>87%</strong></header>
+          <div class="meter"><i style="--value:87%"></i></div>
+          <p>瞬时失败未触发无界重试。</p>
+        </article>
+        <article class="health-card">
+          <header><span>授权完整度</span><strong>96%</strong></header>
+          <div class="meter"><i style="--value:96%"></i></div>
+          <p>高风险操作均有明确边界记录。</p>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <span>Agent Watch / 监管系统监控台</span>
+    <span class="mono">STATIC CONTROL PLANE · 2026</span>
+  </footer>
+</body>
+</html>

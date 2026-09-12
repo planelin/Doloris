@@ -24,14 +24,14 @@
 
 ```bash
 cd C:\Agents\zcode\double
-afk.cmd
+.\afk.cmd
 ```
 
 **玩法B（观察击杀+自愈，推荐）**：注入一次确定性故障，看它自己爬起来：
 
 ```bash
 cd C:\Agents\zcode\double
-afk.cmd --chaos kill:30
+.\afk.cmd --chaos kill:30
 ```
 
 worker运行30秒时会被看门狗亲手击杀，然后你应该看到它自动检测→退避→续跑→写完。

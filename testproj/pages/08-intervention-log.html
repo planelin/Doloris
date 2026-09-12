@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="干预存档：完整记录监管者每一次介入与理由。">
+  <title>08 干预存档 · Agent 监管系统监控台</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body data-page="intervention-log">
+  <header class="site-header">
+    <a class="brand" href="../index.html" aria-label="返回 Agent 监管系统首页"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span><strong>AGENT WATCH</strong><small>监管系统监控台</small></span></a>
+    <nav class="top-nav" aria-label="页面导航"><a href="../index.html">返回总览</a><a class="active" href="08-intervention-log.html">干预存档</a></nav>
+    <div class="live-pill"><span class="pulse-dot"></span> 正常</div>
+  </header>
+  <main>
+    <section class="detail-hero">
+      <nav class="breadcrumb" aria-label="面包屑"><a href="../index.html">总览</a><span>/</span><span>监管机制 08</span></nav>
+      <p class="detail-index">08 / INTERVENTION LOG</p>
+      <h1>干预存档</h1>
+      <p class="summary">把暂停、接管、重试、降级和强制终止等动作记入不可静默修改的时间线，让监管权力本身也被观察。</p>
+      <div class="detail-meta"><span>审计层</span><span>今日干预：6 次</span><span>完整率：100%</span><span>当前状态：正常</span></div>
+    </section>
+    <div class="detail-layout">
+      <div class="detail-content">
+        <section class="detail-section"><h2>机制目标</h2><p>干预存档回答三个问题：谁改变了任务、为什么改变、改变后发生了什么。它避免接管和重试成为无法解释的黑箱，也为复盘策略质量提供数据。</p></section>
+        <section class="detail-section"><h2>必填字段</h2><ul><li>触发时间、干预类型、发起者与授权来源。</li><li>触发信号、原始证据和当时任务状态。</li><li>执行前检查点、动作内容与影响范围。</li><li>执行结果、恢复状态和未解决的副作用。</li></ul></section>
+        <section class="detail-section"><h2>不可篡改策略</h2><p>日志采用追加写入和事件哈希链。纠错通过新增更正事件完成，不覆盖历史记录。敏感字段可脱敏，但时间、主体、动作和授权结论必须保留。</p></section>
+        <section class="detail-section"><h2>复盘用途</h2><p>高频接管可能说明心跳阈值过严，频繁轮换可能说明主通道容量不足。存档让运行团队改进机制本身，而不是长期依赖人工救火。</p></section>
+      </div>
+      <aside class="detail-side">
+        <div class="side-card"><h3>最近干预</h3><div class="signal-box"><div><small>暂停</small><strong>1</strong></div><div><small>接管</small><strong>1</strong></div><div><small>降级</small><strong>4</strong></div></div></div>
+        <div class="side-card"><h3>核心原则</h3><p>监管动作必须与业务动作同样可追溯；记录不能只证明结果，还要解释原因。</p></div>
+        <div class="side-card"><h3>继续浏览</h3><a class="side-link" href="07-acceptance.html"><span>←</span> 验收清单</a><a class="side-link" href="09-sleep-suppression.html">下一机制：睡眠抑制 <span>→</span></a></div>
+      </aside>
+    </div>
+  </main>
+  <footer class="site-footer"><span>Agent Watch / 监管系统监控台</span><span class="mono">MECHANISM 08</span></footer>
+</body>
+</html>

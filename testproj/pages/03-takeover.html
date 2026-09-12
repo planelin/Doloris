@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="会话接管：在不丢失上下文的前提下恢复停滞任务。">
+  <title>03 会话接管 · Agent 监管系统监控台</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body data-page="takeover">
+  <header class="site-header">
+    <a class="brand" href="../index.html" aria-label="返回 Agent 监管系统首页"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span><strong>AGENT WATCH</strong><small>监管系统监控台</small></span></a>
+    <nav class="top-nav" aria-label="页面导航"><a href="../index.html">返回总览</a><a class="active" href="03-takeover.html">会话接管</a></nav>
+    <div class="live-pill"><span class="pulse-dot"></span> 已介入</div>
+  </header>
+  <main>
+    <section class="detail-hero">
+      <nav class="breadcrumb" aria-label="面包屑"><a href="../index.html">总览</a><span>/</span><span>监管机制 03</span></nav>
+      <p class="detail-index">03 / SESSION TAKEOVER</p>
+      <h1>会话接管</h1>
+      <p class="summary">当原 Agent 无法继续推进时，由监管者安全夺取执行权，继承已验证上下文并从最近的检查点继续。</p>
+      <div class="detail-meta"><span>恢复层</span><span>接管延迟：42 秒</span><span>上下文：已保留</span><span>当前状态：已介入</span></div>
+    </section>
+    <div class="detail-layout">
+      <div class="detail-content">
+        <section class="detail-section"><h2>机制目标</h2><p>接管的目标是恢复任务，不是制造第二个并行的“主 Agent”。新执行者必须获得唯一会话锁、最近检查点、未完成动作和当前授权范围，并在继续前确认没有副作用动作被重复提交。</p></section>
+        <section class="detail-section"><h2>接管步骤</h2><ul><li>冻结原会话的新动作并标记接管原因与证据。</li><li>写入会话清单：目标、阶段、检查点、外部资源和未完成调用。</li><li>等待原执行者停止或到达强制隔离时限。</li><li>由新执行者获取唯一锁，回放关键状态并核对幂等键。</li><li>从检查点继续，首个高风险动作仍需遵守授权边界。</li></ul></section>
+        <section class="detail-section"><h2>上下文一致性</h2><p>不直接信任自由文本总结。接管前会同时检查工具调用记录、文件版本和结构化检查点，三者冲突时以可验证的外部证据为准，并降低新会话的自动决策权限。</p></section>
+        <section class="detail-section"><h2>防双写要求</h2><p>文件、消息、订单和外部 API 调用都必须带幂等键。没有唯一锁或无法确认旧会话已停止时，只允许执行只读探测，不允许继续写入。</p></section>
+      </div>
+      <aside class="detail-side">
+        <div class="side-card"><h3>接管状态</h3><div class="signal-box"><div><small>来源</small><strong>超时</strong></div><div><small>检查点</small><strong>#184</strong></div><div><small>冲突</small><strong>0</strong></div></div></div>
+        <div class="side-card"><h3>核心原则</h3><p>先排他，后继承；先核对，后继续。任何接管都不能绕过原授权边界。</p></div>
+        <div class="side-card"><h3>继续浏览</h3><a class="side-link" href="02-backoff.html"><span>←</span> 指数退避</a><a class="side-link" href="04-provider-rotation.html">下一机制：供应商轮换 <span>→</span></a></div>
+      </aside>
+    </div>
+  </main>
+  <footer class="site-footer"><span>Agent Watch / 监管系统监控台</span><span class="mono">MECHANISM 03</span></footer>
+</body>
+</html>
