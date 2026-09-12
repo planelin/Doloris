@@ -259,6 +259,82 @@ class ClaudeDriver:
 CODEX_SESSIONS = HOME / ".codex" / "sessions"
 
 
+def _json_str(s: str) -> str:
+    try:
+        return json.loads(f'"{s}"')
+    except Exception:
+        return s
+
+
+def _read_meta(p: Path):
+    """读 rollout 头部 session_meta, 返回 (session_id, cwd) 或 None。"""
+    try:
+        head = p.open("r", encoding="utf-8", errors="replace").read(4096)
+    except OSError:
+        return None
+    m_sid = re.search(r'"session_id":"([^"]+)"', head)
+    if not m_sid:
+        return None
+    m_cwd = re.search(r'"cwd":"((?:[^"\\]|\\.)*)"', head)
+    cwd = _json_str(m_cwd.group(1)) if m_cwd else None
+    return m_sid.group(1), cwd
+
+
+def find_last_codex_session(cwd=None):
+    """找最近的 codex 会话。优先 cwd 匹配(用户当前项目); 否则全局最新。
+    返回 (session_id, rollout_path, session_cwd) 或 None。"""
+    best_cwd, best_any = None, None
+    if not CODEX_SESSIONS.exists():
+        return None
+    for p in CODEX_SESSIONS.rglob("rollout-*.jsonl"):
+        meta = _read_meta(p)
+        if not meta:
+            continue
+        sid, scwd = meta
+        try:
+            mt = p.stat().st_mtime
+        except OSError:
+            continue
+        if best_any is None or mt > best_any[0]:
+            best_any = (mt, sid, p, scwd)
+        if cwd and scwd == str(cwd) and (best_cwd is None or mt > best_cwd[0]):
+            best_cwd = (mt, sid, p, scwd)
+    hit = best_cwd or best_any
+    return (hit[1], hit[2], hit[3]) if hit else None
+
+
+def find_codex_session_by_id(sid: str):
+    if not CODEX_SESSIONS.exists():
+        return None
+    for p in CODEX_SESSIONS.rglob("rollout-*.jsonl"):
+        meta = _read_meta(p)
+        if meta and meta[0] == sid:
+            return p, meta[1]
+    return None
+
+
+def wait_session_quiet(rollout: Path, quiet_sec=15, max_wait=90):
+    """接管前等待原会话静默: 同一会话不能有两个写入者。"""
+    log(f"ADOPT   等待会话静默(最多{max_wait}s)——请确认原界面已停止输入")
+    t0 = time.time()
+    while time.time() - t0 < max_wait:
+        try:
+            m1 = rollout.stat().st_mtime
+        except OSError:
+            return True
+        time.sleep(quiet_sec)
+        try:
+            m2 = rollout.stat().st_mtime
+        except OSError:
+            return True
+        if m1 == m2:
+            log("ADOPT   会话已静默, 开始接管")
+            return True
+        log("  会话仍在活动, 继续等待...")
+    log("WARN    静默等待超时, 强行接管(若原界面仍开着, 请立即关闭它!)")
+    return False
+
+
 class CodexDriver:
     """codex CLI 驱动 (codex exec / codex exec resume)。
     与 claude 驱动的差异:
@@ -360,10 +436,12 @@ def check_acceptance(task_dir: Path, work_dir: Path):
          <glob>              至少匹配1个非空文件 (相对仓库根)
          <glob> :N           至少匹配 N 个非空文件
          checklist: <path> :N   文件内 '- [x]' 数量 ≥ N
-       无 acceptance.md 时回退 selftest 默认(12章+12勾)。"""
+       无 acceptance.md 时回退 selftest 默认(12章+12勾)。
+       路径断言相对 work_dir 的父目录解析(= 启动目录/被接管会话的工作目录)。"""
     spec = task_dir / "acceptance.md"
     if not spec.exists():
         return _acceptance_selftest(work_dir)
+    base = work_dir.parent
     problems = []
     for raw in spec.read_text(encoding="utf-8", errors="replace").splitlines():
         line = raw.strip()
@@ -372,7 +450,7 @@ def check_acceptance(task_dir: Path, work_dir: Path):
         if line.lower().startswith("checklist:"):
             parts = [p.strip() for p in line[len("checklist:"):].split(":") if p.strip()]
             path, need = parts[0], (int(parts[1]) if len(parts) > 1 else 1)
-            f = WS / path
+            f = base / path
             if not f.exists():
                 problems.append(f"{path} 不存在")
                 continue
@@ -386,7 +464,7 @@ def check_acceptance(task_dir: Path, work_dir: Path):
                 pat, need = parts[0].strip(), int(parts[1])
             else:
                 pat, need = line, 1
-            hits = [m for m in WS.glob(pat) if m.is_file() and m.stat().st_size > 0]
+            hits = [m for m in base.glob(pat) if m.is_file() and m.stat().st_size > 0]
             if len(hits) < need:
                 problems.append(f"{pat} 非空文件{len(hits)}<{need}")
     return (not problems), ("全部满足" if not problems else "; ".join(problems[:4]))
@@ -418,6 +496,8 @@ def main():
     ap.add_argument("--driver", choices=["claude", "codex"], default="claude")
     ap.add_argument("--work-dir", default="work",
                     help="worker产物目录(相对启动cwd), 验收也在此目录")
+    ap.add_argument("--adopt", default="",
+                    help="接管已有codex会话: 'last'(本目录最近会话) 或 session-id")
     args = ap.parse_args()
 
     task_md = Path(args.task).resolve()
@@ -470,6 +550,33 @@ def main():
         driver = ClaudeDriver(WS, run_dir, working, proxy)
     else:
         driver = CodexDriver(WS, run_dir)
+        if args.adopt:
+            if args.adopt == "last":
+                found = find_last_codex_session(WS)
+                if not found:
+                    ivl("TERMINAL", state="FAILED", detail="未找到可接管的codex会话")
+                    log("TERMINAL FAILED — SHUTDOWN WOULD HAPPEN HERE")
+                    return 1
+                sid, rollout, scwd = found
+                if scwd and scwd != str(WS):
+                    log(f"WARN    接管全局最新会话 cwd={scwd} (非{WS}), 验收锚点随之转移")
+            else:
+                got = find_codex_session_by_id(args.adopt)
+                if not got:
+                    ivl("TERMINAL", state="FAILED", detail=f"找不到会话 {args.adopt}")
+                    log("TERMINAL FAILED — SHUTDOWN WOULD HAPPEN HERE")
+                    return 1
+                rollout, scwd = got
+                sid = args.adopt
+            ivl("ADOPT", session=sid,
+                rollout=rollout.name[:60] if rollout else "(文件未定位)",
+                session_cwd=scwd or "?")
+            if rollout:
+                wait_session_quiet(rollout)
+            driver.session_id = sid
+            driver.jsonl = rollout  # 心跳基线; resume后由 discover_session 重新定位
+            if scwd:
+                work_dir = Path(scwd) / args.work_dir  # 验收锚点跟随被接管会话
     ivl("LAUNCH", session=driver.session_id or "(运行时发现)",
         provider=driver.provider_name,
         chaos=str(chaos) if chaos else "off")
@@ -487,8 +594,12 @@ def main():
     last_error_note = ""
     outcome, outcome_detail = None, ""
 
-    driver.launch(prompt_path)
-    ivl("SPAWNED", pid=driver.proc.pid)
+    if args.driver == "codex" and args.adopt:
+        driver.resume(prompt_path)  # 接管 = 对既有会话发出续跑指令
+        ivl("ADOPTED_RESUME", pid=driver.proc.pid)
+    else:
+        driver.launch(prompt_path)
+        ivl("SPAWNED", pid=driver.proc.pid)
 
     while True:
         time.sleep(5)
