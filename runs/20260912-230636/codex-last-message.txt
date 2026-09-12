@@ -1,0 +1,6 @@
+已完成并按监管要求停止。
+
+- 文件目录：`afk-work/chapters-sim2/`
+- 已生成：`ch01.md` 至 `ch08.md`
+- 每章均不少于 80 个汉字
+- `afk-work/PROGRESS.md` 中所有事项均已勾选，无剩余工作。

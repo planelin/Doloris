@@ -9,18 +9,19 @@
 ```bash
 cd C:\Agents\zcode\double
 
-# ── 主工作流: 托管你干到一半的会话 ──
-# 在 Codex 界面推进项目 → 要出门 → 关掉该会话输入(或留着不动), 然后一键托管:
-python supervise.py --adopt last --task tasks/<你的任务>/task.md --driver codex --work-dir work-我的任务
-# --adopt last  = 接管本目录(或全局)最近一个 codex 会话, 验收锚点自动跟随会话的工作目录
-# --adopt <session-id>  = 接管指定会话
-# 接管前看门狗会等会话静默(同一会话不能有两个写入者); task.md 此时是"续作指示"
+# ── 日常推荐: 零准备快速托管 ──
+# 在 Codex 界面推进项目 → 要出门 → 双击 afk.cmd, 或:
+python supervise.py --adopt last --quick
+# 无需建任何文件夹: 内置续跑指令接管最近会话; 产物进被接管会话目录下的 afk-work/;
+# 完成判据 = afk-work/PROGRESS.md 全部勾完。回来先读 runs/<最新>/report.md。
 
-# ── 发车模型: 从零启动新任务挂机 ──
-# codex 驱动（走 cc-switch 本地代理，无需额外配置）
+# ── 严肃任务: 显式任务书(可自定义验收) ──
+# 接管既有会话 + 任务书:
+python supervise.py --adopt last --task tasks/<你的任务>/task.md
+# 从零发起新任务挂机:
 python supervise.py --task tasks/<你的任务>/task.md --driver codex --work-dir work-我的任务
 
-# claude 驱动（自动注入系统代理 + cc-switch 供应商探针/轮换）
+# ── claude 驱动（自动注入系统代理 + cc-switch 供应商探针/轮换）──
 python supervise.py --task tasks/<你的任务>/task.md
 ```
 
