@@ -1,0 +1,8 @@
+{"ts": "2026-09-12T18:07:54", "event": "EGRESS", "proxy": "http://127.0.0.1:7897"}
+{"ts": "2026-09-12T18:11:29", "event": "LAUNCH", "session": "76d19017-83c0-446b-a7f1-9a72d081ea62", "provider": "agO oringin", "chaos": "off", "pool_size": 2}
+{"ts": "2026-09-12T18:11:29", "event": "SPAWNED", "pid": 26220}
+{"ts": "2026-09-12T18:11:34", "event": "HEARTBEAT", "alive": true, "stale_sec": 5}
+{"ts": "2026-09-12T18:12:04", "event": "HEARTBEAT", "alive": true, "stale_sec": 35}
+{"ts": "2026-09-12T18:12:34", "event": "HEARTBEAT", "alive": true, "stale_sec": 65}
+{"ts": "2026-09-12T18:12:49", "event": "EXIT_OK", "acceptance": "PROGRESS勾选=12/12, 缺失章节=无"}
+{"ts": "2026-09-12T18:12:49", "event": "TERMINAL", "state": "SUCCESS", "detail": "PROGRESS勾选=12/12, 缺失章节=无"}

@@ -26,6 +26,7 @@ supervise.py — L1/L1.5 看门狗 v0.2 (Claude 无头驱动)
 import argparse
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -74,6 +75,30 @@ def detect_system_proxy():
     except Exception:
         pass
     return None
+
+
+def keep_awake():
+    """本进程存活期间阻止系统睡眠(允许熄屏)。
+    harness自带的'运行时不睡眠'常只在流式活跃期短暂生效, 空闲计时器一到期系统照睡;
+    看门狗自己持有 ES_CONTINUOUS|ES_SYSTEM_REQUIRED 执行状态才是进程级的可靠方案。"""
+    if os.name != "nt":
+        return
+    import ctypes
+    ES_CONTINUOUS = 0x80000000
+    ES_SYSTEM_REQUIRED = 0x00000001
+    if ctypes.windll.kernel32.SetThreadExecutionState(
+            ES_CONTINUOUS | ES_SYSTEM_REQUIRED) == 0:
+        log("WARN: SetThreadExecutionState 失败, 睡眠抑制未生效!")
+    else:
+        log("KEEP-AWAKE 睡眠抑制已生效(进程级, 允许熄屏)")
+    # admin 可用时展示当前系统级 sleep 请求, 便于肉眼核实
+    try:
+        r = subprocess.run(["powercfg", "/requests"], capture_output=True,
+                           text=True, timeout=10)
+        if r.returncode == 0 and "SYSTEM" in r.stdout:
+            log("powercfg /requests 可读(管理员), 系统请求清单已可核查")
+    except Exception:
+        pass
 
 
 def probe_pool(pool, proxy, keep=3, timeout=45):
@@ -231,6 +256,102 @@ class ClaudeDriver:
         return time.time() - launched_at  # 日志还没出现, 从启动算起
 
 
+CODEX_SESSIONS = HOME / ".codex" / "sessions"
+
+
+class CodexDriver:
+    """codex CLI 驱动 (codex exec / codex exec resume)。
+    与 claude 驱动的差异:
+      - 无 --session-id 预分配: 启动后扫 ~/.codex/sessions 最新 rollout 锁定会话,
+        session_id 取 rollout 首行 session_meta (权威)
+      - resume 会新建 rollout 文件或续写原文件 → 每次 spawn 后重新发现 jsonl
+      - 出站走 cc-switch 本地代理(127.0.0.1:15721/v1, localhost), 无需注入系统代理;
+        供应商故障转移由 cc-switch 本地代理的 endpoint 自动选择负责, 驱动内不再轮换
+      - -o 参数把 agent 最终消息落盘, 供完成判定与报告使用
+    """
+
+    def __init__(self, cwd: Path, run_dir: Path):
+        self.cwd = cwd
+        self.run_dir = run_dir
+        self.session_id = None          # 由 rollout session_meta 发现
+        self.jsonl = None               # 心跳文件, 每次 spawn 后重新发现
+        self.proc = None
+        self.last_msg = run_dir / "codex-last-message.txt"
+
+    @property
+    def provider_name(self):
+        return "codex(cc-switch本地代理)"
+
+    def has_next(self):
+        return False
+
+    def _spawn_once(self, args, stdin_path: Path):
+        out = open(self.run_dir / "worker-stdout.log", "ab")
+        err = open(self.run_dir / "worker-stderr.log", "ab")
+        self.proc = subprocess.Popen(
+            ["cmd.exe", "/c", "codex", *args],
+            cwd=str(self.cwd), stdin=open(stdin_path, "rb"),
+            stdout=out, stderr=err,
+        )
+
+    def _common(self):
+        return ["-C", str(self.cwd), "-s", "workspace-write",
+                "--skip-git-repo-check", "--json", "-o", str(self.last_msg)]
+
+    def launch(self, prompt_path: Path):
+        self._spawn_once(["exec", *self._common(), "-"], prompt_path)
+        log("LAUNCH codex exec (session运行时发现)")
+        return self.proc
+
+    def resume(self, prompt_path: Path):
+        if not self.session_id:
+            raise RuntimeError("resume 前必须先发现 session_id")
+        self.jsonl = None  # resume 可能新建 rollout, 重新发现
+        self._spawn_once(["exec", "resume", self.session_id,
+                          *self._common(), "-"], prompt_path)
+        log(f"RESUME  codex session={self.session_id[:8]}")
+        return self.proc
+
+    def discover_session(self, since_ts) -> bool:
+        """扫描 sessions 目录, 找 since_ts 之后新建的 rollout;
+        若无新文件但已知 jsonl 仍存在(续写场景), 沿用之。"""
+        cands = []
+        if CODEX_SESSIONS.exists():
+            for p in CODEX_SESSIONS.rglob("rollout-*.jsonl"):
+                try:
+                    c = p.stat().st_ctime
+                except OSError:
+                    continue
+                if c >= since_ts - 2:
+                    cands.append((c, p))
+        if cands:
+            _, p = max(cands)
+            if p != self.jsonl:
+                self.jsonl = p
+                try:
+                    head = p.open("r", encoding="utf-8", errors="replace").read(2048)
+                    m = re.search(r'"session_id":"([^"]+)"', head)
+                    if m and not self.session_id:
+                        self.session_id = m.group(1)
+                        log(f"SESSION 发现 id={self.session_id[:8]} file={p.name[:60]}")
+                except OSError:
+                    pass
+            return True
+        return self.jsonl is not None  # 续写场景: 无新文件, 沿用已知 jsonl
+
+    def kill_tree(self):
+        if self.proc and self.proc.poll() is None:
+            subprocess.run(["taskkill", "/PID", str(self.proc.pid), "/T", "/F"],
+                           capture_output=True)
+            self.proc.wait()
+            log(f"KILL    进程树 pid={self.proc.pid} 已终止")
+
+    def heartbeat_age(self, launched_at) -> float:
+        if self.jsonl and self.jsonl.exists():
+            return time.time() - self.jsonl.stat().st_mtime
+        return time.time() - launched_at  # rollout 未出现, 从启动算起
+
+
 # ---------------------------------------------------------------- 验收
 def check_acceptance(work_dir: Path):
     """验收: work/PROGRESS.md 有12个勾选项 且 12章文件都存在且非空。
@@ -256,10 +377,13 @@ def main():
     ap.add_argument("--max-resumes", type=int, default=8)
     ap.add_argument("--max-run-sec", type=int, default=3600)
     ap.add_argument("--no-probe", action="store_true", help="跳过启动探针")
+    ap.add_argument("--driver", choices=["claude", "codex"], default="claude")
+    ap.add_argument("--work-dir", default="work",
+                    help="worker产物目录(相对启动cwd), 验收也在此目录")
     args = ap.parse_args()
 
     task_md = Path(args.task).resolve()
-    work_dir = WS / "work"  # worker cwd=WS, 产物约定落在 <启动目录>/work
+    work_dir = WS / args.work_dir  # worker cwd=WS, 产物约定落在 <启动目录>/<work-dir>
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = WS / "runs" / ts
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -290,22 +414,27 @@ def main():
         "不要中途停下提问, 只使用文件读写工具, 完成每章立即更新PROGRESS.md。\n",
         encoding="utf-8")
 
+    keep_awake()
     proxy = detect_system_proxy()
-    ivl("EGRESS", proxy=proxy or "(直连)")
-    pool = get_relay_pool("claude-desktop")
-    if args.no_probe:
-        working = pool
+    ivl("EGRESS", proxy=proxy or "(直连)", driver=args.driver)
+    if args.driver == "claude":
+        pool = get_relay_pool("claude-desktop")
+        if args.no_probe:
+            working = pool
+        else:
+            working = probe_pool(pool, proxy)
+            if not working:
+                ivl("TERMINAL", state="FAILED",
+                    detail=f"探针筛出0个可用端点(池{len(pool)}个, 代理={proxy or '直连'})。"
+                           f"可能: 中转全体故障 / token均不兼容CLI / 代理端口死。详见 pool-health.json")
+                log("TERMINAL FAILED — SHUTDOWN WOULD HAPPEN HERE")
+                return 1
+        driver = ClaudeDriver(WS, run_dir, working, proxy)
     else:
-        working = probe_pool(pool, proxy)
-        if not working:
-            ivl("TERMINAL", state="FAILED",
-                detail=f"探针筛出0个可用端点(池{len(pool)}个, 代理={proxy or '直连'})。"
-                       f"可能: 中转全体故障 / token均不兼容CLI / 代理端口死。详见 pool-health.json")
-            log("TERMINAL FAILED — SHUTDOWN WOULD HAPPEN HERE")
-            return 1
-    driver = ClaudeDriver(WS, run_dir, working, proxy)
-    ivl("LAUNCH", session=driver.session_id, provider=driver.provider_name,
-        chaos=str(chaos) if chaos else "off", pool_size=len(working))
+        driver = CodexDriver(WS, run_dir)
+    ivl("LAUNCH", session=driver.session_id or "(运行时发现)",
+        provider=driver.provider_name,
+        chaos=str(chaos) if chaos else "off")
 
     launched_at = time.time()
     run_started_at = launched_at  # 总时长上限的计时基准(含所有退避)
@@ -326,6 +455,8 @@ def main():
     while True:
         time.sleep(5)
         now = time.time()
+        if hasattr(driver, "discover_session"):  # codex: 每次 spawn 后重新发现 rollout
+            driver.discover_session(launched_at)
         alive = driver.proc.poll() is None
         if alive:
             worker_runtime += 5

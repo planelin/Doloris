@@ -1,11 +1,11 @@
 {
- "ts": "2026-09-12T17:54:07",
+ "ts": "2026-09-12T18:11:29",
  "proxy": "http://127.0.0.1:7897",
  "results": [
   {
    "name": "agO oringin",
    "ok": true,
-   "sec": 8
+   "sec": 7
   },
   {
    "name": "hui",
@@ -20,12 +20,12 @@
   {
    "name": "kk",
    "ok": false,
-   "sec": 182
+   "sec": 45
   },
   {
    "name": "or",
    "ok": false,
-   "sec": 2
+   "sec": 3
   },
   {
    "name": "keycrop",
@@ -35,22 +35,22 @@
   {
    "name": "aga",
    "ok": true,
-   "sec": 7
+   "sec": 8
   },
   {
    "name": "tf",
    "ok": false,
-   "sec": 203
+   "sec": 45
   },
   {
    "name": "tf copy",
    "ok": false,
-   "sec": 185
+   "sec": 45
   },
   {
    "name": "agO maskit",
    "ok": false,
-   "sec": 178
+   "sec": 45
   },
   {
    "name": "tf copy",
