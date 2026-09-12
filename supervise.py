@@ -60,6 +60,54 @@ def munged_cwd(cwd: Path) -> str:
     return str(cwd).replace(":", "").replace("\\", "-").replace("_", "-")
 
 
+def detect_system_proxy():
+    """读 Windows 系统代理(IE设置)。中转端点通常必须走系统代理出站,
+    直连常被墙(症状=ConnectionRefused/黑洞僵死, 与中转宕机难以区分)。"""
+    try:
+        import winreg
+        k = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                           r"Software\Microsoft\Windows\CurrentVersion\Internet Settings")
+        enable, _ = winreg.QueryValueEx(k, "ProxyEnable")
+        server, _ = winreg.QueryValueEx(k, "ProxyServer")
+        if enable and server:
+            return f"http://{server}"
+    except Exception:
+        pass
+    return None
+
+
+def probe_pool(pool, proxy, keep=3, timeout=45):
+    """逐个用 1-token PONG 请求实测供应商(带代理出站), 保留前 keep 个可用者。
+    结果缓存 pool-health.json。CLI 兼容性(如 403 group dispatch)只有实测才知道。"""
+    working, tried = [], []
+    for name, env in pool:
+        if len(working) >= keep:
+            break
+        e = dict(os.environ)
+        e.update(env)
+        if proxy:
+            e["HTTPS_PROXY"] = proxy
+            e["HTTP_PROXY"] = proxy
+        t0 = time.time()
+        try:
+            r = subprocess.run(
+                ["cmd.exe", "/c", "claude", "-p", "Reply with exactly one word: PONG"],
+                capture_output=True, text=True, timeout=timeout, env=e, cwd=str(WS))
+            ok = r.returncode == 0 and "PONG" in (r.stdout or "").upper()
+        except subprocess.TimeoutExpired:
+            ok = False
+        sec = round(time.time() - t0)
+        tried.append((name, ok, sec))
+        log(f"PROBE   {name}: {'PASS' if ok else 'FAIL'} ({sec}s)")
+        if ok:
+            working.append((name, env))
+    (WS / "pool-health.json").write_text(json.dumps({
+        "ts": datetime.now().isoformat(timespec="seconds"), "proxy": proxy,
+        "results": [{"name": n, "ok": o, "sec": s} for n, o, s in tried]},
+        ensure_ascii=False, indent=1), encoding="utf-8")
+    return working
+
+
 # ---------------------------------------------------------------- cc-switch
 def get_relay_pool(app_type="claude-desktop"):
     """只读 cc-switch 数据库, 返回供应商池 [(name, env), ...]。
@@ -104,10 +152,11 @@ def get_relay_pool(app_type="claude-desktop"):
 class ClaudeDriver:
     """claude CLI 无头驱动。预指定 session-id; 池内可切换供应商(同会话续跑)。"""
 
-    def __init__(self, cwd: Path, run_dir: Path, pool):
+    def __init__(self, cwd: Path, run_dir: Path, pool, proxy=None):
         self.cwd = cwd
         self.run_dir = run_dir
         self.pool = pool
+        self.proxy = proxy
         self.pidx = 0
         self.session_id = str(uuid.uuid4())
         self.jsonl = CLAUDE_PROJECTS / munged_cwd(cwd) / f"{self.session_id}.jsonl"
@@ -133,6 +182,9 @@ class ClaudeDriver:
     def _spawn(self, args, stdin_path: Path):
         env = dict(os.environ)
         env.update(self.relay_env)  # 只影响本工作进程
+        if self.proxy:  # 中转出站必须走系统代理, 否则直连裸奔(被墙=黑洞/拒连)
+            env["HTTPS_PROXY"] = self.proxy
+            env["HTTP_PROXY"] = self.proxy
         out = open(self.run_dir / "worker-stdout.log", "ab")
         err = open(self.run_dir / "worker-stderr.log", "ab")
         self.proc = subprocess.Popen(
@@ -197,6 +249,7 @@ def main():
     ap.add_argument("--chaos", default="", help='故障注入, 如 "kill:120"')
     ap.add_argument("--max-resumes", type=int, default=8)
     ap.add_argument("--max-run-sec", type=int, default=3600)
+    ap.add_argument("--no-probe", action="store_true", help="跳过启动探针")
     args = ap.parse_args()
 
     task_md = Path(args.task).resolve()
@@ -231,10 +284,22 @@ def main():
         "不要中途停下提问, 只使用文件读写工具, 完成每章立即更新PROGRESS.md。\n",
         encoding="utf-8")
 
+    proxy = detect_system_proxy()
+    ivl("EGRESS", proxy=proxy or "(直连)")
     pool = get_relay_pool("claude-desktop")
-    driver = ClaudeDriver(WS, run_dir, pool)
+    if args.no_probe:
+        working = pool
+    else:
+        working = probe_pool(pool, proxy)
+        if not working:
+            ivl("TERMINAL", state="FAILED",
+                detail=f"探针筛出0个可用端点(池{len(pool)}个, 代理={proxy or '直连'})。"
+                       f"可能: 中转全体故障 / token均不兼容CLI / 代理端口死。详见 pool-health.json")
+            log("TERMINAL FAILED — SHUTDOWN WOULD HAPPEN HERE")
+            return 1
+    driver = ClaudeDriver(WS, run_dir, working, proxy)
     ivl("LAUNCH", session=driver.session_id, provider=driver.provider_name,
-        chaos=str(chaos) if chaos else "off", pool_size=len(pool))
+        chaos=str(chaos) if chaos else "off", pool_size=len(working))
 
     launched_at = time.time()
     run_started_at = launched_at  # 总时长上限的计时基准(含所有退避)
@@ -299,6 +364,7 @@ def main():
                 else:
                     outcome, outcome_detail = "early_exit", detail
             else:
+                ivl("EXIT_CRASH", rc=rc, provider=driver.provider_name)
                 outcome, outcome_detail = "crash", f"exit_code={rc}"
 
         # --- 终态判定 ---
