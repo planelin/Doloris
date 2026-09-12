@@ -355,9 +355,45 @@ class CodexDriver:
 
 
 # ---------------------------------------------------------------- 验收
-def check_acceptance(work_dir: Path):
-    """验收: work/PROGRESS.md 有12个勾选项 且 12章文件都存在且非空。
-    work_dir 必须与 worker 的实际写入目录一致(= 启动cwd下的 work/)。"""
+def check_acceptance(task_dir: Path, work_dir: Path):
+    """通用验收。优先读 tasks/<name>/acceptance.md, 每行一个断言:
+         <glob>              至少匹配1个非空文件 (相对仓库根)
+         <glob> :N           至少匹配 N 个非空文件
+         checklist: <path> :N   文件内 '- [x]' 数量 ≥ N
+       无 acceptance.md 时回退 selftest 默认(12章+12勾)。"""
+    spec = task_dir / "acceptance.md"
+    if not spec.exists():
+        return _acceptance_selftest(work_dir)
+    problems = []
+    for raw in spec.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.lower().startswith("checklist:"):
+            parts = [p.strip() for p in line[len("checklist:"):].split(":") if p.strip()]
+            path, need = parts[0], (int(parts[1]) if len(parts) > 1 else 1)
+            f = WS / path
+            if not f.exists():
+                problems.append(f"{path} 不存在")
+                continue
+            txt = f.read_text(encoding="utf-8", errors="replace")
+            done = txt.count("- [x]") + txt.count("- [X]")
+            if done < need:
+                problems.append(f"{path} 勾选{done}<{need}")
+        else:
+            parts = line.rsplit(":", 1)
+            if len(parts) == 2 and parts[1].strip().isdigit():
+                pat, need = parts[0].strip(), int(parts[1])
+            else:
+                pat, need = line, 1
+            hits = [m for m in WS.glob(pat) if m.is_file() and m.stat().st_size > 0]
+            if len(hits) < need:
+                problems.append(f"{pat} 非空文件{len(hits)}<{need}")
+    return (not problems), ("全部满足" if not problems else "; ".join(problems[:4]))
+
+
+def _acceptance_selftest(work_dir: Path):
+    """selftest 12章格式: work_dir/PROGRESS.md 12项勾选 + 12个章节文件非空。"""
     prog = work_dir / "PROGRESS.md"
     if not prog.exists():
         return False, f"PROGRESS.md 不存在 ({work_dir})"
@@ -498,7 +534,7 @@ def main():
             total_kills += 1
             fails_on_provider += 1
             if rc == 0:
-                ok, detail = check_acceptance(work_dir)
+                ok, detail = check_acceptance(task_md.parent, work_dir)
                 ivl("EXIT_OK", acceptance=detail)
                 if ok:
                     outcome, outcome_detail = "success", detail
@@ -511,7 +547,7 @@ def main():
 
         # --- 验收前置守卫: worker死亡/空转, 但产物已齐 → 免唤醒直接成功 ---
         if outcome in ("crash", "hang", "early_exit"):
-            ok, detail = check_acceptance(work_dir)
+            ok, detail = check_acceptance(task_md.parent, work_dir)
             if ok:
                 outcome, outcome_detail = "success", "验收通过(免唤醒): " + detail
 
@@ -554,7 +590,7 @@ def main():
             last_error_note = ""
 
     # --- 终态报告 ---
-    ok, detail = check_acceptance(work_dir)
+    ok, detail = check_acceptance(task_md.parent, work_dir)
     state = "SUCCESS" if outcome == "success" else "FAILED"
     report = f"""# 监管运行报告 — {ts}
 
