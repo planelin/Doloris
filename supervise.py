@@ -89,12 +89,18 @@ def probe_pool(pool, proxy, keep=3, timeout=45):
             e["HTTPS_PROXY"] = proxy
             e["HTTP_PROXY"] = proxy
         t0 = time.time()
+        proc = subprocess.Popen(
+            ["cmd.exe", "/c", "claude", "-p", "Reply with exactly one word: PONG"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env=e, cwd=str(WS))
         try:
-            r = subprocess.run(
-                ["cmd.exe", "/c", "claude", "-p", "Reply with exactly one word: PONG"],
-                capture_output=True, text=True, timeout=timeout, env=e, cwd=str(WS))
-            ok = r.returncode == 0 and "PONG" in (r.stdout or "").upper()
+            out, _ = proc.communicate(timeout=timeout)
+            ok = proc.returncode == 0 and "PONG" in (out or "").upper()
         except subprocess.TimeoutExpired:
+            # 必须杀整棵树: node 孙进程握着管道会挂住 communicate
+            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                           capture_output=True)
+            proc.wait()
             ok = False
         sec = round(time.time() - t0)
         tried.append((name, ok, sec))
@@ -226,17 +232,17 @@ class ClaudeDriver:
 
 
 # ---------------------------------------------------------------- 验收
-def check_acceptance(task_dir: Path):
-    """验收: work/PROGRESS.md 有12个勾选项 且 12章文件都存在且非空。"""
-    work = task_dir / "work"
-    prog = work / "PROGRESS.md"
+def check_acceptance(work_dir: Path):
+    """验收: work/PROGRESS.md 有12个勾选项 且 12章文件都存在且非空。
+    work_dir 必须与 worker 的实际写入目录一致(= 启动cwd下的 work/)。"""
+    prog = work_dir / "PROGRESS.md"
     if not prog.exists():
-        return False, "PROGRESS.md 不存在"
+        return False, f"PROGRESS.md 不存在 ({work_dir})"
     text = prog.read_text(encoding="utf-8", errors="replace")
     done = text.count("- [x]") + text.count("- [X]")
     missing = [f"ch{i:02d}" for i in range(1, 13)
-               if not (work / "chapters" / f"ch{i:02d}.md").exists()
-               or (work / "chapters" / f"ch{i:02d}.md").stat().st_size < 100]
+               if not (work_dir / "chapters" / f"ch{i:02d}.md").exists()
+               or (work_dir / "chapters" / f"ch{i:02d}.md").stat().st_size < 100]
     ok = done >= 12 and not missing
     detail = f"PROGRESS勾选={done}/12, 缺失章节={missing or '无'}"
     return ok, detail
@@ -253,7 +259,7 @@ def main():
     args = ap.parse_args()
 
     task_md = Path(args.task).resolve()
-    task_dir = task_md.parent
+    work_dir = WS / "work"  # worker cwd=WS, 产物约定落在 <启动目录>/work
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = WS / "runs" / ts
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -306,6 +312,7 @@ def main():
     worker_runtime = 0.0        # 累计运行时间(不含resume退避), chaos计时基准
     chaos_fired = False
     resumes = 0
+    early_exits = 0             # worker空转退出(rc=0但验收不过)计数→矛盾态熔断
     total_kills = 0             # 梯度心跳阈值基准
     fails_on_provider = 0       # 当前供应商连续死亡计数
     providers_tried = [driver.provider_name]
@@ -357,21 +364,33 @@ def main():
             total_kills += 1
             fails_on_provider += 1
             if rc == 0:
-                ok, detail = check_acceptance(task_dir)
+                ok, detail = check_acceptance(work_dir)
                 ivl("EXIT_OK", acceptance=detail)
                 if ok:
                     outcome, outcome_detail = "success", detail
                 else:
+                    early_exits += 1
                     outcome, outcome_detail = "early_exit", detail
             else:
                 ivl("EXIT_CRASH", rc=rc, provider=driver.provider_name)
                 outcome, outcome_detail = "crash", f"exit_code={rc}"
+
+        # --- 验收前置守卫: worker死亡/空转, 但产物已齐 → 免唤醒直接成功 ---
+        if outcome in ("crash", "hang", "early_exit"):
+            ok, detail = check_acceptance(work_dir)
+            if ok:
+                outcome, outcome_detail = "success", "验收通过(免唤醒): " + detail
 
         # --- 终态判定 ---
         if outcome == "success":
             ivl("TERMINAL", state="SUCCESS", detail=outcome_detail)
             break
         if outcome in ("crash", "hang", "early_exit"):
+            if outcome == "early_exit" and early_exits >= 2:
+                ivl("TERMINAL", state="FAILED",
+                    detail=f"矛盾态: worker连续{early_exits}次空转退出但验收不通过"
+                           f"({outcome_detail}) — 需人工/L2介入")
+                break
             if resumes >= args.max_resumes:
                 ivl("TERMINAL", state="FAILED",
                     detail=f"resume预算耗尽({resumes}次), 最后状态={outcome}")
@@ -401,7 +420,7 @@ def main():
             last_error_note = ""
 
     # --- 终态报告 ---
-    ok, detail = check_acceptance(task_dir)
+    ok, detail = check_acceptance(work_dir)
     state = "SUCCESS" if outcome == "success" else "FAILED"
     report = f"""# 监管运行报告 — {ts}
 
