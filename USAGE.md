@@ -27,6 +27,11 @@ python supervise.py --task tasks/<你的任务>/task.md
 
 启动后可以锁屏/走人。机器不会睡（看门狗持有进程级执行状态）。
 
+> **接管纪律**：接管前请停止/关闭原 Codex 界面中的该会话——codex 有单写者锁
+> （`thread already has an active writer`），界面开着时接管会被拒绝；看门狗检测到会打
+> `SESSION_BUSY` 提示并自动重试。另外 quick 模式每次启动会把上一轮遗留的
+> `afk-work/PROGRESS.md` 归档到 `afk-work/archive/`，防止旧清单造成假验收通过。
+
 ## 写一个任务（两个文件）
 
 `tasks/<任务名>/task.md` —— 任务书，全文会作为提示词发给 worker。**必须包含**：

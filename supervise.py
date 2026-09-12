@@ -620,6 +620,19 @@ def main():
         provider=driver.provider_name,
         chaos=str(chaos) if chaos else "off")
 
+    # quick模式: 归档上一轮遗留的清单, 否则旧清单会让验收瞬间假通过
+    if args.quick:
+        prog = work_dir / "PROGRESS.md"
+        if prog.exists():
+            arch = work_dir / "archive"
+            arch.mkdir(parents=True, exist_ok=True)
+            dest = arch / f"PROGRESS-{ts}.md"
+            try:
+                prog.replace(dest)
+                ivl("ARCHIVE_STALE_CHECKLIST", dest=str(dest))
+            except OSError as e:
+                ivl("WARN", msg=f"归档旧清单失败: {e}")
+
     launched_at = time.time()
     run_started_at = launched_at  # 总时长上限的计时基准(含所有退避)
     worker_runtime = 0.0        # 累计运行时间(不含resume退避), chaos计时基准
@@ -692,7 +705,21 @@ def main():
                     early_exits += 1
                     outcome, outcome_detail = "early_exit", detail
             else:
-                ivl("EXIT_CRASH", rc=rc, provider=driver.provider_name)
+                err_tail = ""
+                try:
+                    err_log = run_dir / "worker-stderr.log"
+                    if err_log.exists():
+                        lines = [l for l in err_log.read_text(
+                            encoding="utf-8", errors="replace").strip().splitlines()
+                            if l.strip()]
+                        err_tail = lines[-1][:220] if lines else ""
+                except OSError:
+                    pass
+                ivl("EXIT_CRASH", rc=rc, provider=driver.provider_name, err=err_tail)
+                if "already has an active writer" in err_tail:
+                    ivl("SESSION_BUSY",
+                        hint="原会话仍被桌面/界面占用(codex单写者锁)。请停止或关闭原Codex"
+                             "界面中的该会话, 看门狗将自动重试接管")
                 outcome, outcome_detail = "crash", f"exit_code={rc}"
 
         # --- 验收前置守卫: worker死亡/空转, 但产物已齐 → 免唤醒直接成功 ---

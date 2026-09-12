@@ -1,0 +1,7 @@
+{"ts": "2026-09-12T23:30:55", "event": "EGRESS", "proxy": "http://127.0.0.1:7897", "driver": "codex"}
+{"ts": "2026-09-12T23:30:55", "event": "ADOPT", "session": "01a0963d-a1e1-7293-a93a-c046150db014", "rollout": "rollout-2026-09-12T23-30-16-01a0963d-a1e1-7293-a93a-c046150d", "session_cwd": "C:\\Agents\\zcode\\double"}
+{"ts": "2026-09-12T23:31:10", "event": "LAUNCH", "session": "01a0963d-a1e1-7293-a93a-c046150db014", "provider": "codex(cc-switch本地代理)", "chaos": "('kill', 30)"}
+{"ts": "2026-09-12T23:31:10", "event": "ADOPTED_RESUME", "pid": 24236}
+{"ts": "2026-09-12T23:31:15", "event": "HEARTBEAT", "alive": false, "stale_sec": 5}
+{"ts": "2026-09-12T23:31:15", "event": "EXIT_CRASH", "rc": 1, "provider": "codex(cc-switch本地代理)"}
+{"ts": "2026-09-12T23:31:15", "event": "TERMINAL", "state": "SUCCESS", "detail": "验收通过(免唤醒): 快速验收: 勾选12, 未勾0"}
