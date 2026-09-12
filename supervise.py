@@ -210,6 +210,7 @@ def main():
 
     launched_at = time.time()
     worker_runtime = 0.0        # 累计运行时间(不含resume退避), chaos计时基准
+    chaos_fired = False
     resumes = 0
     last_hb_log = 0.0
     last_error_note = ""
@@ -225,8 +226,10 @@ def main():
         if alive:
             worker_runtime += 5
 
-        # --- chaos 注入 ---
-        if chaos and chaos[0] == "kill" and worker_runtime >= chaos[1] and alive:
+        # --- chaos 注入 (一次性: 只模拟一次随机崩溃, 不重复触发) ---
+        if chaos and chaos[0] == "kill" and not chaos_fired \
+                and worker_runtime >= chaos[1] and alive:
+            chaos_fired = True
             ivl("CHAOS_KILL", at_sec=worker_runtime)
             driver.kill_tree()
 
