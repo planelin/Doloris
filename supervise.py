@@ -91,11 +91,11 @@ def keep_awake():
         log("WARN: SetThreadExecutionState 失败, 睡眠抑制未生效!")
     else:
         log("KEEP-AWAKE 睡眠抑制已生效(进程级, 允许熄屏)")
-    # admin 可用时展示当前系统级 sleep 请求, 便于肉眼核实
+    # admin 可用时展示当前系统级 sleep 请求, 便于肉眼核实 (bytes 方式避免 GBK 解码炸)
     try:
         r = subprocess.run(["powercfg", "/requests"], capture_output=True,
-                           text=True, timeout=10)
-        if r.returncode == 0 and "SYSTEM" in r.stdout:
+                           timeout=10)
+        if r.returncode == 0 and b"SYSTEM" in r.stdout:
             log("powercfg /requests 可读(管理员), 系统请求清单已可核查")
     except Exception:
         pass
