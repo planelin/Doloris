@@ -51,6 +51,14 @@ BACKOFFS = [15, 45, 90, 120, 120, 120, 120, 120]  # 秒, resume 之间
 STALE_LIMITS = [150, 300, 450]                     # 按总击杀次数取值, 尾部封顶
 FAILS_BEFORE_SWITCH = 2                            # 同供应商连续死亡次数→换端点
 
+QUICK_PROMPT = """你被监管系统接管(原会话中断, 现在无头续跑)。
+1. 读取会话历史, 确认未完成的工作并继续执行; 不要重做已完成的部分。
+2. 新产出的文件一律放入当前工作目录下的 afk-work/ 子目录。
+3. 维护 afk-work/PROGRESS.md: 逐条列出剩余工作项(- [ ]), 每完成一项改为 - [x];
+   若会话中的任务已全部完成, 也要创建该文件, 写明"无剩余工作"并把清单全部勾选。
+4. 清单全部勾完才允许停止。全程不要提问, 不要等待确认。
+"""
+
 
 def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
@@ -470,6 +478,18 @@ def check_acceptance(task_dir: Path, work_dir: Path):
     return (not problems), ("全部满足" if not problems else "; ".join(problems[:4]))
 
 
+def check_acceptance_quick(work_dir: Path):
+    """快速模式验收: afk-work/PROGRESS.md 存在且全部勾完(≥1勾, 0未勾)。"""
+    prog = work_dir / "PROGRESS.md"
+    if not prog.exists():
+        return False, "afk-work/PROGRESS.md 不存在(worker未建立清单)"
+    txt = prog.read_text(encoding="utf-8", errors="replace")
+    done = txt.count("- [x]") + txt.count("- [X]")
+    todo = txt.count("- [ ]")
+    ok = done >= 1 and todo == 0
+    return ok, f"快速验收: 勾选{done}, 未勾{todo}"
+
+
 def _acceptance_selftest(work_dir: Path):
     """selftest 12章格式: work_dir/PROGRESS.md 12项勾选 + 12个章节文件非空。"""
     prog = work_dir / "PROGRESS.md"
@@ -488,19 +508,28 @@ def _acceptance_selftest(work_dir: Path):
 # ---------------------------------------------------------------- 主循环
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--task", required=True, help="任务书路径 (tasks/xxx/task.md)")
+    ap.add_argument("--task", default="",
+                    help="任务书路径; 快速模式(--adopt + --quick)可不填")
     ap.add_argument("--chaos", default="", help='故障注入, 如 "kill:120"')
     ap.add_argument("--max-resumes", type=int, default=8)
     ap.add_argument("--max-run-sec", type=int, default=3600)
     ap.add_argument("--no-probe", action="store_true", help="跳过启动探针")
-    ap.add_argument("--driver", choices=["claude", "codex"], default="claude")
+    ap.add_argument("--driver", choices=["claude", "codex"], default=None,
+                    help="不填时自动推断: --adopt→codex, 否则claude")
     ap.add_argument("--work-dir", default="work",
                     help="worker产物目录(相对启动cwd), 验收也在此目录")
     ap.add_argument("--adopt", default="",
                     help="接管已有codex会话: 'last'(本目录最近会话) 或 session-id")
+    ap.add_argument("--quick", action="store_true",
+                    help="快速挂机: 内置续跑指令, 验收=afk-work/PROGRESS.md全部勾完")
     args = ap.parse_args()
 
-    task_md = Path(args.task).resolve()
+    if args.driver is None:
+        args.driver = "codex" if args.adopt else "claude"
+    if not args.task and not (args.adopt and args.quick):
+        ap.error('--task 必填 (零准备挂机请用: --adopt last --quick)')
+
+    task_md = Path(args.task).resolve() if args.task else None
     work_dir = WS / args.work_dir  # worker cwd=WS, 产物约定落在 <启动目录>/<work-dir>
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = WS / "runs" / ts
@@ -518,19 +547,28 @@ def main():
         kind, _, val = args.chaos.partition(":")
         chaos = (kind, int(val))
 
-    # 任务提示词: 任务书 + 行为约束
+    # 任务提示词: quick=内置接管指令; 任务模式=任务书+行为约束
     prompt_path = run_dir / "prompt.txt"
-    prompt_path.write_text(
-        task_md.read_text(encoding="utf-8") +
-        "\n\n[运行约束] 只使用文件读取/创建/编辑工具, 禁止执行shell命令。"
-        "每完成一章立即更新PROGRESS.md勾选。一口气完成全部12章, 不要中途停下提问。\n",
-        encoding="utf-8")
+    if args.quick:
+        prompt_path.write_text(QUICK_PROMPT, encoding="utf-8")
+    else:
+        prompt_path.write_text(
+            task_md.read_text(encoding="utf-8") +
+            "\n\n[运行约束] 只使用文件读取/创建/编辑工具, 禁止执行shell命令。"
+            "完成全部要求后停止, 不要中途停下提问。\n",
+            encoding="utf-8")
     resume_path = run_dir / "resume-prompt.txt"
     resume_path.write_text(
         "你刚才被中断了(进程被终止)。请读取 work/PROGRESS.md 和 work/chapters/ 下已有文件,"
         "确认已完成哪些章节, 然后继续完成全部剩余章节。不要重做已完成的工作,"
         "不要中途停下提问, 只使用文件读写工具, 完成每章立即更新PROGRESS.md。\n",
         encoding="utf-8")
+
+    def verify():
+        """终态验收分派: quick=afk-work清单全勾; 任务模式=acceptance.md/selftest"""
+        if args.quick:
+            return check_acceptance_quick(work_dir)
+        return check_acceptance(task_md.parent, work_dir)
 
     keep_awake()
     proxy = detect_system_proxy()
@@ -576,7 +614,8 @@ def main():
             driver.session_id = sid
             driver.jsonl = rollout  # 心跳基线; resume后由 discover_session 重新定位
             if scwd:
-                work_dir = Path(scwd) / args.work_dir  # 验收锚点跟随被接管会话
+                # 验收锚点跟随被接管会话; quick模式固定用 afk-work
+                work_dir = Path(scwd) / ("afk-work" if args.quick else args.work_dir)
     ivl("LAUNCH", session=driver.session_id or "(运行时发现)",
         provider=driver.provider_name,
         chaos=str(chaos) if chaos else "off")
@@ -645,7 +684,7 @@ def main():
             total_kills += 1
             fails_on_provider += 1
             if rc == 0:
-                ok, detail = check_acceptance(task_md.parent, work_dir)
+                ok, detail = verify()
                 ivl("EXIT_OK", acceptance=detail)
                 if ok:
                     outcome, outcome_detail = "success", detail
@@ -658,7 +697,7 @@ def main():
 
         # --- 验收前置守卫: worker死亡/空转, 但产物已齐 → 免唤醒直接成功 ---
         if outcome in ("crash", "hang", "early_exit"):
-            ok, detail = check_acceptance(task_md.parent, work_dir)
+            ok, detail = verify()
             if ok:
                 outcome, outcome_detail = "success", "验收通过(免唤醒): " + detail
 
@@ -701,7 +740,7 @@ def main():
             last_error_note = ""
 
     # --- 终态报告 ---
-    ok, detail = check_acceptance(task_md.parent, work_dir)
+    ok, detail = verify()
     state = "SUCCESS" if outcome == "success" else "FAILED"
     report = f"""# 监管运行报告 — {ts}
 
