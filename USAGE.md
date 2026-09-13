@@ -33,6 +33,11 @@ python supervise.py --task tasks/<你的任务>/task.md
 > App活着→静默等待；App退出但锁文件残留→立即清除，≤20秒接管。
 > **不要用"归档"**（会把rollout搬进archived_sessions/，破坏锚点），**更不要删除**。
 >
+> **最优雅交接（零打断，推荐）**：离开前在 App 输入框输入交接指令（如「完成当前步骤
+> 后停止，更新进度清单」）并点击**「发送，但不打断模型」**——官方队列会在安全边界
+> 投递，agent 收尾后自然停止；此时退出 App/按 y，交接零伤害。该按钮只能人手点，
+> afk 不做UI自动化。
+>
 > **运行中如何共处**：接管期间 App 里**看不到实时进展**（锁会挡住视图刷新）——观察
 > 用 afk 黑窗口、项目目录的 `afk-work/PROGRESS.md`、`runs/<最新>/interventions.jsonl`。
 > afk 结束（SUCCESS/FAILED）后锁自动释放，打开 App 点会话即可拿回继续交互。
