@@ -42,8 +42,9 @@ python supervise.py --task tasks/<你的任务>/task.md
 
 ## L2 升级agent（稳定通道救火队）
 
-L1续跑预算耗尽且故障为崩溃/挂死时，自动调用L2 agent（默认 `claude` 无头模式，走与
-codex 完全独立的通道：agentrouter+系统代理）做最后一次诊断与修复：
+L1续跑预算耗尽且故障为崩溃/挂死时，自动调用L2 agent做最后一次诊断与修复。
+**默认通道 = Antigravity**（`--model=flash`，Google官方通道，与codex中转完全无关）；
+claude通道已弃用（同为中转，稳定性不合格）。
 
 - 授权动作：改写 `~/.codex/config.toml` 切换中转供应商（可从 cc-switch 数据库只读
   备选端点与key，绕开故障路由）；判定 `NEW_SESSION`（上下文污染，记录后继续）；
@@ -51,9 +52,11 @@ codex 完全独立的通道：agentrouter+系统代理）做最后一次诊断�
 - L2 修复后追加 4 次续跑预算；最多升级 `--l2-max`（默认2）次
 - **Antigravity 通道**：`--l2-cmd antigravity`——经 `language_server.exe agentapi` 桥创建
   修复会话（桥接三件套自动动态发现：CSRF取自App日志最新spawn行、网关端口取自
-  language_server监听端口、项目id默认取最近会话元数据，可 `--l2-project-id` 指定）。
-  异步执行+轮询verdict文件（agent把决议写入项目目录`afk-l2-verdict.txt`）
-- 默认：`--l2-cmd claude`；禁用L2：`--l2-cmd off`
+  language_server监听端口、项目id默认取最近会话元数据，可 `--l2-project-id` 指定；
+  模型 `--l2-model flash_lite/flash/pro`）。异步执行+轮询verdict文件（agent把决议
+  写入项目目录`afk-l2-verdict.txt`）。**观察修复过程：直接打开Antigravity App**，
+  L2修复会话会出现在对应项目的会话列表里，全程可视
+- 禁用L2：`--l2-cmd off`
 - 每次L2的提示词与回复完整留档：`runs/<最新>/l2-N-prompt.txt` / `l2-N.log`
 
 ## 写一个任务（两个文件）

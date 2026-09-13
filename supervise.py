@@ -508,7 +508,8 @@ def discover_antigravity_project_id(agexe, csrf, ports):
     return None
 
 
-def run_l2_antigravity(run_dir, prompt, n, scwd, project_id, timeout_sec=1800):
+def run_l2_antigravity(run_dir, prompt, n, scwd, project_id, model="flash",
+                       timeout_sec=1800):
     """经agentapi桥创建Antigravity修复会话(异步), 轮询verdict文件回收决议。"""
     verdict_file = Path(scwd) / "afk-l2-verdict.txt"
     full_prompt = L2_PROMPT_TMPL.format(
@@ -534,7 +535,7 @@ def run_l2_antigravity(run_dir, prompt, n, scwd, project_id, timeout_sec=1800):
         try:
             r = subprocess.run(
                 [str(agexe), "agentapi", "new-conversation",
-                 "--model=pro", full_prompt],
+                 f"--model={model}", full_prompt],
                 capture_output=True, timeout=120, env=env, cwd=str(WS))
         except subprocess.TimeoutExpired:
             last_err = "new-conversation超时"
@@ -824,9 +825,11 @@ def main():
                     help="快速挂机: 内置续跑指令, 验收=afk-work/PROGRESS.md全部勾完")
     ap.add_argument("--yes", action="store_true",
                     help="跳过交互确认(自动选最新会话/自动关App)")
-    ap.add_argument("--l2-cmd", default="claude",
-                    help="L2升级agent的无头命令(默认claude, 走独立通道); off=禁用L2")
+    ap.add_argument("--l2-cmd", default="antigravity",
+                    help="L2升级agent: antigravity(默认, Google官方通道) / claude(中转, 不推荐) / off")
     ap.add_argument("--l2-max", type=int, default=2, help="L2升级次数上限")
+    ap.add_argument("--l2-model", default="flash",
+                    help="antigravity L2模型档位: flash_lite/flash/pro")
     ap.add_argument("--l2-project-id", default="",
                     help="antigravity L2的项目id; 留空则自动从最近会话元数据发现")
     args = ap.parse_args()
@@ -1192,7 +1195,8 @@ def main():
                     if l2_cmd.lower() in ("antigravity", "agy"):
                         verdict, text, l2_log = run_l2_antigravity(
                             run_dir, errors, l2_calls, session_cwd,
-                            args.l2_project_id or None)
+                            args.l2_project_id or None,
+                            model=args.l2_model)
                     else:
                         verdict, text, l2_log = run_l2_agent(
                             l2_cmd, run_dir,
