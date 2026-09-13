@@ -305,20 +305,61 @@ def codex_app_running():
     return False
 
 
-def read_session_title(p: Path, scan=65536):
-    """从 rollout 提取任务标题(首条用户消息, 截断60字), 供用户核对接管对象。"""
+def read_session_title(p: Path, scan=262144):
+    """从 rollout 提取任务标题(首条真实用户输入, 截断60字)。兼容三种形态:
+    user消息 content / input_text条目 / queue-operation enqueue。
+    跳过 < 开头的环境注入内容; 扫描256KB(桌面会话头部环境块很大)。"""
     try:
         head = p.open("r", encoding="utf-8", errors="replace").read(scan)
     except OSError:
         return ""
-    m = re.search(r'"role"\s*:\s*"user"\s*,\s*"content"\s*:\s*"((?:[^"\\]|\\.)*)"',
-                  head)
-    if not m:
-        m = re.search(r'"operation":"enqueue"[^\n]*?"content":'
-                      r'"((?:[^"\\]|\\.)*)"', head)
-    if not m:
-        return ""
-    return _json_str(m.group(1)).strip()[:60]
+    pats = [
+        r'"role"\s*:\s*"user"\s*,\s*"content"\s*:\s*"((?:[^"\\]|\\.)*)"',
+        r'"type"\s*:\s*"input_text"\s*,\s*"text"\s*:\s*"((?:[^"\\]|\\.)*)"',
+        r'"operation"\s*:\s*"enqueue"[^\n]*?"content"\s*:\s*"((?:[^"\\]|\\.)*)"',
+    ]
+    for pat in pats:
+        for m in re.finditer(pat, head):
+            t = _json_str(m.group(1)).strip()
+            if t and not t.startswith("<"):
+                return t[:60]
+    return ""
+
+
+def list_recent_codex_sessions(n=5):
+    """最近 n 个会话, 按活跃时间降序。
+    返回 [(sid, rollout_path, session_cwd, title, age_str), ...]"""
+    items = []
+    if not CODEX_SESSIONS.exists():
+        return items
+    for p in CODEX_SESSIONS.rglob("rollout-*.jsonl"):
+        meta = _read_meta(p)
+        if not meta:
+            continue
+        try:
+            mt = p.stat().st_mtime
+        except OSError:
+            continue
+        items.append((mt, meta[0], p, meta[1]))
+    items.sort(reverse=True)
+    out = []
+    for mt, sid, p, scwd in items[:n]:
+        title = read_session_title(p)
+        age = time.strftime("%m-%d %H:%M", time.localtime(mt))
+        out.append((sid, p, scwd, title, age))
+    return out
+
+
+def close_codex_app():
+    """强制结束 Codex 桌面App进程族, 单写者锁随进程消亡。
+    仅允许在【尚无我方worker】的接管准备阶段调用。"""
+    killed = []
+    for img in ("ChatGPT.exe", "codex.exe"):
+        r = subprocess.run(["taskkill", "/IM", img, "/F"], capture_output=True)
+        if r.returncode == 0:
+            killed.append(img)
+    time.sleep(2)
+    return killed
 
 
 def find_last_codex_session(cwd=None):
@@ -595,6 +636,8 @@ def main():
                     help="接管已有codex会话: 'last'(本目录最近会话) 或 session-id")
     ap.add_argument("--quick", action="store_true",
                     help="快速挂机: 内置续跑指令, 验收=afk-work/PROGRESS.md全部勾完")
+    ap.add_argument("--yes", action="store_true",
+                    help="跳过交互确认(自动选最新会话/自动关App)")
     args = ap.parse_args()
 
     if args.driver is None:
@@ -634,11 +677,16 @@ def main():
             "完成全部要求后停止, 不要中途停下提问。\n",
             encoding="utf-8")
     resume_path = run_dir / "resume-prompt.txt"
-    resume_path.write_text(
-        "你刚才被中断了(进程被终止)。请读取 work/PROGRESS.md 和 work/chapters/ 下已有文件,"
-        "确认已完成哪些章节, 然后继续完成全部剩余章节。不要重做已完成的工作,"
-        "不要中途停下提问, 只使用文件读写工具, 完成每章立即更新PROGRESS.md。\n",
-        encoding="utf-8")
+    if args.quick:
+        resume_path.write_text(
+            "你刚才被中断(进程被终止), 现在无头续跑。读取会话历史与 afk-work/PROGRESS.md,"
+            "继续完成全部剩余工作; 不要重做已完成的部分; 新产出文件放入 afk-work/ 子目录;"
+            "每完成一项更新清单, 全部勾完才停止; 不要提问。\n", encoding="utf-8")
+    else:
+        resume_path.write_text(
+            "你刚才被中断了(进程被终止)。请对照任务书要求与既有进度文件(PROGRESS.md),"
+            "确认已完成哪些内容, 然后继续完成全部剩余工作。不要重做已完成的工作,"
+            "不要中途停下提问, 完成后立即更新进度文件。\n", encoding="utf-8")
 
     def verify():
         """终态验收分派: quick=afk-work清单全勾; 任务模式=acceptance.md/selftest"""
@@ -666,14 +714,28 @@ def main():
         driver = CodexDriver(WS, run_dir)
         if args.adopt:
             if args.adopt == "last":
-                found = find_last_codex_session(WS)
-                if not found:
+                cands = list_recent_codex_sessions(5)
+                if not cands:
                     ivl("TERMINAL", state="FAILED", detail="未找到可接管的codex会话")
                     log("TERMINAL FAILED — SHUTDOWN WOULD HAPPEN HERE")
                     return 1
-                sid, rollout, scwd = found
+                pick = 1
+                if args.yes or not sys.stdin.isatty():
+                    log("ADOPT   非交互模式, 自动选择最新会话")
+                else:
+                    print("选择要接管的会话:")
+                    for i, (sid_, p_, scwd_, title_, age_) in enumerate(cands, 1):
+                        mark = "*" if scwd_ == str(WS) else " "
+                        print(f"  [{i}]{mark} {age_}  {title_ or '(无标题)'}")
+                        print(f"      cwd={scwd_}")
+                    try:
+                        raw = input("序号[1]: ").strip()
+                    except (EOFError, OSError):
+                        raw = ""
+                    pick = int(raw) if raw.isdigit() and 1 <= int(raw) <= len(cands) else 1
+                sid, rollout, scwd = cands[pick - 1][1], cands[pick - 1][2], cands[pick - 1][3]
                 if scwd and scwd != str(WS):
-                    log(f"WARN    接管全局最新会话 cwd={scwd} (非{WS}), 验收锚点随之转移")
+                    log(f"WARN    接管会话 cwd={scwd} (非{WS}), 验收锚点随之转移")
             else:
                 got = find_codex_session_by_id(args.adopt)
                 if not got:
@@ -682,13 +744,38 @@ def main():
                     return 1
                 rollout, scwd = got
                 sid = args.adopt
-            ivl("ADOPT", session=sid, title=read_session_title(rollout) if rollout else "",
+            title = read_session_title(rollout) if rollout else ""
+            ivl("ADOPT", session=sid, title=title,
                 rollout=rollout.name[:60] if rollout else "(文件未定位)",
                 session_cwd=scwd or "?")
             if rollout:
-                log(f"ADOPT   任务标题: {read_session_title(rollout)}")
+                log(f"ADOPT   任务标题: {title or '(未提取到)'}")
             if rollout:
-                wait_session_quiet(rollout)
+                lockf0 = CODEX_LOCKS / f"{sid}.lock"
+                app_killed = False
+                if lockf0.exists():
+                    log("LOCK     目标会话被 App 占用(单写者锁)")
+                    if args.yes or not sys.stdin.isatty():
+                        log("LOCK     非交互模式: 请自行彻底退出 Codex App, afk将轮询锁文件")
+                    else:
+                        try:
+                            ans = input("由 afk 强制结束 Codex App 以释放锁?[Y/n]: ").strip().lower()
+                        except (EOFError, OSError):
+                            ans = "y"
+                        if ans in ("", "y", "yes"):
+                            killed = close_codex_app()
+                            app_killed = True
+                            ivl("APP_CLOSED", killed=killed)
+                            log(f"LOCK     已结束进程: {killed or '(本就未运行)'}")
+                        else:
+                            log("LOCK     跳过强杀; 请自行退出 App, afk将轮询锁文件")
+                    try:
+                        lockf0.unlink()
+                        ivl("STALE_LOCK_REMOVED", pre="接管准备")
+                    except OSError:
+                        pass
+                if not app_killed:
+                    wait_session_quiet(rollout)
             driver.session_id = sid
             driver.jsonl = rollout  # 心跳基线; resume后由 discover_session 重新定位
             if scwd:
