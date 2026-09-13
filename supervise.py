@@ -594,12 +594,14 @@ def discover_antigravity_project_id(agexe, csrf, ports):
     return None
 
 
-def run_l2_antigravity(run_dir, full_prompt, n, scwd, verdict_file,
-                       project_id=None, model="flash", timeout_sec=1800):
-    """经agentapi桥创建Antigravity会话(异步), 轮询verdict文件回收输出。
-    full_prompt 由调用方组好(含交付文件指令), 此处压平换行后发送。"""
+def run_l2_antigravity(run_dir, full_prompt, short_prompt, n, scwd, verdict_file,
+                       conv_holder=None, project_id=None, model="flash",
+                       timeout_sec=1800):
+    """经agentapi桥调用Antigravity。一个codex会话对应一个agy会话:
+    首次 new-conversation(全量背景) 并记住conversationId,
+    后续 send-message(增量提问) 复用同一会话——agy保持上下文不再重读。
+    App重启导致会话失效时自动降级重建。轮询verdict文件回收输出。"""
     verdict_file = Path(scwd) / verdict_file
-    flat = full_prompt.replace("\n", " | ")
     log_path = run_dir / f"l2-{n}.log"
     csrf, ports, agexe = discover_antigravity_bridge()
     if not csrf or not ports or not agexe.exists():
@@ -609,27 +611,43 @@ def run_l2_antigravity(run_dir, full_prompt, n, scwd, verdict_file,
     verdict_file.parent.mkdir(parents=True, exist_ok=True)
     if verdict_file.exists():
         verdict_file.unlink()
+    cid = getattr(conv_holder, "_agy_cid", None) if conv_holder else None
+    env = dict(os.environ)
+    env["ANTIGRAVITY_CSRF_TOKEN"] = csrf
+    if project_id:
+        env["ANTIGRAVITY_PROJECT_ID"] = project_id
     last_err = ""
     for port in ports:
-        env = dict(os.environ)
-        env["ANTIGRAVITY_CSRF_TOKEN"] = csrf
         env["ANTIGRAVITY_LS_ADDRESS"] = f"127.0.0.1:{port}"
-        if project_id:
-            env["ANTIGRAVITY_PROJECT_ID"] = project_id
         try:
-            r = subprocess.run(
-                [str(agexe), "agentapi", "new-conversation",
-                 f"--model={model}", flat],
-                capture_output=True, timeout=120, env=env, cwd=str(WS))
+            if cid:
+                r = subprocess.run(
+                    [str(agexe), "agentapi", "send-message", cid, short_prompt],
+                    capture_output=True, timeout=120, env=env, cwd=str(WS))
+            else:
+                r = subprocess.run(
+                    [str(agexe), "agentapi", "new-conversation",
+                     f"--model={model}", full_prompt],
+                    capture_output=True, timeout=120, env=env, cwd=str(WS))
         except subprocess.TimeoutExpired:
-            last_err = "new-conversation超时"
+            last_err = "调用超时"
             continue
         out = (r.stdout or b"").decode("utf-8", errors="replace")
+        mode = "send" if cid else "new"
         with open(log_path, "ab") as f:
-            f.write(f"--- port {port} ---\n{out}\n".encode("utf-8", errors="replace"))
+            f.write(f"--- port {port} {mode} ---\n{out}\n".encode("utf-8",
+                                                                 errors="replace"))
         if '"error"' in out:
             last_err = out[:300]
+            if cid:
+                cid = None  # 会话可能已失效(App重启), 降级为新建重试
+                if conv_holder is not None:
+                    conv_holder._agy_cid = None
+                continue
             continue
+        m = re.search(r'"conversationId"\s*:\s*"([^"]+)"', out)
+        if m and conv_holder is not None:
+            conv_holder._agy_cid = m.group(1)
         deadline = time.time() + timeout_sec
         while time.time() < deadline:
             time.sleep(20)
@@ -751,6 +769,8 @@ def l2_dispatch(l2_cmd, args, proxy, run_dir, driver, session_cwd, n,
                                            question=errors_text)
             full += (f"\n【交付】把你的完整决定(可直接发给codex执行的指令)写入文件: "
                      f"{Path(session_cwd) / vfile}，并在最后一行单独输出: PROCEED 或 DEFER。")
+            short = (f"新的决策请求:\n{errors_text}\n【交付】把完整决定写入 "
+                     f"{Path(session_cwd) / vfile}，最后一行单独输出: PROCEED 或 DEFER。")
         else:
             vfile = "afk-l2-verdict.txt"
             full = L2_PROMPT_TMPL.format(sid=driver.session_id, scwd=session_cwd,
@@ -758,14 +778,18 @@ def l2_dispatch(l2_cmd, args, proxy, run_dir, driver, session_cwd, n,
                                          err_tail=err_tail or "(无)", n=n)
             full += (f"\n【交付】把最终决议(单独一词: FIXED/NEW_SESSION/UNFIXABLE)"
                      f"写入文件: {Path(session_cwd) / vfile}。")
+            short = (f"新的故障情况:\n{errors_text}\nstderr尾部:\n{err_tail or '(无)'}\n"
+                     f"【交付】把最终决议(FIXED/NEW_SESSION/UNFIXABLE)写入 "
+                     f"{Path(session_cwd) / vfile}。")
         project_id = args.l2_project_id or None
         if not project_id:
             csrf, ports, agexe = discover_antigravity_bridge()
             if csrf and ports:
                 project_id = discover_antigravity_project_id(agexe, csrf, ports)
                 log(f"L2        项目id自动发现: {project_id or '失败'}")
-        return run_l2_antigravity(run_dir, full, n, session_cwd, vfile,
-                                  project_id, model=args.l2_model)
+        return run_l2_antigravity(run_dir, full, short, n, session_cwd, vfile,
+                                  conv_holder=driver, project_id=project_id,
+                                  model=args.l2_model)
     if kind == "interaction":
         prompt = L2_INTERACT_TMPL.format(sid=driver.session_id,
                                          scwd=session_cwd, question=errors_text)
