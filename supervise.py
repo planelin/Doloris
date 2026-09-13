@@ -27,6 +27,7 @@ import argparse
 import json
 import os
 import re
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -230,6 +231,7 @@ class ClaudeDriver:
             ["cmd.exe", "/c", "claude", *args],
             cwd=str(self.cwd), env=env,
             stdin=open(stdin_path, "rb"), stdout=out, stderr=err,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
         )
         return self.proc
 
@@ -262,6 +264,37 @@ class ClaudeDriver:
         if self.jsonl.exists():
             return time.time() - self.jsonl.stat().st_mtime
         return time.time() - launched_at  # 日志还没出现, 从启动算起
+
+    def interrupt(self):
+        """优雅中断: CTRL_BREAK 到独立进程组, claude 自行收尾当前操作。"""
+        if self.proc and self.proc.poll() is None:
+            try:
+                os.kill(self.proc.pid, signal.CTRL_BREAK_EVENT)
+                return True
+            except Exception:
+                return False
+        return False
+
+    def wait_exit(self, timeout=15):
+        try:
+            self.proc.wait(timeout=timeout)
+            return True
+        except subprocess.TimeoutExpired:
+            return False
+
+    def rollout_size(self):
+        try:
+            return self.jsonl.stat().st_size if self.jsonl.exists() else None
+        except OSError:
+            return None
+
+    def rollout_since(self, offset):
+        try:
+            with open(self.jsonl, "rb") as f:
+                f.seek(offset)
+                return f.read().decode("utf-8", errors="replace")
+        except OSError:
+            return ""
 
 
 CODEX_SESSIONS = HOME / ".codex" / "sessions"
@@ -360,6 +393,31 @@ def close_codex_app():
             killed.append(img)
     time.sleep(2)
     return killed
+
+
+def safe_kill(driver, max_wait=30):
+    """无害击杀三段式:
+    ① 等rollout新追加部分出现 压缩/回合完成 标记(≤max_wait) = 原子操作边界
+    ② CTRL_BREAK 优雅中断(独立进程组), codex/claude自行收尾当前工具
+    ③ 硬杀兜底。返回实际方式: boundary / graceful / hard。"""
+    base = driver.rollout_size() if hasattr(driver, "rollout_size") else None
+    deadline = time.time() + max_wait
+    while base is not None and time.time() < deadline:
+        fresh = driver.rollout_since(base)
+        if fresh and any(m in fresh for m in
+                         ("compacted", "compact", "task_complete", "summar")):
+            driver.interrupt()
+            if driver.wait_exit(12):
+                driver.kill_tree()
+                return "boundary"
+            driver.kill_tree()
+            return "boundary+hard"
+        time.sleep(2)
+    if driver.interrupt() and driver.wait_exit(15):
+        driver.kill_tree()
+        return "graceful"
+    driver.kill_tree()
+    return "hard"
 
 
 def find_last_codex_session(cwd=None):
@@ -676,6 +734,7 @@ class CodexDriver:
             ["cmd.exe", "/c", "codex", *args],
             cwd=str(self.cwd), stdin=open(stdin_path, "rb"),
             stdout=out, stderr=err,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
         )
 
     def _common(self):
@@ -736,6 +795,39 @@ class CodexDriver:
         if self.jsonl and self.jsonl.exists():
             return time.time() - self.jsonl.stat().st_mtime
         return time.time() - launched_at  # rollout 未出现, 从启动算起
+
+    def interrupt(self):
+        """优雅中断: CTRL_BREAK 到独立进程组, codex 自行收尾当前操作。"""
+        if self.proc and self.proc.poll() is None:
+            try:
+                os.kill(self.proc.pid, signal.CTRL_BREAK_EVENT)
+                return True
+            except Exception:
+                return False
+        return False
+
+    def wait_exit(self, timeout=15):
+        try:
+            self.proc.wait(timeout=timeout)
+            return True
+        except subprocess.TimeoutExpired:
+            return False
+
+    def rollout_size(self):
+        try:
+            return self.jsonl.stat().st_size if (self.jsonl and self.jsonl.exists()) else None
+        except OSError:
+            return None
+
+    def rollout_since(self, offset):
+        if not (self.jsonl and self.jsonl.exists()):
+            return ""
+        try:
+            with open(self.jsonl, "rb") as f:
+                f.seek(offset)
+                return f.read().decode("utf-8", errors="replace")
+        except OSError:
+            return ""
 
 
 # ---------------------------------------------------------------- 验收
@@ -1032,8 +1124,8 @@ def main():
         if chaos and not chaos_fired and alive:
             if chaos[0] == "kill" and worker_runtime >= chaos[1]:
                 chaos_fired = True
-                ivl("CHAOS_KILL", at_sec=worker_runtime)
-                driver.kill_tree()
+                method = safe_kill(driver)
+                ivl("CHAOS_KILL", at_sec=worker_runtime, method=method)
             elif chaos[0] == "net" and worker_runtime >= chaos[1]:
                 chaos_fired = True
                 adapter = find_connected_adapter()
@@ -1072,8 +1164,8 @@ def main():
         if alive and hb > stale_cap:
             total_kills += 1
             fails_on_provider += 1
-            ivl("DETECT_HANG", stale_sec=round(hb), cap=stale_cap, action="kill")
-            driver.kill_tree()
+            method = safe_kill(driver)
+            ivl("DETECT_HANG", stale_sec=round(hb), cap=stale_cap, kill=method)
             outcome, outcome_detail = "hang", f"心跳停跳{round(hb)}s"
         elif not alive:
             rc = driver.proc.returncode
