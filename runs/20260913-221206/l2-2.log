@@ -1,0 +1,18 @@
+--- port 61467 ---
+{
+  "response": {},
+  "error": "failed to fetch available models: rpc error: code = Unavailable desc = connection error: desc = \"error reading server preface: EOF\""
+}
+
+--- port 61468 ---
+{
+  "response": {},
+  "error": "failed to start conversation: rpc error: code = Unknown desc = project_id is required when providing project_env_config (error ID: 199b3bbfdc3c4e27aba2f41bc8ec52cf)"
+}
+
+
+[L2-ANTIGRAVITY-FAIL] {
+  "response": {},
+  "error": "failed to start conversation: rpc error: code = Unknown desc = project_id is required when providing project_env_config (error ID: 199b3bbfdc3c4e27aba2f41bc8ec52cf)"
+}
+

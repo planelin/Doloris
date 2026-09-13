@@ -1,0 +1,9 @@
+任务已全部完成，无剩余工作。
+
+- 完成静态网站基建与 4 个内容页。
+- 按空决策载荷回退，采用**暗色赛博风**和**全部简体中文**。
+- 已生成 `config.json`、`README.md` 并完成全站检查。
+- 所有本地导航及资源链接均可正常解析。
+- `afk-work/PROGRESS.md` 与站点内 `PROGRESS.md` 的清单均已全部勾选。
+
+站点入口：`C:\Agents\zcode\double\afk-work\decisionlab\index.html`

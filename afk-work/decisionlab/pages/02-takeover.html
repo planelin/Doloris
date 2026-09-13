@@ -1,0 +1,90 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN" data-theme="cyber-dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="会话接管：在中断之后安全承接上下文与决策权。">
+  <title>会话接管 | 决策实验站</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <script src="../assets/app.js" defer></script>
+</head>
+<body data-page="takeover">
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+  <header class="site-header">
+    <div class="shell header-inner">
+      <a class="brand" href="../index.html"><span class="brand-mark" aria-hidden="true">D</span><span>决策实验站</span></a>
+      <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav"><span class="nav-toggle-label">导航</span><span class="nav-toggle-icon" aria-hidden="true"></span></button>
+      <nav class="site-nav" id="site-nav" aria-label="主导航">
+        <a href="../index.html">总览</a><a href="01-heartbeat.html">心跳检测</a><a href="02-takeover.html">会话接管</a><a href="03-decision.html">决策代理</a><a href="04-report.html">终态报告</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main-content">
+    <header class="page-hero">
+      <div class="shell">
+        <div>
+          <p class="breadcrumb"><a href="../index.html">总览</a><span>/</span><span>02</span></p>
+          <h1 class="page-title">会话接管</h1>
+        </div>
+        <p class="page-intro">接管不是重新开始，而是在保持事实连续的前提下，把权限、上下文和责任平稳地转移到下一执行者。</p>
+      </div>
+    </header>
+
+    <div class="content-shell shell">
+      <aside class="content-aside">
+        <p>本页内容</p>
+        <nav aria-label="本页目录">
+          <a href="#authority">权限转移</a>
+          <a href="#context">上下文封装</a>
+          <a href="#boundary">边界与冲突</a>
+          <a href="#handback">接管完成标准</a>
+        </nav>
+      </aside>
+
+      <article class="prose">
+        <section class="prose-section" id="authority">
+          <span class="section-number">01 / 权限</span>
+          <h2>先转移权限，再恢复工作</h2>
+          <p>真正的接管包含两件事：新执行者获得继续工作的能力，旧执行者失去产生新副作用的权力。如果只启动替代实例而不限制原实例，就会形成双主写入、重复提交和互相覆盖。因而接管流程必须先确认租约、令牌或写入权已经完成切换，随后才允许新实例执行高风险动作。</p>
+          <p>权限转移还应有明确范围。新执行者可以读取完整历史，但其写入权限可能只覆盖尚未完成的任务；它不应自动获得修改预算、扩大数据范围或代表系统作出不可逆承诺的权力。把“继续执行”与“扩大权限”分开，可以让接管保持可预测。</p>
+          <div class="callout"><p>安全顺序：冻结旧实例新动作 → 验证唯一所有者 → 重建上下文 → 恢复最小范围内的执行。</p></div>
+        </section>
+
+        <section class="prose-section" id="context">
+          <span class="section-number">02 / 上下文</span>
+          <h2>把会话变成可校验的工作包</h2>
+          <p>接管方需要的不是全部聊天记录，而是一份能回答“目标是什么、做到哪里、依据是什么、哪些动作已经发生”的工作包。工作包应包含目标与验收条件、当前计划、最近确认的事实、未完成步骤、已完成副作用、未决问题和原始证据引用。原文可以保留，但摘要必须能独立支撑下一步决策。</p>
+          <p>为了减少摘要偏差，关键状态应带上来源和版本。新执行者可以从证据重新计算一次当前进度，并与继承的摘要比对；两者不一致时，不应急着继续，而应把差异列为接管事件。这样，接管方是在验证上下文，而不是无条件相信一份可能来自失败实例的自述。</p>
+          <h3>最小接管包字段</h3>
+          <ul>
+            <li><strong>目标：</strong>原始需求、成功标准与硬约束。</li>
+            <li><strong>现场：</strong>当前分支、文件版本、外部资源状态与游标。</li>
+            <li><strong>历史：</strong>已执行动作、验证结果和不可撤销副作用。</li>
+            <li><strong>悬念：</strong>尚未验证的假设、冲突信息和需要的决策。</li>
+          </ul>
+        </section>
+
+        <section class="prose-section" id="boundary">
+          <span class="section-number">03 / 边界</span>
+          <h2>用边界处理重叠与冲突</h2>
+          <p>中断发生时，旧执行者可能已经发出请求但没有收到响应，也可能在稍后恢复并继续工作。新执行者不能假设所有动作都已经停止，而应假设存在“在途动作”。对可查询的下游系统，应确认请求是否生效；对不可查询的动作，应使用幂等键、唯一事务标识或补偿步骤避免重复。</p>
+          <p>冲突解决规则应在接管前就写好，而不是临时判断。一般可以让“具备有效租约且状态版本更新”的执行者拥有优先权；无法判定时，则冻结相关写入，保留人工决策入口。边界规则的目的不是制造更多流程，而是防止两个看似合理的本地决定在全球范围内互相矛盾。</p>
+        </section>
+
+        <section class="prose-section" id="handback">
+          <span class="section-number">04 / 交接</span>
+          <h2>什么情况下才算接管完成</h2>
+          <p>接管完成的标志不是新进程成功启动，而是它能够解释现场、执行下一步并验证结果。至少要确认：旧所有者已失效或受限，工作包校验通过，在途动作已经澄清，新执行者拥有最小必要权限，并已经记录一次接管检查点。若其中任一项缺失，系统可以继续读取和分析，但不应进入高风险执行。</p>
+          <p>接管还应留下退出路径。如果新执行者很快发现上下文不完整，它应能把状态安全交回人工、等待外部恢复，或进入只读保护模式。一个可逆的接管流程，比一次追求速度却无法解释后果的抢跑更接近可靠系统。</p>
+          <div class="next-page"><p>下一节点 / 03</p><a href="03-decision.html">决策代理 →</a></div>
+        </section>
+      </article>
+    </div>
+  </main>
+
+  <footer class="site-footer"><div class="shell footer-inner"><p>决策实验站 · 02 会话接管</p><p><a href="../index.html">返回总览</a></p></div></footer>
+</body>
+</html>
+
+

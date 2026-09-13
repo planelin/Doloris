@@ -1,0 +1,90 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN" data-theme="cyber-dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="心跳检测：把沉默、延迟与真正失效区分开来。">
+  <title>心跳检测 | 决策实验站</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <script src="../assets/app.js" defer></script>
+</head>
+<body data-page="heartbeat">
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+  <header class="site-header">
+    <div class="shell header-inner">
+      <a class="brand" href="../index.html"><span class="brand-mark" aria-hidden="true">D</span><span>决策实验站</span></a>
+      <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav"><span class="nav-toggle-label">导航</span><span class="nav-toggle-icon" aria-hidden="true"></span></button>
+      <nav class="site-nav" id="site-nav" aria-label="主导航">
+        <a href="../index.html">总览</a><a href="01-heartbeat.html">心跳检测</a><a href="02-takeover.html">会话接管</a><a href="03-decision.html">决策代理</a><a href="04-report.html">终态报告</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main-content">
+    <header class="page-hero">
+      <div class="shell">
+        <div>
+          <p class="breadcrumb"><a href="../index.html">总览</a><span>/</span><span>01</span></p>
+          <h1 class="page-title">心跳检测</h1>
+        </div>
+        <p class="page-intro">第一层只回答一个问题：系统是否仍然活着？但“活着”不是一个瞬间结论，而是由时间、信号和反证共同组成的判断。</p>
+      </div>
+    </header>
+
+    <div class="content-shell shell">
+      <aside class="content-aside">
+        <p>本页内容</p>
+        <nav aria-label="本页目录">
+          <a href="#signal">信号与存活</a>
+          <a href="#cadence">节拍与阈值</a>
+          <a href="#failure">误判与处置</a>
+          <a href="#protocol">最小响应协议</a>
+        </nav>
+      </aside>
+
+      <article class="prose">
+        <section class="prose-section" id="signal">
+          <span class="section-number">01 / 信号</span>
+          <h2>心跳是一份证据，不是一句口号</h2>
+          <p>心跳检测的起点不是“有没有收到消息”，而是明确每条消息究竟证明了什么。一次定时上报可以证明进程仍在调度，却不一定证明它完成了业务工作；一次任务进度更新可以证明工作仍在推进，却不一定证明服务端可以接收新指令。把不同含义的信号混在一起，会让检测系统看似灵敏，实际却无法支撑可靠决策。</p>
+          <p>一个可用的心跳至少应携带时间戳、实例标识、状态版本和当前阶段。时间戳用于判断新鲜度，实例标识用于避免旧实例冒充新实例，状态版本用于识别乱序消息，当前阶段则让接管方知道工作停在哪里。字段不必很多，但每个字段都应服务于后续动作，而不是仅仅增加日志体积。</p>
+          <div class="callout"><p>关键原则：检测对象应当是“可继续工作的能力”，而不是某个特定进程是否仍在内存中。</p></div>
+        </section>
+
+        <section class="prose-section" id="cadence">
+          <span class="section-number">02 / 节拍</span>
+          <h2>节拍、宽限与阈值必须一起设计</h2>
+          <p>检测频率决定发现问题的速度，宽限窗口决定系统对短暂抖动的容忍度，连续失败阈值决定告警的稳定性。三者不能独立调参：过于频繁的探测会制造网络和调度噪声，过短的单次超时会把正常排队误判为故障，而只依赖连续阈值又可能拖长真正失效的发现时间。合理的做法是先定义可接受的中断时长，再倒推检测周期和宽限时间。</p>
+          <p>不同信号可以采用不同时间尺度。进程级探针适合秒级检查，任务级进展适合分钟级检查，长期价值的交付则需要小时或天级校验。多尺度结果应汇聚成状态机，而不是简单少数服从多数。例如，进程消失是强信号，最新进度停滞是弱信号；前者足以触发保护性接管，后者更适合先观察并询问外部依赖。</p>
+          <h3>建议记录的状态</h3>
+          <ul>
+            <li><strong>活跃：</strong>信号新鲜，工作版本持续推进。</li>
+            <li><strong>降级：</strong>仍有响应，但关键依赖或进度出现异常。</li>
+            <li><strong>沉默：</strong>超过正常节拍，尚未越过接管阈值。</li>
+            <li><strong>失效：</strong>满足明确失效条件，允许进入接管流程。</li>
+          </ul>
+        </section>
+
+        <section class="prose-section" id="failure">
+          <span class="section-number">03 / 失效</span>
+          <h2>优先识别误报和“假活”</h2>
+          <p>最容易处理的故障是完全无响应，最难处理的是系统仍能回话、却已无法完成任务。它可能卡在重试循环，可能持续输出没有进展的日志，也可能以旧状态不断应答。检测逻辑因此不能只看响应码，还应比较进度游标、任务版本和外部副作用。若这些证据长期不变，即使网络连接健康，也应把实例标记为降级或失去工作能力。</p>
+          <p>另一类风险是假阳性。瞬时网络抖动、集中部署、时钟漂移和探测端自身故障，都可能让健康实例被误认为失效。为了降低这种风险，应保留探测端与目标端两侧时间，记录原始样本，并在跨过阈值前触发一次独立复核。复核不是为了让所有告警都等待更久，而是为可能导致不可逆操作的动作增加第二证据。</p>
+        </section>
+
+        <section class="prose-section" id="protocol">
+          <span class="section-number">04 / 协议</span>
+          <h2>从检测结果进入最小响应协议</h2>
+          <p>检测完成时不应直接把“失效”交给接管逻辑，而应输出一个结构化结论：目标实例、最后有效心跳、缺失信号、当前置信度、建议动作和证据链接。这个结论让下一阶段能够判断是否具备接管条件，也能在事后解释为什么系统在当时作出了那个决定。</p>
+          <p>响应协议可以保持最小：第一次异常只记录并观察，第二次异常限制旧实例写入，跨过阈值后冻结其决策权，再进入会话接管。每一步都应可撤销或可审计。心跳检测的价值正在于此：它不是简单宣布死亡，而是用一条受控路径，把不确定的沉默转化为下一步可以安全执行的动作。</p>
+          <div class="next-page"><p>下一节点 / 02</p><a href="02-takeover.html">会话接管 →</a></div>
+        </section>
+      </article>
+    </div>
+  </main>
+
+  <footer class="site-footer"><div class="shell footer-inner"><p>决策实验站 · 01 心跳检测</p><p><a href="../index.html">返回总览</a></p></div></footer>
+</body>
+</html>
+
+

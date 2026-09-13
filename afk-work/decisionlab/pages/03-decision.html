@@ -1,0 +1,90 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN" data-theme="cyber-dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="决策代理：在约束和不确定性中形成可解释的选择。">
+  <title>决策代理 | 决策实验站</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <script src="../assets/app.js" defer></script>
+</head>
+<body data-page="decision">
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+  <header class="site-header">
+    <div class="shell header-inner">
+      <a class="brand" href="../index.html"><span class="brand-mark" aria-hidden="true">D</span><span>决策实验站</span></a>
+      <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav"><span class="nav-toggle-label">导航</span><span class="nav-toggle-icon" aria-hidden="true"></span></button>
+      <nav class="site-nav" id="site-nav" aria-label="主导航">
+        <a href="../index.html">总览</a><a href="01-heartbeat.html">心跳检测</a><a href="02-takeover.html">会话接管</a><a href="03-decision.html">决策代理</a><a href="04-report.html">终态报告</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main-content">
+    <header class="page-hero">
+      <div class="shell">
+        <div>
+          <p class="breadcrumb"><a href="../index.html">总览</a><span>/</span><span>03</span></p>
+          <h1 class="page-title">决策代理</h1>
+        </div>
+        <p class="page-intro">当上下文已经就绪，代理的任务不是显得果断，而是在约束、代价与不确定性中留下可复核的选择路径。</p>
+      </div>
+    </header>
+
+    <div class="content-shell shell">
+      <aside class="content-aside">
+        <p>本页内容</p>
+        <nav aria-label="本页目录">
+          <a href="#frame">问题框架</a>
+          <a href="#compare">方案比较</a>
+          <a href="#uncertainty">不确定性处理</a>
+          <a href="#accountable">可追责执行</a>
+        </nav>
+      </aside>
+
+      <article class="prose">
+        <section class="prose-section" id="frame">
+          <span class="section-number">01 / 框架</span>
+          <h2>先定义决策，再寻找答案</h2>
+          <p>一个可执行的决策问题至少包含目标、约束、时间窗口和失败代价。目标说明希望改变什么，约束排除不可接受的路径，时间窗口决定可以收集多少信息，失败代价决定是否需要人工批准。缺少其中任何一项，代理都可能优化一个错误问题，例如用更低成本完成一项本就不应执行的动作。</p>
+          <p>约束应区分硬约束与软偏好。硬约束是不可越过的安全、法律或授权边界；软偏好用于在多个合格方案之间排序。把预算、速度和可解释性都写成同一种“目标”会让权衡失去意义。更清楚的做法是：先用硬约束筛选可行集合，再按清晰权重比较剩余方案。</p>
+          <div class="callout"><p>决策质量的起点不是答案多聪明，而是问题边界是否真实、完整并且可验证。</p></div>
+        </section>
+
+        <section class="prose-section" id="compare">
+          <span class="section-number">02 / 比较</span>
+          <h2>让方案在相同标尺下竞争</h2>
+          <p>比较方案时，代理应至少保留一个保守选项，例如等待、缩小范围或请求人工判断。只有激进选项会让“继续执行”显得像唯一合理答案。每个方案都应列出预期收益、主要成本、可逆性、依赖条件、失败模式和验证方式，使选择不仅依赖直觉排序，也能在结果偏离时快速定位假设。</p>
+          <p>评分不是装饰。若采用加权模型，应记录权重来源与敏感性：某个指标轻微变化是否就会改变结论？如果答案是肯定的，代理不应把结果包装成确定选择，而应明确这是接近平局的权衡，并把最有影响力的不确定性交给适当的决策者处理。</p>
+          <h3>建议并列比较的维度</h3>
+          <ol>
+            <li><strong>效果：</strong>多大程度满足原始目标与验收条件。</li>
+            <li><strong>风险：</strong>最坏情况、暴露范围和恢复难度。</li>
+            <li><strong>可逆性：</strong>能否撤销、补偿或安全止损。</li>
+            <li><strong>可验证性：</strong>多久能得到支持或否定方案的结果。</li>
+          </ol>
+        </section>
+
+        <section class="prose-section" id="uncertainty">
+          <span class="section-number">03 / 不确定性</span>
+          <h2>把不确定性显式带入选择</h2>
+          <p>代理不应把未知信息悄无声息地填成默认值。无法确认的依赖、可能过期的数据、来自单一来源的判断，都应以置信度或假设形式保留。高影响且低置信度的信息，应触发补证、试验或降级路径；低影响的不确定性则可以记录后继续，以避免分析陷入无休止等待。</p>
+          <p>当证据不足但必须行动时，优先选择可逆、可观察、能产生新信息的步骤。例如先进行限制范围的试点，再根据结果决定是否扩大。这样，代理把执行本身变成学习过程，而不是把所有未知都押在一次不可逆选择上。</p>
+        </section>
+
+        <section class="prose-section" id="accountable">
+          <span class="section-number">04 / 可追责</span>
+          <h2>选择必须能够被解释和承接</h2>
+          <p>最终决策记录应包含选定方案、被排除方案、关键依据、剩余风险、授权人和触发下一步的条件。记录不需要暴露冗长思维过程，但必须足以让另一位执行者理解：为什么此时选择这个动作，什么证据会使这个选择失效，以及谁来处理越过边界的异常。</p>
+          <p>代理的判断权限应与影响范围匹配。低风险、可逆动作可以自动执行；高风险、不可逆或超出授权范围的动作应提出建议并等待确认。通过把“建议”“执行”“批准”分开，系统可以在保持效率的同时让责任链条清晰可追踪。</p>
+          <div class="next-page"><p>下一节点 / 04</p><a href="04-report.html">终态报告 →</a></div>
+        </section>
+      </article>
+    </div>
+  </main>
+
+  <footer class="site-footer"><div class="shell footer-inner"><p>决策实验站 · 03 决策代理</p><p><a href="../index.html">返回总览</a></p></div></footer>
+</body>
+</html>
+
+

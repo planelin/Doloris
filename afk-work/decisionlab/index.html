@@ -1,0 +1,105 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN" data-theme="cyber-dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="决策实验站：观察心跳、接管、决策代理与终态报告。">
+  <title>决策实验站</title>
+  <link rel="stylesheet" href="assets/style.css">
+  <script src="assets/app.js" defer></script>
+</head>
+<body data-page="home">
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+  <header class="site-header">
+    <div class="shell header-inner">
+      <a class="brand" href="index.html" aria-label="决策实验站首页">
+        <span class="brand-mark" aria-hidden="true">D</span>
+        <span>决策实验站</span>
+      </a>
+      <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav">
+        <span class="nav-toggle-label">导航</span>
+        <span class="nav-toggle-icon" aria-hidden="true"></span>
+      </button>
+      <nav class="site-nav" id="site-nav" aria-label="主导航">
+        <a href="index.html">总览</a>
+        <a href="pages/01-heartbeat.html">心跳检测</a>
+        <a href="pages/02-takeover.html">会话接管</a>
+        <a href="pages/03-decision.html">决策代理</a>
+        <a href="pages/04-report.html">终态报告</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main-content">
+    <section class="hero shell">
+      <p class="eyebrow">决策系统实验 / 01—04</p>
+      <h1>把一次中断，<br><em>转化为可验证的决策链。</em></h1>
+      <p class="hero-copy">决策实验站以四个连续观察点，拆解自主系统从“仍在运行”到“给出结论”的全过程。每一页对应一个可单独检查、组合阅读的决策层。</p>
+      <div class="hero-actions">
+        <a class="button button-primary" href="pages/01-heartbeat.html">从心跳开始</a>
+        <a class="button button-quiet" href="#experiments">查看实验路径</a>
+      </div>
+      <dl class="hero-stats" aria-label="实验站概览">
+        <div><dt>04</dt><dd>观察节点</dd></div>
+        <div><dt>01</dt><dd>连续决策链</dd></div>
+        <div><dt>100%</dt><dd>静态可复现</dd></div>
+      </dl>
+    </section>
+
+    <section class="section shell" id="experiments">
+      <div class="section-heading">
+        <p class="eyebrow">实验路径</p>
+        <h2>四条实验路径</h2>
+        <p>从状态存活判断出发，依次处理接管、行动选择与最终归档。建议按顺序阅读，也可把每页当作独立检查表使用。</p>
+      </div>
+      <div class="card-grid">
+        <article class="experiment-card">
+          <span class="card-index">01</span>
+          <h3><a href="pages/01-heartbeat.html">心跳检测</a></h3>
+          <p>判断系统是否仍保持可观测活性，并区分沉默、延迟与真正失效。</p>
+          <a class="text-link" href="pages/01-heartbeat.html">进入实验 <span aria-hidden="true">→</span></a>
+        </article>
+        <article class="experiment-card">
+          <span class="card-index">02</span>
+          <h3><a href="pages/02-takeover.html">会话接管</a></h3>
+          <p>在中断之后安全承接上下文，明确谁能继续、从哪里继续以及边界在哪里。</p>
+          <a class="text-link" href="pages/02-takeover.html">进入实验 <span aria-hidden="true">→</span></a>
+        </article>
+        <article class="experiment-card">
+          <span class="card-index">03</span>
+          <h3><a href="pages/03-decision.html">决策代理</a></h3>
+          <p>让代理在约束中比较方案，保留依据，并把不确定性显式带入选择过程。</p>
+          <a class="text-link" href="pages/03-decision.html">进入实验 <span aria-hidden="true">→</span></a>
+        </article>
+        <article class="experiment-card">
+          <span class="card-index">04</span>
+          <h3><a href="pages/04-report.html">终态报告</a></h3>
+          <p>汇总结果、证据和未决事项，形成可复核、可交接的最终状态快照。</p>
+          <a class="text-link" href="pages/04-report.html">进入实验 <span aria-hidden="true">→</span></a>
+        </article>
+      </div>
+    </section>
+
+    <section class="principles shell" aria-labelledby="principles-title">
+      <div>
+        <p class="eyebrow">运行原则</p>
+        <h2 id="principles-title">可观测优先于想当然</h2>
+      </div>
+      <ul class="principle-list">
+        <li><span>01</span><p>先描述信号，再解释信号。</p></li>
+        <li><span>02</span><p>先固定接管边界，再恢复执行。</p></li>
+        <li><span>03</span><p>先记录决策依据，再交付结论。</p></li>
+      </ul>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="shell footer-inner">
+      <p>决策实验站 · 纯静态演示</p>
+      <p><a href="pages/04-report.html">查看终态报告路径</a></p>
+    </div>
+  </footer>
+</body>
+</html>
+
+

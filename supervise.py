@@ -390,14 +390,27 @@ def list_recent_codex_sessions(n=5):
 
 
 def close_codex_app():
-    """强制结束 Codex 桌面App进程族, 单写者锁随进程消亡。
+    """结束 Codex 桌面App进程族, 单写者锁随进程消亡。
+    两段式: ①不带/F的taskkill = 发WM_CLOSE, App有机会干净停止正在运行的任务
+    ②8秒不退(或托盘化)再/F强杀残余。
     仅允许在【尚无我方worker】的接管准备阶段调用。"""
     killed = []
+    for img in ("ChatGPT.exe", "codex.exe"):
+        subprocess.run(["taskkill", "/IM", img], capture_output=True)  # 礼貌关闭
+    deadline = time.time() + 8
+    while time.time() < deadline:
+        r = subprocess.run(["tasklist", "/FO", "CSV", "/NH"],
+                           capture_output=True, timeout=15)
+        alive = ("chatgpt" in r.stdout.decode("gbk", errors="replace").lower()
+                 or "codex" in r.stdout.decode("gbk", errors="replace").lower())
+        if not alive:
+            break
+        time.sleep(1)
     for img in ("ChatGPT.exe", "codex.exe"):
         r = subprocess.run(["taskkill", "/IM", img, "/F"], capture_output=True)
         if r.returncode == 0:
             killed.append(img)
-    time.sleep(2)
+    time.sleep(1)
     return killed
 
 

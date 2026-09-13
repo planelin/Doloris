@@ -1,0 +1,90 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN" data-theme="cyber-dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="终态报告：形成可复核、可交接的最终状态快照。">
+  <title>终态报告 | 决策实验站</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <script src="../assets/app.js" defer></script>
+</head>
+<body data-page="report">
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+  <header class="site-header">
+    <div class="shell header-inner">
+      <a class="brand" href="../index.html"><span class="brand-mark" aria-hidden="true">D</span><span>决策实验站</span></a>
+      <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav"><span class="nav-toggle-label">导航</span><span class="nav-toggle-icon" aria-hidden="true"></span></button>
+      <nav class="site-nav" id="site-nav" aria-label="主导航">
+        <a href="../index.html">总览</a><a href="01-heartbeat.html">心跳检测</a><a href="02-takeover.html">会话接管</a><a href="03-decision.html">决策代理</a><a href="04-report.html">终态报告</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main-content">
+    <header class="page-hero">
+      <div class="shell">
+        <div>
+          <p class="breadcrumb"><a href="../index.html">总览</a><span>/</span><span>04</span></p>
+          <h1 class="page-title">终态报告</h1>
+        </div>
+        <p class="page-intro">终态报告不是工作流水账，而是一份能让下一位执行者快速确认结果、证据和责任边界的状态快照。</p>
+      </div>
+    </header>
+
+    <div class="content-shell shell">
+      <aside class="content-aside">
+        <p>本页内容</p>
+        <nav aria-label="本页目录">
+          <a href="#contract">报告契约</a>
+          <a href="#evidence">结果与证据</a>
+          <a href="#open">未决事项</a>
+          <a href="#archive">封存与验证</a>
+        </nav>
+      </aside>
+
+      <article class="prose">
+        <section class="prose-section" id="contract">
+          <span class="section-number">01 / 契约</span>
+          <h2>先定义读者要完成什么</h2>
+          <p>报告的第一读者不是归档系统，而是需要继续决策的人。他可能要知道任务是否完成、哪些结果可信、哪些动作仍有风险、下一步是否需要批准。因此报告应首先给出结论摘要，再按证据展开，而不是按时间顺序复述所有操作。读者应在短时间内回答“现在处于什么状态”，然后才进入细节核查。</p>
+          <p>一份合格的终态报告需要明确范围和截止时间。它覆盖哪些目标，不覆盖哪些目标，使用了截至哪个版本的证据，之后发生的变化不由本报告负责。清晰边界可以避免“报告完成”被误解为“所有问题都已解决”，也能让后续更新拥有可靠基线。</p>
+          <div class="callout"><p>报告的目标不是让过程显得忙碌，而是让结果、依据与剩余风险在一个页面内可检查。</p></div>
+        </section>
+
+        <section class="prose-section" id="evidence">
+          <span class="section-number">02 / 证据</span>
+          <h2>结论必须与证据一一对应</h2>
+          <p>每个完成声明都应有可定位的证据：测试结果、文件版本、运行记录、外部确认或人工验收。证据引用应说明它证明了什么，而不是只贴一个链接。多条证据可以支持同一结论，但报告不应把相关当成因果，也不应把一次成功运行扩大成长期稳定性的证明。</p>
+          <p>对于未达成的目标，应区分三类情况：已经失败、尚未验证、由于约束主动放弃。三者的后续动作完全不同。失败需要复现和分析，未验证需要补充检查，主动放弃需要记录权衡依据。把它们统一写成“未完成”会丢失最有价值的信息。</p>
+          <h3>建议的报告骨架</h3>
+          <ul>
+            <li><strong>状态：</strong>完成、部分完成、阻塞或取消。</li>
+            <li><strong>结果：</strong>相较原始验收条件发生了什么变化。</li>
+            <li><strong>证据：</strong>支持每个结果的来源、版本和验证时间。</li>
+            <li><strong>风险：</strong>尚未消除的影响与触发条件。</li>
+          </ul>
+        </section>
+
+        <section class="prose-section" id="open">
+          <span class="section-number">03 / 未决事项</span>
+          <h2>未决事项要有所有者和下一步</h2>
+          <p>未决事项不是模糊的“后续关注”，而应包含问题描述、当前影响、需要谁决策、可接受的选项以及建议的复查时间。若事项依赖外部组织，应明确等待对象和超时后的降级方案。没有所有者和触发条件的风险，往往会从报告中消失，直到再次变成事故。</p>
+          <p>报告还应记录被否决的方案及原因。它们能帮助后来者避免重复尝试，也能说明当时的决策不是遗漏。当环境变化后，原本不成立的方案可能重新变得可行，因此记录否决理由比单纯留下一句“未采用”更有长期价值。</p>
+        </section>
+
+        <section class="prose-section" id="archive">
+          <span class="section-number">04 / 归档</span>
+          <h2>让快照可复现、可校验、可接续</h2>
+          <p>终态报告应与具体版本绑定，并保留生成时间、输入来源和校验方式。对于代码或配置，记录提交标识或内容摘要；对于运行结果，记录环境与参数；对于人工判断，记录确认者与确认时间。这样，当引用材料发生变化时，仍能判断旧结论是否仍适用。</p>
+          <p>封存并不意味着停止更新，而是建立一个不再被静默修改的基线。后续修订应以新版本追加，并明确改变了什么、为什么改变以及旧版本何时失效。完成这一步后，决策链才真正闭合：心跳给出存活证据，接管恢复连续性，代理形成选择，而终态报告把结果交给下一位行动者。</p>
+          <div class="next-page"><p>实验路径完成 / 返回</p><a href="../index.html">返回总览 →</a></div>
+        </section>
+      </article>
+    </div>
+  </main>
+
+  <footer class="site-footer"><div class="shell footer-inner"><p>决策实验站 · 04 终态报告</p><p><a href="../index.html">返回总览</a></p></div></footer>
+</body>
+</html>
+
+
