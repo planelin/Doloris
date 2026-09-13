@@ -733,7 +733,7 @@ def main():
                     except (EOFError, OSError):
                         raw = ""
                     pick = int(raw) if raw.isdigit() and 1 <= int(raw) <= len(cands) else 1
-                sid, rollout, scwd = cands[pick - 1][1], cands[pick - 1][2], cands[pick - 1][3]
+                sid, rollout, scwd, _, _ = cands[pick - 1]
                 if scwd and scwd != str(WS):
                     log(f"WARN    接管会话 cwd={scwd} (非{WS}), 验收锚点随之转移")
             else:
