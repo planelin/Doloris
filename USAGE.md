@@ -49,7 +49,11 @@ codex 完全独立的通道：agentrouter+系统代理）做最后一次诊断�
   备选端点与key，绕开故障路由）；判定 `NEW_SESSION`（上下文污染，记录后继续）；
   判定 `UNFIXABLE`（基础设施故障 → 诚实FAILED）
 - L2 修复后追加 4 次续跑预算；最多升级 `--l2-max`（默认2）次
-- 换agent：装好 antigravity CLI 后 `--l2-cmd "agy"`；禁用L2：`--l2-cmd off`
+- **Antigravity 通道**：`--l2-cmd antigravity`——经 `language_server.exe agentapi` 桥创建
+  修复会话（桥接三件套自动动态发现：CSRF取自App日志最新spawn行、网关端口取自
+  language_server监听端口、项目id默认取最近会话元数据，可 `--l2-project-id` 指定）。
+  异步执行+轮询verdict文件（agent把决议写入项目目录`afk-l2-verdict.txt`）
+- 默认：`--l2-cmd claude`；禁用L2：`--l2-cmd off`
 - 每次L2的提示词与回复完整留档：`runs/<最新>/l2-N-prompt.txt` / `l2-N.log`
 
 ## 写一个任务（两个文件）

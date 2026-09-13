@@ -434,6 +434,131 @@ def net_enable(adapter):
                    capture_output=True, timeout=15)
 
 
+# ------------------------------------------------- L2-antigravity 桥接通路
+ANTIGRAVITY_PROMPT_TMPL = """你是监管系统的L2诊断修复agent(独立于故障的codex中转通道)。
+
+背景: 一个 codex CLI 无头 worker 在接管会话 {sid} (cwd={scwd}) 中反复失败,
+L1看门狗已耗尽预算。最近错误:
+{errors}
+
+worker stderr 尾部:
+{err_tail}
+
+可用修复动作(你有文件与命令权限, 直接执行):
+1. 中转层修复: 读写 ~/.codex/config.toml 与 auth 配置, 可从 ~/.cc-switch/cc-switch.db
+   (只读) 的 providers/provider_endpoints 表读取备选端点与key, 改写配置绕开故障路由
+2. 若判断为会话上下文污染: 决议输出 NEW_SESSION
+3. 若判断为基础设施故障且无可为: 决议输出 UNFIXABLE 并附一句原因
+约束: 不要动 ~/.codex/sessions/ 下的会话轨迹; 改配置前先复制原文件为 *.bak_{n}。
+
+【重要】完成全部工作后, 你必须把最终决议(单独一个词: FIXED 或 NEW_SESSION 或
+UNFIXABLE)写入这个文件: {verdict_file}
+"""
+
+
+def discover_antigravity_bridge():
+    """动态发现Antigravity桥: csrf(App日志最新spawn行) + LS网关端口(netstat)。"""
+    csrf = None
+    logf = Path(os.environ.get("APPDATA", "")) / "Antigravity" / "logs" / "main.log"
+    if logf.exists():
+        toks = re.findall(r"--csrf_token ([0-9a-f-]{36})",
+                          logf.read_text(encoding="utf-8", errors="replace"))
+        csrf = toks[-1] if toks else None
+    r = subprocess.run(["powershell", "-NoProfile", "-Command",
+                        "(Get-Process language_server -ErrorAction SilentlyContinue).Id"],
+                       capture_output=True, text=True, timeout=25)
+    pids = [int(x) for x in (r.stdout or "").split() if x.isdigit()]
+    ports = []
+    if pids:
+        r2 = subprocess.run(["netstat", "-ano"], capture_output=True,
+                            text=True, timeout=25)
+        for line in (r2.stdout or "").splitlines():
+            if "LISTENING" in line and "127.0.0.1" in line and any(
+                    line.rstrip().endswith(str(pid)) for pid in pids):
+                port = line.split()[1].rsplit(":", 1)[-1]
+                if port not in ports:
+                    ports.append(port)
+    agexe = (Path(os.environ.get("LOCALAPPDATA", "")) /
+             "Programs/antigravity/resources/bin/language_server.exe")
+    return csrf, ports, agexe
+
+
+def discover_antigravity_project_id(agexe, csrf, ports):
+    """取最近一个会话元数据里的 projectId (App每次运行随机换端口/CSRF, 项目较稳定)。"""
+    conv_dir = HOME / ".gemini" / "antigravity" / "conversations"
+    if not conv_dir.exists():
+        return None
+    dbs = sorted(conv_dir.glob("*.db"), key=lambda x: x.stat().st_mtime, reverse=True)
+    for port in ports:
+        env = dict(os.environ)
+        env["ANTIGRAVITY_CSRF_TOKEN"] = csrf
+        env["ANTIGRAVITY_LS_ADDRESS"] = f"127.0.0.1:{port}"
+        for db in dbs[:3]:
+            try:
+                r = subprocess.run(
+                    [str(agexe), "agentapi", "get-conversation-metadata",
+                     db.stem], capture_output=True, timeout=60, env=env,
+                    cwd=str(WS))
+                m = re.search(r'"projectId"\s*:\s*"([0-9a-f-]{36})"',
+                              (r.stdout or b"").decode("utf-8", errors="replace"))
+                if m:
+                    return m.group(1)
+            except Exception:
+                continue
+    return None
+
+
+def run_l2_antigravity(run_dir, prompt, n, scwd, project_id, timeout_sec=1800):
+    """经agentapi桥创建Antigravity修复会话(异步), 轮询verdict文件回收决议。"""
+    verdict_file = Path(scwd) / "afk-l2-verdict.txt"
+    full_prompt = L2_PROMPT_TMPL.format(
+        sid="(见会话历史)", scwd=scwd, errors=prompt, err_tail="(同上)", n=n
+    ) + f"\n【交付】把最终决议写入文件: {verdict_file}\n"
+    full_prompt = full_prompt.replace("\n", " | ")
+    log_path = run_dir / f"l2-{n}.log"
+    csrf, ports, agexe = discover_antigravity_bridge()
+    if not csrf or not ports or not agexe.exists():
+        with open(log_path, "wb") as f:
+            f.write("NO-BRIDGE: 未发现运行中的Antigravity language_server".encode("utf-8"))
+        return "NO-BRIDGE", "NO-BRIDGE", log_path
+    verdict_file.parent.mkdir(parents=True, exist_ok=True)
+    if verdict_file.exists():
+        verdict_file.unlink()
+    last_err = ""
+    for port in ports:
+        env = dict(os.environ)
+        env["ANTIGRAVITY_CSRF_TOKEN"] = csrf
+        env["ANTIGRAVITY_LS_ADDRESS"] = f"127.0.0.1:{port}"
+        if project_id:
+            env["ANTIGRAVITY_PROJECT_ID"] = project_id
+        try:
+            r = subprocess.run(
+                [str(agexe), "agentapi", "new-conversation",
+                 "--model=pro", full_prompt],
+                capture_output=True, timeout=120, env=env, cwd=str(WS))
+        except subprocess.TimeoutExpired:
+            last_err = "new-conversation超时"
+            continue
+        out = (r.stdout or b"").decode("utf-8", errors="replace")
+        with open(log_path, "ab") as f:
+            f.write(f"--- port {port} ---\n{out}\n".encode("utf-8", errors="replace"))
+        if '"error"' in out:
+            last_err = out[:300]
+            continue
+        deadline = time.time() + timeout_sec
+        while time.time() < deadline:
+            time.sleep(20)
+            if verdict_file.exists():
+                v = verdict_file.read_text(encoding="utf-8", errors="replace").strip()
+                verdict = v.split()[-1] if v else "NO-VERDICT"
+                return verdict, v, log_path
+        last_err = "verdict文件超时未出现"
+        break
+    with open(log_path, "ab") as f:
+        f.write(f"\n[L2-ANTIGRAVITY-FAIL] {last_err}\n".encode("utf-8", errors="replace"))
+    return "NO-VERDICT", last_err, log_path
+
+
 # ---------------------------------------------------------------- L2 升级agent
 L2_PROMPT_TMPL = """你是监管系统的L2诊断修复agent, 运行在稳定通道上(与故障的codex中转无关)。
 
@@ -702,6 +827,8 @@ def main():
     ap.add_argument("--l2-cmd", default="claude",
                     help="L2升级agent的无头命令(默认claude, 走独立通道); off=禁用L2")
     ap.add_argument("--l2-max", type=int, default=2, help="L2升级次数上限")
+    ap.add_argument("--l2-project-id", default="",
+                    help="antigravity L2的项目id; 留空则自动从最近会话元数据发现")
     args = ap.parse_args()
 
     if args.driver is None:
@@ -1062,13 +1189,18 @@ def main():
                         f"{r.get('err', r.get('patterns', r.get('reason', '')))}"
                         for r in sigs[-8:])
                     ivl("L2_ESCALATE", agent=l2_cmd, call=l2_calls)
-                    verdict, text, l2_log = run_l2_agent(
-                        l2_cmd, run_dir,
-                        L2_PROMPT_TMPL.format(
-                            sid=driver.session_id, scwd=session_cwd,
-                            errors=errors or "(无)", err_tail=err_tail or "(无)",
-                            n=l2_calls),
-                        l2_calls, proxy)
+                    if l2_cmd.lower() in ("antigravity", "agy"):
+                        verdict, text, l2_log = run_l2_antigravity(
+                            run_dir, errors, l2_calls, session_cwd,
+                            args.l2_project_id or None)
+                    else:
+                        verdict, text, l2_log = run_l2_agent(
+                            l2_cmd, run_dir,
+                            L2_PROMPT_TMPL.format(
+                                sid=driver.session_id, scwd=session_cwd,
+                                errors=errors or "(无)",
+                                err_tail=err_tail or "(无)", n=l2_calls),
+                            l2_calls, proxy)
                     ivl("L2_RESULT", verdict=verdict, log=str(l2_log.name))
                     if verdict == "UNFIXABLE":
                         ivl("TERMINAL", state="FAILED",
