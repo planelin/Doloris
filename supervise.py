@@ -265,6 +265,7 @@ class ClaudeDriver:
 
 
 CODEX_SESSIONS = HOME / ".codex" / "sessions"
+CODEX_LOCKS = HOME / ".codex" / "thread-writer-locks"
 
 
 def _json_str(s: str) -> str:
@@ -793,15 +794,20 @@ def main():
             if ok:
                 outcome, outcome_detail = "success", "验收通过(免唤醒): " + detail
 
-        # --- busy 耐心通道: 等人关闭原界面, 20秒一试, 不占续跑预算 ---
+        # --- busy 耐心通道: 轮询锁文件(锁在=App开着, 不spawn注定失败的进程) ---
         if outcome == "busy":
             if args.max_run_sec > 0 and time.time() - run_started_at > args.max_run_sec:
                 ivl("TERMINAL", state="FAILED",
                     detail=f"会话始终被占用(耐心等待{busy_waits}次)")
                 break
-            ivl("BUSY_WAIT", wait_sec=20, n=busy_waits + 1)
-            time.sleep(20)
-            busy_waits += 1
+            lockf = CODEX_LOCKS / f"{driver.session_id}.lock"
+            if lockf.exists():
+                if busy_waits % 3 == 0:  # 锁仍在; 每3轮记一条防刷屏
+                    ivl("BUSY_WAIT", wait_sec=20, n=busy_waits + 1, lock="held")
+                busy_waits += 1
+                time.sleep(20)
+                continue
+            ivl("BUSY_TAKEOVER", lock="released")
             driver.resume(resume_path)
             ivl("RESUMED_BUSY", pid=driver.proc.pid, provider=driver.provider_name)
             launched_at = time.time()
