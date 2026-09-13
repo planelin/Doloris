@@ -49,7 +49,10 @@ ERROR_PATTERNS = [
 ]
 
 BACKOFFS = [15, 45, 90, 120, 120, 120, 120, 120]  # 秒, resume 之间
-STALE_LIMITS = [150, 300, 450]                     # 按总击杀次数取值, 尾部封顶
+STALE_LIMITS = [600, 1200, 1800]                   # 按总击杀次数取值, 尾部封顶
+# ↑ 600/1200/1800: mujica4实弹教训——大上下文会话的单次生成/长命令轻松超过5分钟,
+#   150s阈值导致4次误杀健康worker(17:54-18:30连续DETECT_HANG)。真死relay时
+#   codex自会在~4分钟内自行退出(crash路径), 挂死击杀只是最后手段, 阈值必须宽
 FAILS_BEFORE_SWITCH = 2                            # 同供应商连续死亡次数→换端点
 
 QUICK_PROMPT = """你被监管系统接管(原会话中断, 现在无头续跑)。
@@ -633,8 +636,11 @@ worker stderr 尾部:
 可用修复动作(直接执行, 你有文件与命令权限):
 1. 中转层修复: 读写 ~/.codex/config.toml 与 auth 配置, 可从 ~/.cc-switch/cc-switch.db
    (只读) 的 providers/provider_endpoints 表读取备选端点与key, 直接改写配置绕过故障路由
-2. 若判断为会话上下文污染: 在最终回复中单独一行输出 NEW_SESSION
-3. 若判断为基础设施故障且无可为: 输出 UNFIXABLE 并附一句原因
+2. 沙箱修复(已知坑): worker可能以只读沙箱被无头resume(桌面创建的会话继承此设置),
+   表现为"无法写入任何文件/系统强制只读", 修复 = 将 ~/.codex/config.toml 的
+   sandbox_mode 改为 workspace-write
+3. 若判断为会话上下文污染: 在最终回复中单独一行输出 NEW_SESSION
+4. 若判断为基础设施故障且无可为: 输出 UNFIXABLE 并附一句原因
 
 约束: 不要动 ~/.codex/sessions/ 下的会话轨迹文件; 修改配置前把原文件复制为 *.bak_{n}。
 完成后, 在最终回复的最后一行单独输出决议: FIXED 或 NEW_SESSION 或 UNFIXABLE。
@@ -677,6 +683,18 @@ def run_l2_agent(l2_cmd, run_dir, prompt, n, proxy):
             verdict = line.split()[-1]
             break
     return verdict, text, log_path
+
+
+def l2_dispatch(l2_cmd, args, proxy, run_dir, driver, session_cwd, n,
+                outcome_detail, errors_text, err_tail):
+    """按通道路由调用L2 agent, 返回 (verdict, text, log_path)。"""
+    if l2_cmd.lower() in ("antigravity", "agy"):
+        return run_l2_antigravity(run_dir, errors_text, n, session_cwd,
+                                  args.l2_project_id or None, model=args.l2_model)
+    prompt = L2_PROMPT_TMPL.format(sid=driver.session_id, scwd=session_cwd,
+                                   errors=errors_text,
+                                   err_tail=err_tail or "(无)", n=n)
+    return run_l2_agent(l2_cmd, run_dir, prompt, n, proxy)
 
 
 def wait_session_quiet(rollout: Path, quiet_sec=15, max_wait=90):
@@ -750,8 +768,11 @@ class CodexDriver:
         if not self.session_id:
             raise RuntimeError("resume 前必须先发现 session_id")
         self.jsonl = None  # resume 可能新建 rollout, 重新发现
-        # 注意: resume 子命令不认 -C/-s (继承原会话的cwd与沙箱), 只认这些:
+        # resume 不认 -C/-s(继承原会话的cwd与沙箱——桌面创建的会话常是只读沙箱!),
+        # 但接受 -c 配置覆盖: 必须显式改写为可写, 否则worker无法落盘任何产物
         self._spawn_once(["exec", "resume", self.session_id,
+                          "-c", "sandbox_mode=workspace-write",
+                          "-c", "approval_policy=never",
                           "--skip-git-repo-check", "--json",
                           "-o", str(self.last_msg), "-"], prompt_path)
         log(f"RESUME  codex session={self.session_id[:8]}")
@@ -1253,9 +1274,41 @@ def main():
             break
         if outcome in ("crash", "hang", "early_exit"):
             if outcome == "early_exit" and early_exits >= 2:
+                if l2_cmd and l2_calls < args.l2_max:
+                    l2_calls += 1
+                    last_msg = ""
+                    try:
+                        lm = run_dir / "codex-last-message.txt"
+                        if lm.exists():
+                            last_msg = lm.read_text(encoding="utf-8",
+                                                    errors="replace")[-600:]
+                    except OSError:
+                        pass
+                    ivl("L2_ESCALATE", agent=l2_cmd, call=l2_calls,
+                        kind="contradiction")
+                    verdict, text, l2_log = l2_dispatch(
+                        l2_cmd, args, proxy, run_dir, driver, session_cwd,
+                        l2_calls, outcome_detail,
+                        f"矛盾态: worker连续2次空转退出但验收不通过: {outcome_detail}\n"
+                        f"worker最后留言: {last_msg}", outcome_detail)
+                    ivl("L2_RESULT", verdict=verdict, log=str(l2_log.name))
+                    if verdict == "UNFIXABLE":
+                        ivl("TERMINAL", state="FAILED",
+                            detail=f"L2判定无法修复: {text.strip()[-200:]}")
+                        break
+                    resumes = max(0, resumes - 4)  # L2修复后追加续跑预算
+                    early_exits = 0
+                    ivl("L2_BUDGET_GRANTED", extra=4)
+                    driver.resume(resume_path)
+                    ivl("RESUMED", attempt=resumes + 1, pid=driver.proc.pid,
+                        provider=driver.provider_name)
+                    launched_at = time.time()
+                    outcome, outcome_detail = None, ""
+                    last_error_note = ""
+                    continue
                 ivl("TERMINAL", state="FAILED",
                     detail=f"矛盾态: worker连续{early_exits}次空转退出但验收不通过"
-                           f"({outcome_detail}) — 需人工/L2介入")
+                           f"({outcome_detail}) — L2不可用, 需人工介入")
                 break
             if resumes >= args.max_resumes:
                 if l2_cmd and l2_calls < args.l2_max and outcome in ("crash", "hang"):
@@ -1284,19 +1337,9 @@ def main():
                         f"{r.get('err', r.get('patterns', r.get('reason', '')))}"
                         for r in sigs[-8:])
                     ivl("L2_ESCALATE", agent=l2_cmd, call=l2_calls)
-                    if l2_cmd.lower() in ("antigravity", "agy"):
-                        verdict, text, l2_log = run_l2_antigravity(
-                            run_dir, errors, l2_calls, session_cwd,
-                            args.l2_project_id or None,
-                            model=args.l2_model)
-                    else:
-                        verdict, text, l2_log = run_l2_agent(
-                            l2_cmd, run_dir,
-                            L2_PROMPT_TMPL.format(
-                                sid=driver.session_id, scwd=session_cwd,
-                                errors=errors or "(无)",
-                                err_tail=err_tail or "(无)", n=l2_calls),
-                            l2_calls, proxy)
+                    verdict, text, l2_log = l2_dispatch(
+                        l2_cmd, args, proxy, run_dir, driver, session_cwd,
+                        l2_calls, outcome_detail, errors, err_tail)
                     ivl("L2_RESULT", verdict=verdict, log=str(l2_log.name))
                     if verdict == "UNFIXABLE":
                         ivl("TERMINAL", state="FAILED",
