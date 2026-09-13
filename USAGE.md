@@ -27,9 +27,12 @@ python supervise.py --task tasks/<你的任务>/task.md
 
 启动后可以锁屏/走人。机器不会睡（看门狗持有进程级执行状态）。
 
-> **接管纪律**：接管前请停止/关闭原 Codex 界面中的该会话——codex 有单写者锁
-> （`thread already has an active writer`），界面开着时接管会被拒绝；看门狗检测到会打
-> `SESSION_BUSY` 提示并自动重试。另外 quick 模式每次启动会把上一轮遗留的
+> **接管纪律**：codex 对打开中的会话持有单写者锁（`thread already has an active
+> writer`），仅停止任务不够。释放锁的实操顺序：①停止任务 → ②将对话**归档** →
+> ③若 afk 仍报 SESSION_BUSY，**彻底退出 Codex App**（锁随进程消亡，100%保底）。
+> 看门狗每 20 秒自动重试，锁一释放即接管。**绝不要删除会话**——历史在磁盘上，
+> 删除=被接管对象消失。验证接管成功：BUSY_WAIT 后出现 `RESUMED_BUSY` 且
+> `HEARTBEAT alive: True` 持续跳动。另外 quick 模式每次启动会把上一轮遗留的
 > `afk-work/PROGRESS.md` 归档到 `afk-work/archive/`，防止旧清单造成假验收通过。
 
 ## 写一个任务（两个文件）
