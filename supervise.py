@@ -434,6 +434,67 @@ def net_enable(adapter):
                    capture_output=True, timeout=15)
 
 
+# ---------------------------------------------------------------- L2 升级agent
+L2_PROMPT_TMPL = """你是监管系统的L2诊断修复agent, 运行在稳定通道上(与故障的codex中转无关)。
+
+背景: 一个 codex CLI 无头 worker 在接管会话 {sid} (cwd={scwd}) 中反复失败,
+L1看门狗(退避重试/换端点)已耗尽预算。你是最后一道自动防线。
+
+最近错误签名:
+{errors}
+
+worker stderr 尾部:
+{err_tail}
+
+可用修复动作(直接执行, 你有文件与命令权限):
+1. 中转层修复: 读写 ~/.codex/config.toml 与 auth 配置, 可从 ~/.cc-switch/cc-switch.db
+   (只读) 的 providers/provider_endpoints 表读取备选端点与key, 直接改写配置绕过故障路由
+2. 若判断为会话上下文污染: 在最终回复中单独一行输出 NEW_SESSION
+3. 若判断为基础设施故障且无可为: 输出 UNFIXABLE 并附一句原因
+
+约束: 不要动 ~/.codex/sessions/ 下的会话轨迹文件; 修改配置前把原文件复制为 *.bak_{n}。
+完成后, 在最终回复的最后一行单独输出决议: FIXED 或 NEW_SESSION 或 UNFIXABLE。
+"""
+
+
+def run_l2_agent(l2_cmd, run_dir, prompt, n, proxy):
+    """以无头模式调用L2 agent。claude 需要中转env+系统代理注入; 其他命令原样运行。
+    返回 (verdict, log_path)。"""
+    log_path = run_dir / f"l2-{n}.log"
+    prompt_file = run_dir / f"l2-{n}-prompt.txt"
+    prompt_file.write_text(prompt, encoding="utf-8")
+    parts = l2_cmd.split()
+    env = dict(os.environ)
+    if parts[0].lower() == "claude":
+        pool = get_relay_pool("claude-desktop")
+        if pool:
+            env.update(pool[0][1])
+        if proxy:
+            env["HTTPS_PROXY"] = proxy
+            env["HTTP_PROXY"] = proxy
+    args = ["cmd.exe", "/c", *parts, "-p"]
+    try:
+        r = subprocess.run(args, stdin=open(prompt_file, "rb"),
+                           stdout=open(log_path, "wb"), stderr=subprocess.STDOUT,
+                           env=env, cwd=str(WS), timeout=900)
+        ok = r.returncode == 0
+    except subprocess.TimeoutExpired:
+        ok = False
+        with open(log_path, "ab") as f:
+            f.write(b"\n[L2 TIMEOUT 900s]\n")
+    text = ""
+    if log_path.exists():
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    verdict = "NO-VERDICT"
+    for line in reversed(text.splitlines()):
+        line = line.strip()
+        if line.endswith("FIXED") or line.endswith("NEW_SESSION") \
+                or line.endswith("UNFIXABLE"):
+            verdict = line.split()[-1]
+            break
+    return verdict, text, log_path
+
+
 def wait_session_quiet(rollout: Path, quiet_sec=15, max_wait=90):
     """接管前等待原会话静默: 同一会话不能有两个写入者。"""
     log(f"ADOPT   等待会话静默(最多{max_wait}s)——请确认原界面已停止输入")
@@ -638,6 +699,9 @@ def main():
                     help="快速挂机: 内置续跑指令, 验收=afk-work/PROGRESS.md全部勾完")
     ap.add_argument("--yes", action="store_true",
                     help="跳过交互确认(自动选最新会话/自动关App)")
+    ap.add_argument("--l2-cmd", default="claude",
+                    help="L2升级agent的无头命令(默认claude, 走独立通道); off=禁用L2")
+    ap.add_argument("--l2-max", type=int, default=2, help="L2升级次数上限")
     args = ap.parse_args()
 
     if args.driver is None:
@@ -647,6 +711,8 @@ def main():
 
     task_md = Path(args.task).resolve() if args.task else None
     work_dir = WS / args.work_dir  # worker cwd=WS, 产物约定落在 <启动目录>/<work-dir>
+    session_cwd = str(WS)          # 接管模式下跟随被接管会话的工作目录
+    l2_cmd = None if args.l2_cmd.strip().lower() in ("off", "none") else args.l2_cmd.strip()
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = WS / "runs" / ts
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -781,6 +847,7 @@ def main():
             if scwd:
                 # 验收锚点跟随被接管会话; quick模式固定用 afk-work
                 work_dir = Path(scwd) / ("afk-work" if args.quick else args.work_dir)
+                session_cwd = scwd
     ivl("LAUNCH", session=driver.session_id or "(运行时发现)",
         provider=driver.provider_name,
         chaos=str(chaos) if chaos else "off")
@@ -804,6 +871,7 @@ def main():
     chaos_fired = False
     resumes = 0
     busy_waits = 0              # SESSION_BUSY 耐心等待次数(不占resume预算)
+    l2_calls = 0                # L2升级agent已调用次数
     early_exits = 0             # worker空转退出(rc=0但验收不过)计数→矛盾态熔断
     total_kills = 0             # 梯度心跳阈值基准
     net_off_adapter = None      # 断网chaos: 当前被断的网卡
@@ -968,9 +1036,50 @@ def main():
                            f"({outcome_detail}) — 需人工/L2介入")
                 break
             if resumes >= args.max_resumes:
-                ivl("TERMINAL", state="FAILED",
-                    detail=f"resume预算耗尽({resumes}次), 最后状态={outcome}")
-                break
+                if l2_cmd and l2_calls < args.l2_max and outcome in ("crash", "hang"):
+                    l2_calls += 1
+                    err_tail = ""
+                    try:
+                        err_log = run_dir / "worker-stderr.log"
+                        if err_log.exists():
+                            el = [l for l in err_log.read_text(
+                                encoding="utf-8", errors="replace")
+                                .strip().splitlines() if l.strip()]
+                            err_tail = "\n".join(el[-5:])[:800]
+                    except OSError:
+                        pass
+                    try:
+                        recent = [json.loads(l) for l in
+                                  ivl_path.read_text(encoding="utf-8")
+                                  .strip().splitlines()[-40:]]
+                    except Exception:
+                        recent = []
+                    sigs = [r for r in recent if r.get("event") in
+                            ("ERROR_SIGNATURE", "EXIT_CRASH", "DETECT_HANG",
+                             "PROVIDER_SWITCH", "CHAOS_NET_OFF")]
+                    errors = "\n".join(
+                        f"- {r['ts']} {r['event']} "
+                        f"{r.get('err', r.get('patterns', r.get('reason', '')))}"
+                        for r in sigs[-8:])
+                    ivl("L2_ESCALATE", agent=l2_cmd, call=l2_calls)
+                    verdict, text, l2_log = run_l2_agent(
+                        l2_cmd, run_dir,
+                        L2_PROMPT_TMPL.format(
+                            sid=driver.session_id, scwd=session_cwd,
+                            errors=errors or "(无)", err_tail=err_tail or "(无)",
+                            n=l2_calls),
+                        l2_calls, proxy)
+                    ivl("L2_RESULT", verdict=verdict, log=str(l2_log.name))
+                    if verdict == "UNFIXABLE":
+                        ivl("TERMINAL", state="FAILED",
+                            detail=f"L2判定无法修复: {text.strip()[-200:]}")
+                        break
+                    resumes = max(0, resumes - 4)  # L2修复后追加4次续跑预算
+                    ivl("L2_BUDGET_GRANTED", extra=4)
+                else:
+                    ivl("TERMINAL", state="FAILED",
+                        detail=f"resume预算耗尽({resumes}次), 最后状态={outcome}")
+                    break
             if args.max_run_sec > 0 and time.time() - run_started_at > args.max_run_sec:
                 ivl("TERMINAL", state="FAILED", detail="总时长超限")
                 break

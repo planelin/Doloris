@@ -33,13 +33,24 @@ python supervise.py --task tasks/<你的任务>/task.md
 > App活着→静默等待；App退出但锁文件残留→立即清除，≤20秒接管。
 > **不要用"归档"**（会把rollout搬进archived_sessions/，破坏锚点），**更不要删除**。
 >
-> **运行中如何共处**：afk 接管期间可以直接打开 Codex App 浏览该会话——App 显示
-> "已在另一个应用中打开"属正常（只读模式，能实时看到无头 worker 的历史和它收到的
-> 接管指令），只是不能在那个会话里执行命令。afk 结束（SUCCESS/FAILED）后锁自动
-> 释放，点 App 里的「重试」按钮即可拿回会话继续交互。ADOPT 日志会打印**任务标题**
-> （首条用户消息前60字），用于核对接管对象是否正确。
+> **运行中如何共处**：接管期间 App 里**看不到实时进展**（锁会挡住视图刷新）——观察
+> 用 afk 黑窗口、项目目录的 `afk-work/PROGRESS.md`、`runs/<最新>/interventions.jsonl`。
+> afk 结束（SUCCESS/FAILED）后锁自动释放，打开 App 点会话即可拿回继续交互。
+> ADOPT 日志会打印**任务标题**（首条用户消息前60字），用于核对接管对象是否正确。
 > 另外quick模式每次启动会把上一轮遗留的`afk-work/PROGRESS.md`归档到
 > `afk-work/archive/`，防止旧清单造成假验收通过。
+
+## L2 升级agent（稳定通道救火队）
+
+L1续跑预算耗尽且故障为崩溃/挂死时，自动调用L2 agent（默认 `claude` 无头模式，走与
+codex 完全独立的通道：agentrouter+系统代理）做最后一次诊断与修复：
+
+- 授权动作：改写 `~/.codex/config.toml` 切换中转供应商（可从 cc-switch 数据库只读
+  备选端点与key，绕开故障路由）；判定 `NEW_SESSION`（上下文污染，记录后继续）；
+  判定 `UNFIXABLE`（基础设施故障 → 诚实FAILED）
+- L2 修复后追加 4 次续跑预算；最多升级 `--l2-max`（默认2）次
+- 换agent：装好 antigravity CLI 后 `--l2-cmd "agy"`；禁用L2：`--l2-cmd off`
+- 每次L2的提示词与回复完整留档：`runs/<最新>/l2-N-prompt.txt` / `l2-N.log`
 
 ## 写一个任务（两个文件）
 

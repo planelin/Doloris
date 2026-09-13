@@ -1,0 +1,13 @@
+{"ts": "2026-09-13T14:37:22", "event": "EGRESS", "proxy": "http://127.0.0.1:7897", "driver": "codex"}
+{"ts": "2026-09-13T14:37:25", "event": "ADOPT", "session": "01a0997a-e6d8-76b2-a6e9-a815ca254e85", "title": "在 testproj/ 目录下构建一个「Agent监管系统监控台」纯静态网站，按顺序推进，每完成一个文件算一步：\n\n1.", "rollout": "rollout-2026-09-13T14-36-03-01a0997a-e6d8-76b2-a6e9-a815ca25", "session_cwd": "C:\\Agents\\zcode\\double"}
+{"ts": "2026-09-13T14:37:33", "event": "APP_CLOSED", "killed": ["ChatGPT.exe"]}
+{"ts": "2026-09-13T14:37:33", "event": "STALE_LOCK_REMOVED", "pre": "接管准备"}
+{"ts": "2026-09-13T14:37:33", "event": "LAUNCH", "session": "01a0997a-e6d8-76b2-a6e9-a815ca254e85", "provider": "codex(cc-switch本地代理)", "chaos": "off"}
+{"ts": "2026-09-13T14:37:33", "event": "ADOPTED_RESUME", "pid": 9820}
+{"ts": "2026-09-13T14:37:38", "event": "HEARTBEAT", "alive": true, "stale_sec": 5}
+{"ts": "2026-09-13T14:37:43", "event": "EXIT_OK", "acceptance": "afk-work/PROGRESS.md 不存在(worker未建立清单)"}
+{"ts": "2026-09-13T14:37:43", "event": "RESUME_WAIT", "backoff_sec": 15, "attempt": 1, "reason": "early_exit", "provider": "codex(cc-switch本地代理)"}
+{"ts": "2026-09-13T14:37:58", "event": "RESUMED", "attempt": 1, "pid": 31992, "provider": "codex(cc-switch本地代理)"}
+{"ts": "2026-09-13T14:38:08", "event": "HEARTBEAT", "alive": false, "stale_sec": 10}
+{"ts": "2026-09-13T14:38:08", "event": "EXIT_OK", "acceptance": "afk-work/PROGRESS.md 不存在(worker未建立清单)"}
+{"ts": "2026-09-13T14:38:08", "event": "TERMINAL", "state": "FAILED", "detail": "矛盾态: worker连续2次空转退出但验收不通过(afk-work/PROGRESS.md 不存在(worker未建立清单)) — 需人工/L2介入"}
