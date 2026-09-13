@@ -617,13 +617,15 @@ def discover_antigravity_project_id(agexe, csrf, ports):
 
 def run_l2_antigravity(run_dir, full_prompt, short_prompt, n, scwd, verdict_file,
                        conv_holder=None, project_id=None, model="flash",
-                       timeout_sec=1800):
+                       timeout_sec=1800, log_name=None):
     """经agentapi桥调用Antigravity。一个codex会话对应一个agy会话:
     首次 new-conversation(全量背景) 并记住conversationId,
     后续 send-message(增量提问) 复用同一会话——agy保持上下文不再重读。
-    App重启导致会话失效时自动降级重建。轮询verdict文件回收输出。"""
+    连接类错误(端口gRPC间歇EOF)保留cid换端口重试send;
+    仅会话不存在才降级重建。App重启导致会话失效时自动降级重建。
+    轮询verdict文件回收输出。"""
     verdict_file = Path(scwd) / verdict_file
-    log_path = run_dir / f"l2-{n}.log"
+    log_path = run_dir / f"{log_name or 'l2'}.log"
     csrf, ports, agexe = discover_antigravity_bridge()
     if not csrf or not ports or not agexe.exists():
         with open(log_path, "wb") as f:
@@ -633,6 +635,10 @@ def run_l2_antigravity(run_dir, full_prompt, short_prompt, n, scwd, verdict_file
     if verdict_file.exists():
         verdict_file.unlink()
     cid = getattr(conv_holder, "_agy_cid", None) if conv_holder else None
+    good_port = getattr(conv_holder, "_agy_port", None) if conv_holder else None
+    if good_port and good_port in ports:
+        ports.remove(good_port)
+        ports.insert(0, good_port)  # 上次成功的端口优先
     env = dict(os.environ)
     env["ANTIGRAVITY_CSRF_TOKEN"] = csrf
     if project_id:
@@ -660,20 +666,29 @@ def run_l2_antigravity(run_dir, full_prompt, short_prompt, n, scwd, verdict_file
                                                                  errors="replace"))
         if '"error"' in out:
             last_err = out[:300]
-            if cid:
-                cid = None  # 会话可能已失效(App重启), 降级为新建重试
+            transient = ("Unavailable" in out or "connection error" in out
+                         or "server preface" in out)
+            stale = (cid and ("not found" in out.lower()
+                              or "invalid" in out.lower()
+                              or "no such" in out.lower()))
+            if stale:
+                cid = None  # 会话确实失效, 降级重建
                 if conv_holder is not None:
                     conv_holder._agy_cid = None
                 continue
+            if transient and cid:
+                continue  # 瞬时连接故障: 保留cid换下一端口重试send
             continue
         m = re.search(r'"conversationId"\s*:\s*"([^"]+)"', out)
         if m and conv_holder is not None:
             conv_holder._agy_cid = m.group(1)
+            conv_holder._agy_port = port
         deadline = time.time() + timeout_sec
         while time.time() < deadline:
             time.sleep(20)
             if verdict_file.exists():
-                v = verdict_file.read_text(encoding="utf-8", errors="replace").strip()
+                v = verdict_file.read_text(encoding="utf-8", errors="replace")
+                v = v.lstrip("\ufeff\u200b").strip()
                 verdict = v.split()[-1] if v else "NO-VERDICT"
                 return verdict, v, log_path
         last_err = "verdict文件超时未出现"
