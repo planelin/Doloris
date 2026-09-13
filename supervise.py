@@ -748,8 +748,14 @@ def l2_dispatch(l2_cmd, args, proxy, run_dir, driver, session_cwd, n,
                                          err_tail=err_tail or "(无)", n=n)
             full += (f"\n【交付】把最终决议(单独一词: FIXED/NEW_SESSION/UNFIXABLE)"
                      f"写入文件: {Path(session_cwd) / vfile}。")
+        project_id = args.l2_project_id or None
+        if not project_id:
+            csrf, ports, agexe = discover_antigravity_bridge()
+            if csrf and ports:
+                project_id = discover_antigravity_project_id(agexe, csrf, ports)
+                log(f"L2        项目id自动发现: {project_id or '失败'}")
         return run_l2_antigravity(run_dir, full, n, session_cwd, vfile,
-                                  args.l2_project_id or None, model=args.l2_model)
+                                  project_id, model=args.l2_model)
     if kind == "interaction":
         prompt = L2_INTERACT_TMPL.format(sid=driver.session_id,
                                          scwd=session_cwd, question=errors_text)
@@ -1313,6 +1319,20 @@ def main():
                 kind="interaction")
             ivl("L2_ANSWER", verdict=verdict, answer=answer[:150],
                 log=str(l2_log.name))
+            if verdict in ("NO-VERDICT", "NO-BRIDGE"):
+                # L2通道故障(非决策结果): 绝不把错误文本当决定喂回codex,
+                # 委托回worker自行判断(实测worker会按自己此前的建议继续)
+                ivl("L2_UNAVAILABLE", verdict=verdict, fallback="worker自决")
+                answer_path = run_dir / f"answer-{interactions}.txt"
+                answer_path.write_text(
+                    "决策代理暂时不可用。请自行按你此前给出的建议选项做出决定并继续执行,"
+                    "把所选选项记录进PROGRESS.md。\n", encoding="utf-8")
+                driver.resume(answer_path)
+                ivl("RESUMED_SELFCALL", n=interactions, pid=driver.proc.pid)
+                launched_at = time.time()
+                outcome, outcome_detail = None, ""
+                last_error_note = ""
+                continue
             if verdict == "DEFER" or not answer.strip():
                 ivl("TERMINAL", state="FAILED",
                     detail="L2将决策DEFER给用户 — 需人工介入")
