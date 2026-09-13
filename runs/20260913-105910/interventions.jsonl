@@ -1,0 +1,18 @@
+{"ts": "2026-09-13T10:59:10", "event": "EGRESS", "proxy": "http://127.0.0.1:7897", "driver": "codex"}
+{"ts": "2026-09-13T10:59:10", "event": "ADOPT", "session": "01a09646-9d87-77f2-b5fc-d903e91d3223", "rollout": "rollout-2026-09-12T23-43-59-01a09646-9d87-77f2-b5fc-d903e91d", "session_cwd": "C:\\Agents\\zcode\\double"}
+{"ts": "2026-09-13T10:59:25", "event": "LAUNCH", "session": "01a09646-9d87-77f2-b5fc-d903e91d3223", "provider": "codex(cc-switch本地代理)", "chaos": "off"}
+{"ts": "2026-09-13T10:59:25", "event": "ADOPTED_RESUME", "pid": 31824}
+{"ts": "2026-09-13T10:59:31", "event": "HEARTBEAT", "alive": true, "stale_sec": 5}
+{"ts": "2026-09-13T11:00:01", "event": "HEARTBEAT", "alive": true, "stale_sec": 35}
+{"ts": "2026-09-13T11:00:31", "event": "HEARTBEAT", "alive": true, "stale_sec": 65}
+{"ts": "2026-09-13T11:01:01", "event": "HEARTBEAT", "alive": true, "stale_sec": 95}
+{"ts": "2026-09-13T11:01:31", "event": "HEARTBEAT", "alive": true, "stale_sec": 126}
+{"ts": "2026-09-13T11:01:36", "event": "EXIT_OK", "acceptance": "afk-work/PROGRESS.md 不存在(worker未建立清单)"}
+{"ts": "2026-09-13T11:01:36", "event": "RESUME_WAIT", "backoff_sec": 15, "attempt": 1, "reason": "early_exit", "provider": "codex(cc-switch本地代理)"}
+{"ts": "2026-09-13T11:01:51", "event": "RESUMED", "attempt": 1, "pid": 5584, "provider": "codex(cc-switch本地代理)"}
+{"ts": "2026-09-13T11:02:01", "event": "HEARTBEAT", "alive": true, "stale_sec": 10}
+{"ts": "2026-09-13T11:02:31", "event": "HEARTBEAT", "alive": true, "stale_sec": 40}
+{"ts": "2026-09-13T11:03:02", "event": "HEARTBEAT", "alive": true, "stale_sec": 70}
+{"ts": "2026-09-13T11:03:32", "event": "HEARTBEAT", "alive": true, "stale_sec": 101}
+{"ts": "2026-09-13T11:03:52", "event": "EXIT_OK", "acceptance": "afk-work/PROGRESS.md 不存在(worker未建立清单)"}
+{"ts": "2026-09-13T11:03:52", "event": "TERMINAL", "state": "FAILED", "detail": "矛盾态: worker连续2次空转退出但验收不通过(afk-work/PROGRESS.md 不存在(worker未建立清单)) — 需人工/L2介入"}

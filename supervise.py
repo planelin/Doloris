@@ -289,26 +289,30 @@ def _read_meta(p: Path):
 
 
 def find_last_codex_session(cwd=None):
-    """找最近的 codex 会话。优先 cwd 匹配(用户当前项目); 否则全局最新。
+    """找最近活跃的 codex 会话: 全局按 rollout mtime 降序取最新。
+    'last'的语义 = 用户最近在用的那个(正在生成的会话 mtime 必然最新);
+    cwd 只用于日志提示, 不作筛选——否则真实项目在其他目录时,
+    目录偏好会错误命中本目录的陈旧测试会话。
     返回 (session_id, rollout_path, session_cwd) 或 None。"""
-    best_cwd, best_any = None, None
+    best = None
     if not CODEX_SESSIONS.exists():
         return None
     for p in CODEX_SESSIONS.rglob("rollout-*.jsonl"):
         meta = _read_meta(p)
         if not meta:
             continue
-        sid, scwd = meta
         try:
             mt = p.stat().st_mtime
         except OSError:
             continue
-        if best_any is None or mt > best_any[0]:
-            best_any = (mt, sid, p, scwd)
-        if cwd and scwd == str(cwd) and (best_cwd is None or mt > best_cwd[0]):
-            best_cwd = (mt, sid, p, scwd)
-    hit = best_cwd or best_any
-    return (hit[1], hit[2], hit[3]) if hit else None
+        if best is None or mt > best[0]:
+            best = (mt, meta[0], p, meta[1])
+    if not best:
+        return None
+    _, sid, p, scwd = best
+    if cwd and scwd and scwd != str(cwd):
+        log(f"ADOPT   最新会话 cwd={scwd} (非{WS}), 验收锚点随之转移")
+    return sid, p, scwd
 
 
 def find_codex_session_by_id(sid: str):
@@ -547,7 +551,8 @@ def main():
                     help="任务书路径; 快速模式(--adopt + --quick)可不填")
     ap.add_argument("--chaos", default="", help='故障注入, 如 "kill:120"')
     ap.add_argument("--max-resumes", type=int, default=8)
-    ap.add_argument("--max-run-sec", type=int, default=3600)
+    ap.add_argument("--max-run-sec", type=int, default=3600,
+                    help="总时长上限(秒), 0=不设限; 真实数据收集建议 0")
     ap.add_argument("--no-probe", action="store_true", help="跳过启动探针")
     ap.add_argument("--driver", choices=["claude", "codex"], default=None,
                     help="不填时自动推断: --adopt→codex, 否则claude")
@@ -790,7 +795,7 @@ def main():
 
         # --- busy 耐心通道: 等人关闭原界面, 20秒一试, 不占续跑预算 ---
         if outcome == "busy":
-            if time.time() - run_started_at > args.max_run_sec:
+            if args.max_run_sec > 0 and time.time() - run_started_at > args.max_run_sec:
                 ivl("TERMINAL", state="FAILED",
                     detail=f"会话始终被占用(耐心等待{busy_waits}次)")
                 break
@@ -818,7 +823,7 @@ def main():
                 ivl("TERMINAL", state="FAILED",
                     detail=f"resume预算耗尽({resumes}次), 最后状态={outcome}")
                 break
-            if time.time() - run_started_at > args.max_run_sec:
+            if args.max_run_sec > 0 and time.time() - run_started_at > args.max_run_sec:
                 ivl("TERMINAL", state="FAILED", detail="总时长超限")
                 break
             # L1.5 换端点: 同供应商连续 FAILS_BEFORE_SWITCH 次死亡 → 轮换
