@@ -379,30 +379,55 @@ def list_recent_codex_sessions(n=5):
     return out
 
 
-def close_codex_app(rollout_path=None, max_wait=30):
+def rollout_tail_state(path, tail=16384):
+    """解析rollout尾部事件状态机, 判定中断安全性:
+    unsafe = 存在未回结果的工具调用(执行中, 硬杀可能留半成品)
+    safe   = 最后事件在模型侧(生成/思考/工具间隙, 无文件操作进行)
+    unknown = 读不到/解析不出(视为可直接处理)"""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - tail))
+            data = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return "unknown"
+    pending = False
+    seen = False
+    for line in data.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue  # 截断的半行
+        seen = True
+        blob = json.dumps(obj, ensure_ascii=False)
+        if ('"function_call_output"' in blob or '"tool_result"' in blob
+                or '"local_shell_output"' in blob):
+            pending = False
+        elif ('"function_call"' in blob or '"custom_tool_call"' in blob
+              or '"local_shell_call"' in blob or '"tool_use"' in blob):
+            pending = True
+    if not seen:
+        return "unknown"
+    return "unsafe" if pending else "safe"
+
+
+def close_codex_app(rollout_path=None, max_wait=40):
     """结束 Codex 桌面App进程族, 单写者锁随进程消亡。
-    边界感知: 先盯rollout新追加部分等到 压缩/回合边界 标记(≤max_wait),
+    边界感知: 解析rollout尾部事件状态机, 等到最后事件不在工具执行中(≤max_wait),
     再两段式关闭(礼貌WM_CLOSE→8秒→强杀残余)。
     仅允许在【尚无我方worker】的接管准备阶段调用。"""
-    base = None
     if rollout_path and Path(rollout_path).exists():
-        try:
-            base = Path(rollout_path).stat().st_size
-        except OSError:
-            base = None
-    deadline = time.time() + max_wait
-    while base is not None and time.time() < deadline:
-        try:
-            with open(rollout_path, "rb") as f:
-                f.seek(base)
-                fresh = f.read().decode("utf-8", errors="replace")
-        except OSError:
-            break
-        if fresh and any(m in fresh for m in
-                         ("compacted", "compact", "task_complete", "summar")):
-            log("CLOSE    检测到安全边界标记, 开始关闭App")
-            break
-        time.sleep(2)
+        deadline = time.time() + max_wait
+        while time.time() < deadline:
+            st = rollout_tail_state(rollout_path)
+            if st != "unsafe":
+                log(f"CLOSE    事件边界确认({st}), 开始关闭App")
+                break
+            time.sleep(1)
     killed = []
     for img in ("ChatGPT.exe", "codex.exe"):
         subprocess.run(["taskkill", "/IM", img], capture_output=True)  # 礼貌关闭
@@ -424,23 +449,19 @@ def close_codex_app(rollout_path=None, max_wait=30):
 
 
 def safe_kill(driver, max_wait=30):
-    """无害击杀三段式:
-    ① 等rollout新追加部分出现 压缩/回合完成 标记(≤max_wait) = 原子操作边界
-    ② CTRL_BREAK 优雅中断(独立进程组), codex/claude自行收尾当前工具
-    ③ 硬杀兜底。返回实际方式: boundary / graceful / hard。"""
-    base = driver.rollout_size() if hasattr(driver, "rollout_size") else None
+    """无害击杀: 解析rollout事件状态机, 等到最后事件不在工具执行中(≤max_wait)
+    → CTRL_BREAK优雅中断 → 硬杀兜底。返回实际方式。"""
+    rp = getattr(driver, "jsonl", None)
     deadline = time.time() + max_wait
-    while base is not None and time.time() < deadline:
-        fresh = driver.rollout_since(base)
-        if fresh and any(m in fresh for m in
-                         ("compacted", "compact", "task_complete", "summar")):
+    while rp is not None and time.time() < deadline:
+        if rollout_tail_state(rp) == "safe":
             driver.interrupt()
             if driver.wait_exit(12):
                 driver.kill_tree()
                 return "boundary"
             driver.kill_tree()
             return "boundary+hard"
-        time.sleep(2)
+        time.sleep(1)
     if driver.interrupt() and driver.wait_exit(15):
         driver.kill_tree()
         return "graceful"
