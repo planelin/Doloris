@@ -1,0 +1,161 @@
+﻿<!doctype html>
+<html lang="zh-CN" data-root="..">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="验收清单 — Agent 监管系统监控台第 07 项监管机制：Acceptance Checklist。">
+  <meta name="theme-color" content="#07110f">
+  <title>07 验收清单 · Agent 监管系统监控台</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body class="mechanism-page">
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+  <div class="ambient ambient-a" aria-hidden="true"></div>
+  <div class="ambient ambient-b" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <a class="brand" href="../index.html" aria-label="Agent 监管系统监控台首页">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="brand-type">
+        <strong>Agent Oversight</strong>
+        <small>监管系统监控台</small>
+      </span>
+    </a>
+    <nav class="topnav" aria-label="页面导航">
+      <a href="../index.html#mechanisms">机制矩阵</a>
+      <a href="../index.html#control-loop">监管闭环</a>
+      <a href="11-report.html">终态报告</a>
+    </nav>
+    <div class="topbar-meta">
+      <span class="live-indicator"><i></i><span>监督链路在线</span></span>
+      <time id="clock" datetime="">--:--:--</time>
+    </div>
+  </header>
+
+  <main id="main-content">
+    <nav class="breadcrumb section-shell" aria-label="面包屑导航">
+      <a href="../index.html">总览</a><span>/</span><a href="../index.html#mechanisms">机制矩阵</a><span>/</span><span>07 验收清单</span>
+    </nav>
+
+    <section class="page-hero section-shell">
+      <div>
+        <p class="eyebrow"><span>MECHANISM 07</span> / ACCEPTANCE CHECKLIST</p>
+        <h1>验收清单</h1>
+        <p class="page-lead">Agent 最容易给出的错误结论是"我完成了"。验收清单把这个结论从自我陈述变成可勾选的外部判据：没有勾完，就不允许宣布结束。</p>
+        <dl class="page-meta">
+        <div><dt>当前状态</dt><dd>在线运行</dd></div>
+        <div><dt>判据形式</dt><dd>可执行、可复现</dd></div>
+        <div><dt>停止条件</dt><dd>未勾项为 0</dd></div>
+        </dl>
+      </div>
+      <div class="diagram">
+        <p class="diagram-title">清单作为闸门</p>
+      <div class="diagram-row"><span class="dot"></span><span>任务开始时建立清单，而不是结束时补写</span><span class="tag">建单</span></div>
+      <p class="diagram-arrow">↓</p>
+      <div class="diagram-row"><span class="dot"></span><span>每条都写可验证的完成定义</span><span class="tag">判据</span></div>
+      <p class="diagram-arrow">↓</p>
+      <div class="diagram-row"><span class="dot"></span><span>完成一项立即勾选，不攒到最后</span><span class="tag">勾选</span></div>
+      <p class="diagram-arrow">↓</p>
+      <div class="diagram-row"><span class="dot"></span><span>由独立于生成方的校验复现判据</span><span class="tag">校验</span></div>
+      <p class="diagram-arrow">↓</p>
+      <div class="diagram-row"><span class="dot warn"></span><span>存在未勾项 → 继续工作，不许停止</span><span class="tag">闸门</span></div>
+      <p class="diagram-arrow">↓</p>
+      <div class="diagram-row"><span class="dot standby"></span><span>全部勾完 → 允许进入终态</span><span class="tag">放行</span></div>
+      </div>
+    </section>
+
+    <div class="doc-layout section-shell">
+      <article class="doc-main">
+        <section class="doc-block">
+          <h2>机制要点</h2>
+        <p>完成定义必须可执行。"12 个文件均存在、每个 ≥ 120 字、且含三段小标题"是判据；"网站做得不错"不是。可执行的判据才能被第三方复现，也才能在无人值守时自动验收。</p>
+        <p>勾选必须立即发生，不能等收尾时统一补写。中断、冲突、被接管时，清单是唯一能说明"做到哪一步"的产物；补写的清单会让续跑者重复工作。</p>
+        <p>校验要独立于生成方。让生成者自己判定自己完成，等于取消了验收环节——这正是"幻觉式提前宣布完成"的温床。</p>
+        <p>清单同时是断点续传的锚点：接管者的第一个动作是读清单，最后一个动作是把清单勾完。清单的全部权威来自"没勾完就不能停"这条规则。</p>
+        </section>
+
+        <section class="doc-block">
+          <h2>信号与判定</h2>
+          <table class="signal-table">
+            <thead><tr><th>观测信号</th><th>判定含义</th></tr></thead>
+            <tbody>
+          <tr><td>清单不存在</td><td>任务不可验收：没有判据就没有完成，也没有失败</td></tr>
+          <tr><td>存在未勾选条目</td><td>不允许停止：无论进度看起来多接近完成</td></tr>
+          <tr><td>勾选数与产物实际不符</td><td>判定为虚假完成：重新做独立校验并留档</td></tr>
+          <tr><td>每条判据都能被第三方复现</td><td>清单有效，可作为依赖锚点使用</td></tr>
+          <tr><td>全部勾选且独立校验通过</td><td>允许进入终态报告，输出明确结论</td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section class="doc-block">
+          <h2>触发与处置</h2>
+          <ol class="step-list">
+        <li>在任务开始时先把清单写出来：逐条列出可交付物，未完成项使用未勾选标记。</li>
+        <li>把每条写成可执行的判据：文件存在、字数下限、结构要求、链接可达、JSON 可解析。</li>
+        <li>每完成一项立即勾选，让清单始终反映真实进度，而不是最后统一美化。</li>
+        <li>用独立于生成方的方式复现判据（脚本检查、独立读取、二次渲染），不合格就退回未勾选状态。</li>
+        <li>只要还有未勾项，就继续工作或明确失败，不允许用"基本完成"收尾。</li>
+        <li>全部勾完后，把清单结论写进终态报告，作为本次运行的可审计结论。</li>
+          </ol>
+        </section>
+
+        <section class="doc-block">
+          <h2>失效模式</h2>
+        <p>判据不可执行：验收退化为主观判断，无人值守时无法自动判定。</p>
+        <p>事后补勾：进度失去时间信息，被接管时续跑者无法判断哪一部分已经真正完成。</p>
+        <p>自己验自己：生成方同时充当验收方，错误被一致地"确认"为正确。</p>
+        <p>用"基本完成"糊过去：未勾项被口头抹平，失败无法被记录，也无法被复盘。</p>
+          <div class="callout">
+            <div><strong>原则：</strong> 清单的权威来自"没勾完就不能停"，而不是来自它写得多漂亮。规则一旦松动，清单就只是装饰。</div>
+          </div>
+        </section>
+      </article>
+
+      <aside class="doc-aside">
+        <div class="panel">
+          <h3>参数速查</h3>
+          <dl class="spec-list">
+        <div><dt>清单位置</dt><dd><code>afk-work/PROGRESS.md</code></dd></div>
+        <div><dt>条目形式</dt><dd><code>- [ ]</code> / <code>- [x]</code></dd></div>
+        <div><dt>停止条件</dt><dd>未勾项 <code>0</code></dd></div>
+        <div><dt>判据要求</dt><dd>可执行、可复现</dd></div>
+        <div><dt>校验方</dt><dd>独立于生成方</dd></div>
+        <div><dt>锚点作用</dt><dd>断点续传的唯一进度依据</dd></div>
+          </dl>
+        </div>
+        <div class="panel">
+          <h3>关联机制</h3>
+          <ul class="link-list">
+        <li><a href="01-heartbeat.html"><span class="idx">01</span><span>心跳检测</span></a></li>
+        <li><a href="03-takeover.html"><span class="idx">03</span><span>会话接管</span></a></li>
+        <li><a href="11-report.html"><span class="idx">11</span><span>终态报告</span></a></li>
+          </ul>
+        </div>
+      </aside>
+    </div>
+
+    <nav class="pager section-shell" aria-label="章节翻页">
+      <div class="pager-links">
+        <a class="button button-ghost" href="06-egress.html">← 06 出站代理</a>
+        <a class="button button-primary" href="08-archive.html">08 干预存档 →</a>
+      </div>
+      <span class="pager-index">MECHANISM 07 / 12</span>
+    </nav>
+  </main>
+
+  <footer class="site-footer section-shell">
+    <div>
+      <a class="brand footer-brand" href="../index.html">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span><strong>Agent Oversight</strong><small>静态监控台</small></span>
+      </a>
+      <p>本页为监管机制说明之一，全部内容为静态文件，无后端依赖。</p>
+    </div>
+    <p class="footer-meta">MECHANISM 07 / 12<br><span id="footer-time">本地时间 --:--</span></p>
+  </footer>
+
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>
+

@@ -1,0 +1,31 @@
+{"ts": "2026-09-13T14:01:01", "event": "EGRESS", "proxy": "http://127.0.0.1:7897", "driver": "codex"}
+{"ts": "2026-09-13T14:01:01", "event": "ADOPT", "session": "01a09954-f9c1-72a3-b3f6-845bcb108aba", "rollout": "rollout-2026-09-13T14-00-58-01a09954-f9c1-72a3-b3f6-845bcb10", "session_cwd": "C:\\Agents\\zcode\\double"}
+{"ts": "2026-09-13T14:01:46", "event": "LAUNCH", "session": "01a09954-f9c1-72a3-b3f6-845bcb108aba", "provider": "codex(cc-switch本地代理)", "chaos": "off"}
+{"ts": "2026-09-13T14:01:46", "event": "ARCHIVE_STALE_CHECKLIST", "dest": "C:\\Agents\\zcode\\double\\afk-work\\archive\\PROGRESS-20260913-140101.md"}
+{"ts": "2026-09-13T14:01:46", "event": "ADOPTED_RESUME", "pid": 7712}
+{"ts": "2026-09-13T14:01:51", "event": "HEARTBEAT", "alive": false, "stale_sec": 5}
+{"ts": "2026-09-13T14:01:51", "event": "EXIT_CRASH", "rc": 1, "provider": "codex(cc-switch本地代理)", "err": "Error: thread/resume: thread/resume failed: thread 01a09954-f9c1-72a3-b3f6-845bcb108aba already has an active writer (code -32600)"}
+{"ts": "2026-09-13T14:01:51", "event": "SESSION_BUSY", "hint": "原会话仍被桌面/界面占用(codex单写者锁)。请停止或关闭原Codex界面中的该会话, 看门狗将耐心重试(不占续跑预算)"}
+{"ts": "2026-09-13T14:01:51", "event": "BUSY_WAIT", "wait_sec": 20, "n": 1, "lock": "held"}
+{"ts": "2026-09-13T14:02:16", "event": "EXIT_CRASH", "rc": 1, "provider": "codex(cc-switch本地代理)", "err": "Error: thread/resume: thread/resume failed: thread 01a09954-f9c1-72a3-b3f6-845bcb108aba already has an active writer (code -32600)"}
+{"ts": "2026-09-13T14:02:16", "event": "SESSION_BUSY", "hint": "原会话仍被桌面/界面占用(codex单写者锁)。请停止或关闭原Codex界面中的该会话, 看门狗将耐心重试(不占续跑预算)"}
+{"ts": "2026-09-13T14:02:41", "event": "HEARTBEAT", "alive": false, "stale_sec": 55}
+{"ts": "2026-09-13T14:02:41", "event": "EXIT_CRASH", "rc": 1, "provider": "codex(cc-switch本地代理)", "err": "Error: thread/resume: thread/resume failed: thread 01a09954-f9c1-72a3-b3f6-845bcb108aba already has an active writer (code -32600)"}
+{"ts": "2026-09-13T14:02:41", "event": "SESSION_BUSY", "hint": "原会话仍被桌面/界面占用(codex单写者锁)。请停止或关闭原Codex界面中的该会话, 看门狗将耐心重试(不占续跑预算)"}
+{"ts": "2026-09-13T14:03:06", "event": "EXIT_CRASH", "rc": 1, "provider": "codex(cc-switch本地代理)", "err": "Error: thread/resume: thread/resume failed: thread 01a09954-f9c1-72a3-b3f6-845bcb108aba already has an active writer (code -32600)"}
+{"ts": "2026-09-13T14:03:06", "event": "SESSION_BUSY", "hint": "原会话仍被桌面/界面占用(codex单写者锁)。请停止或关闭原Codex界面中的该会话, 看门狗将耐心重试(不占续跑预算)"}
+{"ts": "2026-09-13T14:03:06", "event": "BUSY_WAIT", "wait_sec": 20, "n": 4, "lock": "held"}
+{"ts": "2026-09-13T14:03:31", "event": "HEARTBEAT", "alive": false, "stale_sec": 105}
+{"ts": "2026-09-13T14:03:31", "event": "EXIT_CRASH", "rc": 1, "provider": "codex(cc-switch本地代理)", "err": "Error: thread/resume: thread/resume failed: thread 01a09954-f9c1-72a3-b3f6-845bcb108aba already has an active writer (code -32600)"}
+{"ts": "2026-09-13T14:03:31", "event": "SESSION_BUSY", "hint": "原会话仍被桌面/界面占用(codex单写者锁)。请停止或关闭原Codex界面中的该会话, 看门狗将耐心重试(不占续跑预算)"}
+{"ts": "2026-09-13T14:03:56", "event": "EXIT_CRASH", "rc": 1, "provider": "codex(cc-switch本地代理)", "err": "Error: thread/resume: thread/resume failed: thread 01a09954-f9c1-72a3-b3f6-845bcb108aba already has an active writer (code -32600)"}
+{"ts": "2026-09-13T14:03:56", "event": "SESSION_BUSY", "hint": "原会话仍被桌面/界面占用(codex单写者锁)。请停止或关闭原Codex界面中的该会话, 看门狗将耐心重试(不占续跑预算)"}
+{"ts": "2026-09-13T14:03:56", "event": "BUSY_TAKEOVER", "lock": "probe-stale"}
+{"ts": "2026-09-13T14:03:56", "event": "RESUMED_BUSY", "pid": 32468, "provider": "codex(cc-switch本地代理)"}
+{"ts": "2026-09-13T14:04:01", "event": "HEARTBEAT", "alive": true, "stale_sec": 5}
+{"ts": "2026-09-13T14:04:12", "event": "EXIT_OK", "acceptance": "afk-work/PROGRESS.md 不存在(worker未建立清单)"}
+{"ts": "2026-09-13T14:04:12", "event": "RESUME_WAIT", "backoff_sec": 15, "attempt": 1, "reason": "early_exit", "provider": "codex(cc-switch本地代理)"}
+{"ts": "2026-09-13T14:04:27", "event": "RESUMED", "attempt": 1, "pid": 23320, "provider": "codex(cc-switch本地代理)"}
+{"ts": "2026-09-13T14:04:32", "event": "HEARTBEAT", "alive": true, "stale_sec": 5}
+{"ts": "2026-09-13T14:04:42", "event": "EXIT_OK", "acceptance": "afk-work/PROGRESS.md 不存在(worker未建立清单)"}
+{"ts": "2026-09-13T14:04:42", "event": "TERMINAL", "state": "FAILED", "detail": "矛盾态: worker连续2次空转退出但验收不通过(afk-work/PROGRESS.md 不存在(worker未建立清单)) — 需人工/L2介入"}

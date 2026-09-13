@@ -1,0 +1,141 @@
+﻿{
+  "meta": {
+    "title": "Agent 监管系统监控台",
+    "updated": "2026-09-13",
+    "source": "data/mechanisms.json"
+  },
+  "mechanisms": [
+    {
+      "id": "01",
+      "name": "心跳检测",
+      "nameEn": "Heartbeat",
+      "slug": "heartbeat",
+      "page": "pages/01-heartbeat.html",
+      "status": "online",
+      "statusLabel": "在线",
+      "metric": "间隔 30s / 阈值 90s",
+      "summary": "以带阶段信息的心跳判定 Agent 是存活、空转还是已经僵死。"
+    },
+    {
+      "id": "02",
+      "name": "指数退避",
+      "nameEn": "Exponential Backoff",
+      "slug": "backoff",
+      "page": "pages/02-backoff.html",
+      "status": "online",
+      "statusLabel": "在线",
+      "metric": "上限 120s / 5 次",
+      "summary": "失败后按指数加抖动重试，把重试风暴收敛成可控节奏。"
+    },
+    {
+      "id": "03",
+      "name": "会话接管",
+      "nameEn": "Session Takeover",
+      "slug": "takeover",
+      "page": "pages/03-takeover.html",
+      "status": "online",
+      "statusLabel": "在线",
+      "metric": "静默 15s / 单写者锁",
+      "summary": "原会话失联后由无头进程续跑，全程只允许一个写入者。"
+    },
+    {
+      "id": "04",
+      "name": "供应商轮换",
+      "nameEn": "Provider Rotation",
+      "slug": "rotation",
+      "page": "pages/04-rotation.html",
+      "status": "watch",
+      "statusLabel": "观察",
+      "metric": "连败 2 次即切换",
+      "summary": "当前端点连败即冷却并切到备用端点，避免整任务被单点拖死。"
+    },
+    {
+      "id": "05",
+      "name": "端点探针",
+      "nameEn": "Endpoint Probe",
+      "slug": "probe",
+      "page": "pages/05-probe.html",
+      "status": "online",
+      "statusLabel": "在线",
+      "metric": "启动前 1 次最小请求",
+      "summary": "开工前用最小请求试活，把配置错和端点故障挡在长任务之前。"
+    },
+    {
+      "id": "06",
+      "name": "出站代理",
+      "nameEn": "Egress Proxy",
+      "slug": "egress",
+      "page": "pages/06-egress.html",
+      "status": "online",
+      "statusLabel": "在线",
+      "metric": "系统代理 / 逐跳可辨",
+      "summary": "统一出站链路并保留每跳标识，让代理故障不被误判成模型故障。"
+    },
+    {
+      "id": "07",
+      "name": "验收清单",
+      "nameEn": "Acceptance Checklist",
+      "slug": "checklist",
+      "page": "pages/07-checklist.html",
+      "status": "online",
+      "statusLabel": "在线",
+      "metric": "全勾才允许停止",
+      "summary": "把完成定义落成可勾选条目，未勾完不许宣布结束。"
+    },
+    {
+      "id": "08",
+      "name": "干预存档",
+      "nameEn": "Intervention Archive",
+      "slug": "archive",
+      "page": "pages/08-archive.html",
+      "status": "online",
+      "statusLabel": "在线",
+      "metric": "每次干预一行 JSON",
+      "summary": "所有自动动作按时间线落盘，事后可复现每一次接管与退避。"
+    },
+    {
+      "id": "09",
+      "name": "睡眠抑制",
+      "nameEn": "Sleep Suppression",
+      "slug": "sleep-guard",
+      "page": "pages/09-sleep-guard.html",
+      "status": "online",
+      "statusLabel": "在线",
+      "metric": "持续申请 / 可恢复",
+      "summary": "长跑期间阻止系统休眠，结束后恢复原设置，不留副作用。"
+    },
+    {
+      "id": "10",
+      "name": "混沌测试",
+      "nameEn": "Chaos Testing",
+      "slug": "chaos",
+      "page": "pages/10-chaos.html",
+      "status": "watch",
+      "statusLabel": "观察",
+      "metric": "kill:30 / net:30:120",
+      "summary": "主动注入确定性的进程与网络故障，验证自愈链路真的生效。"
+    },
+    {
+      "id": "11",
+      "name": "终态报告",
+      "nameEn": "Terminal Report",
+      "slug": "report",
+      "page": "pages/11-report.html",
+      "status": "online",
+      "statusLabel": "在线",
+      "metric": "成功 / 失败 / 放弃",
+      "summary": "把一次监管收敛成一份终态结论，让结果不再依赖口头描述。"
+    },
+    {
+      "id": "12",
+      "name": "授权边界",
+      "nameEn": "Authority Boundary",
+      "slug": "boundary",
+      "page": "pages/12-boundary.html",
+      "status": "standby",
+      "statusLabel": "待命",
+      "metric": "允许清单 / 拒绝清单",
+      "summary": "限定自动化可触及的范围，无人值守时把可造成损害的半径压到最小。"
+    }
+  ]
+}

@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-CN" data-root="..">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="指数退避 — Agent 监管系统监控台第 02 项监管机制：Exponential Backoff。">
+  <meta name="theme-color" content="#07110f">
+  <title>02 指数退避 · Agent 监管系统监控台</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body class="mechanism-page">
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+  <div class="ambient ambient-a" aria-hidden="true"></div>
+  <div class="ambient ambient-b" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <a class="brand" href="../index.html" aria-label="Agent 监管系统监控台首页">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="brand-type">
+        <strong>Agent Oversight</strong>
+        <small>监管系统监控台</small>
+      </span>
+    </a>
+    <nav class="topnav" aria-label="页面导航">
+      <a href="../index.html#mechanisms">机制矩阵</a>
+      <a href="../index.html#control-loop">监管闭环</a>
+      <a href="12-report.html">终态报告</a>
+    </nav>
+    <div class="topbar-meta">
+      <span class="live-indicator"><i></i><span>监督链路在线</span></span>
+      <time id="clock" datetime="">--:--:--</time>
+    </div>
+  </header>
+
+  <main id="main-content">
+    <nav class="breadcrumb section-shell" aria-label="面包屑导航">
+      <a href="../index.html">总览</a><span>/</span><a href="../index.html#mechanisms">机制矩阵</a><span>/</span><span>02 指数退避</span>
+    </nav>
+
+    <section class="page-hero section-shell">
+      <div>
+        <p class="eyebrow"><span>MECHANISM 02</span> / EXPONENTIAL BACKOFF</p>
+        <h1>指数退避</h1>
+        <p class="page-lead">失败后立刻重试是最自然的反应，也是把一次小故障放大成雪崩的最快方式。指数退避回答的只有一件事：等多久再试，并把这个决定从本能变成可控参数。</p>
+        <dl class="page-meta">
+        <div><dt>当前状态</dt><dd>在线运行</dd></div>
+        <div><dt>退避序列</dt><dd>15 / 45 / 90 / 120s</dd></div>
+        <div><dt>重试上限</dt><dd>5 次</dd></div>
+        </dl>
+      </div>
+      <div class="diagram">
+        <p class="diagram-title">一次失败的退避节奏</p>
+      <div class="diagram-row"><span class="dot"></span><span>请求失败：429 / 5xx / 超时</span><span class="tag">捕获</span></div>
+      <p class="diagram-arrow">↓</p>
+      <div class="diagram-row"><span class="dot"></span><span>判断可重试性：幂等且无副作用</span><span class="tag">过滤</span></div>
+      <p class="diagram-arrow">↓</p>
+      <div class="diagram-row"><span class="dot"></span><span>优先读 retry-after，否则取退避序列</span><span class="tag">取值</span></div>
+      <p class="diagram-arrow">↓</p>
+      <div class="diagram-row"><span class="dot"></span><span>休眠 min(base × 2ⁿ, cap) 并叠加抖动</span><span class="tag">抖动</span></div>
+      <p class="diagram-arrow">↓</p>
+      <div class="diagram-row"><span class="dot warn"></span><span>连续失败到上限 → 熔断或轮换</span><span class="tag">升级</span></div>
+      </div>
+    </section>
+
+    <div class="doc-layout section-shell">
+      <article class="doc-main">
+        <section class="doc-block">
+          <h2>机制要点</h2>
+        <p>退避必须有上限和次数上限。没有 cap 的指数增长会让等待时间奔向无穷，把"重试"变成"无限期挂起"；没有次数上限则永远不进入终态，任务既不成功也不失败。</p>
+        <p>抖动不是可选装饰。多个 worker 若共享同一条退避序列，重试会被对齐到同一秒，等于亲手制造尖峰。<code>sleep = min(base × 2ⁿ, cap) × (0.5 + rand × 0.5)</code> 让重试在时间上摊开。</p>
+        <p>服务端给了 <code>retry-after</code> 就优先服从它，本地序列只作为兜底。用本地猜测覆盖服务端明确的等待要求，通常会让限流更严重。</p>
+        <p>要区分限流类型：input TPM 超限要缩小上下文，RPM 超限要降低请求数——两者的处置方向不同，退避只是争取时间，不解决根因。</p>
+        </section>
+
+        <section class="doc-block">
+          <h2>信号与判定</h2>
+          <table class="signal-table">
+            <thead><tr><th>观测信号</th><th>判定含义</th></tr></thead>
+            <tbody>
+          <tr><td>HTTP 429 且带 retry-after</td><td>完全服从服务端节奏，本地序列不参与</td></tr>
+          <tr><td>HTTP 503 / 529 上游过载</td><td>退避并把 cap 放宽到 120 秒，同时降低并发</td></tr>
+          <tr><td>连接超时或连接被重置</td><td>退避重试；连续 3 次则触发端点轮换</td></tr>
+          <tr><td>同一步骤反复退避仍不推进</td><td>判定为非瞬时故障，升级为熔断或换端点</td></tr>
+          <tr><td>退避次数到达上限</td><td>停止自动重试，转入明确的终态：告警 + 留档</td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section class="doc-block">
+          <h2>触发与处置</h2>
+          <ol class="step-list">
+        <li>先判断可重试性：只对幂等且未产生副作用的步骤自动重试，写文件、提交、对外发消息必须先查状态再决定是否重放。</li>
+        <li>读取响应头里的 retry-after；没有该头再退回本地退避序列，避免用猜测覆盖服务端的要求。</li>
+        <li>计算等待时长：min(base × 2ⁿ, cap) 再乘抖动系数，保证多 worker 不会在同一秒集体重试。</li>
+        <li>重试期间降低并发并观察两个窗口，恢复时用加性增、失败时用乘性减，不要一次性恢复满速。</li>
+        <li>每次退避都写入干预存档：触发原因、等待时长、第几次重试，让报告能区分"任务慢"和"被限流"。</li>
+        <li>次数或时长到达上限即熔断，交由供应商轮换或终态报告处理，不允许无限期等待。</li>
+          </ol>
+        </section>
+
+        <section class="doc-block">
+          <h2>失效模式</h2>
+        <p>固定间隔重试：每个 worker 都在同一个周期醒来，限流解除的瞬间被自己重新打满。</p>
+        <p>退避无上限：等待时间指数增长却永远不结束，任务卡在既非成功也非失败的中间态。</p>
+        <p>缺少抖动：多 worker 节奏一致，退避反而把重试对齐成尖峰。</p>
+        <p>对已产生副作用的工具调用盲目重放，造成重复写入、重复提交——退避救不了不幂等的操作。</p>
+          <div class="callout">
+            <div><strong>判据：</strong> 退避的目标不是"再试一次"，而是让失败收敛成两种结局之一：恢复，或者明确地放弃。停在中间不算结果。</div>
+          </div>
+        </section>
+      </article>
+
+      <aside class="doc-aside">
+        <div class="panel">
+          <h3>参数速查</h3>
+          <dl class="spec-list">
+        <div><dt>起始间隔</dt><dd><code>15s</code></dd></div>
+        <div><dt>退避上限</dt><dd><code>120s</code>（cap）</dd></div>
+        <div><dt>最大次数</dt><dd><code>5</code></dd></div>
+        <div><dt>抖动系数</dt><dd><code>0.5 + rand × 0.5</code></dd></div>
+        <div><dt>触发条件</dt><dd>429 / 5xx / 超时</dd></div>
+        <div><dt>升级动作</dt><dd>熔断 + 端点轮换</dd></div>
+          </dl>
+        </div>
+        <div class="panel">
+          <h3>关联机制</h3>
+          <ul class="link-list">
+        <li><a href="01-heartbeat.html"><span class="idx">01</span><span>心跳检测</span></a></li>
+        <li><a href="04-rotation.html"><span class="idx">04</span><span>供应商轮换</span></a></li>
+        <li><a href="12-report.html"><span class="idx">12</span><span>终态报告</span></a></li>
+          </ul>
+        </div>
+      </aside>
+    </div>
+
+    <nav class="pager section-shell" aria-label="章节翻页">
+      <div class="pager-links">
+        <a class="button button-ghost" href="01-heartbeat.html">← 01 心跳检测</a>
+        <a class="button button-primary" href="03-takeover.html">03 会话接管 →</a>
+      </div>
+      <span class="pager-index">MECHANISM 02 / 12</span>
+    </nav>
+  </main>
+
+  <footer class="site-footer section-shell">
+    <div>
+      <a class="brand footer-brand" href="../index.html">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span><strong>Agent Oversight</strong><small>静态监控台</small></span>
+      </a>
+      <p>本页为监管机制说明之一，全部内容为静态文件，无后端依赖。</p>
+    </div>
+    <p class="footer-meta">MECHANISM 02 / 12<br><span id="footer-time">本地时间 --:--</span></p>
+  </footer>
+
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

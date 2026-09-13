@@ -1,0 +1,159 @@
+﻿<!doctype html>
+<html lang="zh-CN" data-root="..">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="会话接管 — Agent 监管系统监控台第 03 项监管机制：Session Takeover。">
+  <meta name="theme-color" content="#07110f">
+  <title>03 会话接管 · Agent 监管系统监控台</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body class="mechanism-page">
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+  <div class="ambient ambient-a" aria-hidden="true"></div>
+  <div class="ambient ambient-b" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <a class="brand" href="../index.html" aria-label="Agent 监管系统监控台首页">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="brand-type">
+        <strong>Agent Oversight</strong>
+        <small>监管系统监控台</small>
+      </span>
+    </a>
+    <nav class="topnav" aria-label="页面导航">
+      <a href="../index.html#mechanisms">机制矩阵</a>
+      <a href="../index.html#control-loop">监管闭环</a>
+      <a href="11-report.html">终态报告</a>
+    </nav>
+    <div class="topbar-meta">
+      <span class="live-indicator"><i></i><span>监督链路在线</span></span>
+      <time id="clock" datetime="">--:--:--</time>
+    </div>
+  </header>
+
+  <main id="main-content">
+    <nav class="breadcrumb section-shell" aria-label="面包屑导航">
+      <a href="../index.html">总览</a><span>/</span><a href="../index.html#mechanisms">机制矩阵</a><span>/</span><span>03 会话接管</span>
+    </nav>
+
+    <section class="page-hero section-shell">
+      <div>
+        <p class="eyebrow"><span>MECHANISM 03</span> / SESSION TAKEOVER</p>
+        <h1>会话接管</h1>
+        <p class="page-lead">原会话中断后最容易犯的错，是"再开一个进程接着干"：两个写入者同时改同一批文件，产出的不是进度而是互相覆盖。会话接管只解决一件事——由谁接着干，且任何时刻只有一个写入者。</p>
+        <dl class="page-meta">
+        <div><dt>当前状态</dt><dd>在线运行</dd></div>
+        <div><dt>接管闸门</dt><dd>单写者锁</dd></div>
+        <div><dt>静默判定</dt><dd>≥ 15 秒</dd></div>
+        </dl>
+      </div>
+      <div class="diagram">
+        <p class="diagram-title">接管决策链</p>
+      <div class="diagram-row"><span class="dot"></span><span>心跳击穿 → 判定原会话失联</span><span class="tag">信号</span></div>
+      <p class="diagram-arrow">↓</p>
+      <div class="diagram-row"><span class="dot"></span><span>检查单写者锁 / 会话是否仍被界面占用</span><span class="tag">闸门</span></div>
+      <p class="diagram-arrow">↓</p>
+      <div class="diagram-row"><span class="dot warn"></span><span>锁被持有 → 耐心重试并提示关闭原会话</span><span class="tag">等待</span></div>
+      <p class="diagram-arrow">↓</p>
+      <div class="diagram-row"><span class="dot"></span><span>锁释放 → 发出续跑指令（带接管说明）</span><span class="tag">接管</span></div>
+      <p class="diagram-arrow">↓</p>
+      <div class="diagram-row"><span class="dot standby"></span><span>续跑者续写心跳与干预存档</span><span class="tag">续跑</span></div>
+      </div>
+    </section>
+
+    <div class="doc-layout section-shell">
+      <article class="doc-main">
+        <section class="doc-block">
+          <h2>机制要点</h2>
+        <p>接管的前提是"原写入者确实停了"，而不是"看起来没动静"。文件静默 15 秒只是弱信号：模型长时间生成时恰好不落盘，在文件系统看来同样安静。真正可靠的闸门是单写者锁。</p>
+        <p>界面还开着时，接管会被直接拒绝（<code>SESSION_BUSY</code>）。正确处置是耐心重试，并把话说清楚：请停止或关闭原会话。为了"先跑起来"而绕过锁，是数据损坏的最短路径。</p>
+        <p>接管者必须知道两件事：自己是谁（接管的续跑者），以及不要重做已完成的部分。续跑的第一步永远是读清单，而不是从第一项重新写一遍。</p>
+        <p>续跑也要有预算。同一阶段连续接管多次仍失败，说明问题不在"谁来跑"，而在"这件事本身跑不通"，此时应停止自动接管，升级为明确的失败终态。</p>
+        </section>
+
+        <section class="doc-block">
+          <h2>信号与判定</h2>
+          <table class="signal-table">
+            <thead><tr><th>观测信号</th><th>判定含义</th></tr></thead>
+            <tbody>
+          <tr><td>原会话静默 ≥ 15 秒</td><td>弱信号：只用于决定接管顺序，不足以单独触发接管</td></tr>
+          <tr><td>单写者锁仍被持有</td><td>拒绝接管：原界面还开着，等待并提示关闭会话</td></tr>
+          <tr><td>锁已释放且心跳击穿</td><td>允许接管：闸门与信号同时满足</td></tr>
+          <tr><td>接管后心跳恢复写入</td><td>接管成功，回到常规观测</td></tr>
+          <tr><td>同一阶段连续接管 ≥ 3 次</td><td>停止自动恢复，转人工介入并输出失败终态</td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section class="doc-block">
+          <h2>触发与处置</h2>
+          <ol class="step-list">
+        <li>三信号交叉判定：单写者锁已释放 + 心跳击穿 + 文件静默，三者同时满足才认为原会话真的停了。</li>
+        <li>锁被持有时输出会话忙提示并退避重试，这部分等待不计入续跑预算，避免把"人在用"误算成"系统故障"。</li>
+        <li>闸门打开后发出续跑指令，并在指令里明确"读取历史、确认未完成项、不要重做已完成部分"。</li>
+        <li>要求接管者维护进度清单：剩余工作逐条列出，完成一项立即勾选，勾完才允许停止。</li>
+        <li>接管者续写自己的心跳与干预存档，保持时间线连续，让终态报告能还原"谁在什么时候接手"。</li>
+        <li>记录接管次数；同一阶段达到上限即熔断，不再自动恢复，交给人处理。</li>
+          </ol>
+        </section>
+
+        <section class="doc-block">
+          <h2>失效模式</h2>
+        <p>锁还开着就强行接管：两个写入者同时改同一批文件，后写者覆盖前写者，丢失的工作再也找不回来。</p>
+        <p>把"文件静默"当成"会话已停"：在模型长推理期间误接管，制造出人为的双写者。</p>
+        <p>接管者从头重跑：已完成的工作被重复执行，写文件、提交这类操作可能被重复施加。</p>
+        <p>无上限接管：崩溃循环被无限放大，每次接管都消耗额度却没有推进，最终连日志都被冲掉。</p>
+          <div class="callout is-danger">
+            <div><strong>红线：</strong> 任何时候都不要为了"让它继续跑"而绕过单写者锁。宁可等一会儿，也不要出现两个写入者。</div>
+          </div>
+        </section>
+      </article>
+
+      <aside class="doc-aside">
+        <div class="panel">
+          <h3>参数速查</h3>
+          <dl class="spec-list">
+        <div><dt>静默阈值</dt><dd>≥ <code>15s</code></dd></div>
+        <div><dt>忙重试间隔</dt><dd><code>20s</code>（不占续跑预算）</dd></div>
+        <div><dt>闸门</dt><dd>codex 单写者会话锁</dd></div>
+        <div><dt>接管上限</dt><dd>同阶段 <code>3</code> 次</dd></div>
+        <div><dt>续跑入口</dt><dd><code>codex exec resume</code></dd></div>
+        <div><dt>心跳基线</dt><dd>会话 rollout 文件</dd></div>
+          </dl>
+        </div>
+        <div class="panel">
+          <h3>关联机制</h3>
+          <ul class="link-list">
+        <li><a href="01-heartbeat.html"><span class="idx">01</span><span>心跳检测</span></a></li>
+        <li><a href="02-backoff.html"><span class="idx">02</span><span>指数退避</span></a></li>
+        <li><a href="10-chaos.html"><span class="idx">10</span><span>混沌测试</span></a></li>
+          </ul>
+        </div>
+      </aside>
+    </div>
+
+    <nav class="pager section-shell" aria-label="章节翻页">
+      <div class="pager-links">
+        <a class="button button-ghost" href="02-backoff.html">← 02 指数退避</a>
+        <a class="button button-primary" href="04-rotation.html">04 供应商轮换 →</a>
+      </div>
+      <span class="pager-index">MECHANISM 03 / 12</span>
+    </nav>
+  </main>
+
+  <footer class="site-footer section-shell">
+    <div>
+      <a class="brand footer-brand" href="../index.html">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span><strong>Agent Oversight</strong><small>静态监控台</small></span>
+      </a>
+      <p>本页为监管机制说明之一，全部内容为静态文件，无后端依赖。</p>
+    </div>
+    <p class="footer-meta">MECHANISM 03 / 12<br><span id="footer-time">本地时间 --:--</span></p>
+  </footer>
+
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>
+

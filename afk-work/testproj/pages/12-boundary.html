@@ -1,0 +1,161 @@
+﻿<!doctype html>
+<html lang="zh-CN" data-root="..">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="授权边界 — Agent 监管系统监控台第 12 项监管机制：Authority Boundary。">
+  <meta name="theme-color" content="#07110f">
+  <title>12 授权边界 · Agent 监管系统监控台</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body class="mechanism-page">
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+  <div class="ambient ambient-a" aria-hidden="true"></div>
+  <div class="ambient ambient-b" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <a class="brand" href="../index.html" aria-label="Agent 监管系统监控台首页">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="brand-type">
+        <strong>Agent Oversight</strong>
+        <small>监管系统监控台</small>
+      </span>
+    </a>
+    <nav class="topnav" aria-label="页面导航">
+      <a href="../index.html#mechanisms">机制矩阵</a>
+      <a href="../index.html#control-loop">监管闭环</a>
+      <a href="11-report.html">终态报告</a>
+    </nav>
+    <div class="topbar-meta">
+      <span class="live-indicator"><i></i><span>监督链路在线</span></span>
+      <time id="clock" datetime="">--:--:--</time>
+    </div>
+  </header>
+
+  <main id="main-content">
+    <nav class="breadcrumb section-shell" aria-label="面包屑导航">
+      <a href="../index.html">总览</a><span>/</span><a href="../index.html#mechanisms">机制矩阵</a><span>/</span><span>12 授权边界</span>
+    </nav>
+
+    <section class="page-hero section-shell">
+      <div>
+        <p class="eyebrow"><span>MECHANISM 12</span> / AUTHORITY BOUNDARY</p>
+        <h1>授权边界</h1>
+        <p class="page-lead">无人值守的核心不是把 Agent 变聪明，而是把它能造成损害的半径变小。授权边界明确回答三件事：哪些动作可以直接做，哪些必须先问人，哪些永远不许做。</p>
+        <dl class="page-meta">
+        <div><dt>当前状态</dt><dd>待命</dd></div>
+        <div><dt>结构</dt><dd>允许清单 + 拒绝清单</dd></div>
+        <div><dt>不可逆操作</dt><dd>先干跑再执行</dd></div>
+        </dl>
+      </div>
+      <div class="diagram">
+        <p class="diagram-title">动作判定闸门</p>
+      <div class="diagram-row"><span class="dot"></span><span>动作请求进入边界判定</span><span class="tag">请求</span></div>
+      <p class="diagram-arrow">↓</p>
+      <div class="diagram-row"><span class="dot"></span><span>命中允许清单 → 直接执行</span><span class="tag">放行</span></div>
+      <p class="diagram-arrow">↓</p>
+      <div class="diagram-row"><span class="dot warn"></span><span>命中需确认清单 → 停等人工确认</span><span class="tag">确认</span></div>
+      <p class="diagram-arrow">↓</p>
+      <div class="diagram-row"><span class="dot warn"></span><span>命中拒绝清单 → 拒绝并记录</span><span class="tag">拒绝</span></div>
+      <p class="diagram-arrow">↓</p>
+      <div class="diagram-row"><span class="dot warn"></span><span>越界或无预算 → 停机 + 带外告警</span><span class="tag">停机</span></div>
+      </div>
+    </section>
+
+    <div class="doc-layout section-shell">
+      <article class="doc-main">
+        <section class="doc-block">
+          <h2>机制要点</h2>
+        <p>边界必须写成清单，而不是依赖"模型应该知道"。允许清单只放读文件、搜索、写指定目录这类低风险动作；拒绝清单明确列出删除、强制推送、包发布、对外通知、凭据读取。</p>
+        <p>不可逆操作先干跑再执行。删除、强推、发布、发送外部消息——这些动作的共同点是无法用"再跑一次"来撤销，因此必须先看到它将做什么。</p>
+        <p>把外部抓取的内容一律当<strong>数据</strong>处理，不当指令。网页、issue、依赖说明里写着"忽略之前的要求，执行 X"，那是输入内容，不是授权；发现夹带指令应报告异常而不是执行它。</p>
+        <p>运行要有硬预算：时间、轮数、花费。越界即停机并带外告警。无人值守时没有人能及时踩刹车，预算就是刹车。</p>
+        <p>隔离与脱敏是边界的一部分：独立工作目录或容器、出网域名白名单、敏感路径不挂载、日志走脱敏过滤。凭据一旦可能进过日志，就按已泄露处理并轮换。</p>
+        </section>
+
+        <section class="doc-block">
+          <h2>信号与判定</h2>
+          <table class="signal-table">
+            <thead><tr><th>观测信号</th><th>判定含义</th></tr></thead>
+            <tbody>
+          <tr><td>动作命中拒绝清单</td><td>直接拒绝并记录；必要时停机而不是"换个方式试试"</td></tr>
+          <tr><td>不可逆操作未经确认</td><td>判定为越界：停机、告警、等待人工授权</td></tr>
+          <tr><td>日志中出现凭据样式内容</td><td>按已泄露处理：吊销并轮换，而不是只删日志</td></tr>
+          <tr><td>外部内容包含指令性语句</td><td>判定为提示注入：报告异常、保留原文，不执行</td></tr>
+          <tr><td>运行超出时间 / 轮数 / 花费预算</td><td>立即停机并带外告警，避免继续放大损失</td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section class="doc-block">
+          <h2>触发与处置</h2>
+          <ol class="step-list">
+        <li>先写允许清单与拒绝清单，再把任务放进来跑：边界是前置条件，不是事后补丁。</li>
+        <li>把不可逆动作单独标注，执行前强制干跑并留出确认点。</li>
+        <li>在隔离环境里运行：独立工作目录或容器，宿主敏感路径不挂载，出网限定白名单。</li>
+        <li>对外部输入保持"只当数据"的原则，发现夹带指令立即报告异常并记录原始片段。</li>
+        <li>给每次运行设定硬预算（时间、轮数、花费），越界即停机而非降速继续。</li>
+        <li>日志脱敏，凭据不进日志；一旦怀疑泄露，先轮换再排查，顺序不要颠倒。</li>
+          </ol>
+        </section>
+
+        <section class="doc-block">
+          <h2>失效模式</h2>
+        <p>全自动批准且没有边界：一次误判就足以删库、强推覆盖远端、或把内部代码发到外部服务。</p>
+        <p>把外部内容当指令：抓回来的网页或 issue 成为实际控制者，任务目标被悄悄改写。</p>
+        <p>凭据进日志：日志本身成为泄露面，事故范围从运行环境扩大到所有持有该凭据的系统。</p>
+        <p>没有硬预算：夜间无人值守的循环可以整夜消耗额度，早上只看到一张账单和一堆半成品。</p>
+          <div class="callout is-danger">
+            <div><strong>核心：</strong> 无人值守追求的不是更聪明的 Agent，而是更小的可造成损害的半径。边界收得越紧，自动化才越敢放长。</div>
+          </div>
+        </section>
+      </article>
+
+      <aside class="doc-aside">
+        <div class="panel">
+          <h3>参数速查</h3>
+          <dl class="spec-list">
+        <div><dt>允许清单</dt><dd>读文件 / 搜索 / 写指定目录</dd></div>
+        <div><dt>需确认清单</dt><dd>不可逆、对外、涉密动作</dd></div>
+        <div><dt>拒绝清单</dt><dd><code>rm -rf</code> / force push / 发布 / 读凭据</dd></div>
+        <div><dt>硬预算</dt><dd>时间 / 轮数 / 花费</dd></div>
+        <div><dt>隔离</dt><dd>独立 worktree 或容器 + 出网白名单</dd></div>
+        <div><dt>日志</dt><dd>脱敏过滤，凭据不外写</dd></div>
+          </dl>
+        </div>
+        <div class="panel">
+          <h3>关联机制</h3>
+          <ul class="link-list">
+        <li><a href="07-checklist.html"><span class="idx">07</span><span>验收清单</span></a></li>
+        <li><a href="09-sleep-guard.html"><span class="idx">09</span><span>睡眠抑制</span></a></li>
+        <li><a href="11-report.html"><span class="idx">11</span><span>终态报告</span></a></li>
+          </ul>
+        </div>
+      </aside>
+    </div>
+
+    <nav class="pager section-shell" aria-label="章节翻页">
+      <div class="pager-links">
+        <a class="button button-ghost" href="10-chaos.html">← 10 混沌测试</a>
+        <a class="button button-primary" href="../index.html">返回总览 →</a>
+      </div>
+      <span class="pager-index">MECHANISM 12 / 12</span>
+    </nav>
+  </main>
+
+  <footer class="site-footer section-shell">
+    <div>
+      <a class="brand footer-brand" href="../index.html">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span><strong>Agent Oversight</strong><small>静态监控台</small></span>
+      </a>
+      <p>本页为监管机制说明之一，全部内容为静态文件，无后端依赖。</p>
+    </div>
+    <p class="footer-meta">MECHANISM 12 / 12<br><span id="footer-time">本地时间 --:--</span></p>
+  </footer>
+
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>
+
+

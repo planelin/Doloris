@@ -289,6 +289,38 @@ def _read_meta(p: Path):
     return m_sid.group(1), cwd
 
 
+def codex_app_running():
+    """检测 Codex 桌面App是否存活: Electron UI 进程名 ChatGPT*,
+    持锁的 app-server 进程名 codex*。返回 True/False; None=检测失败。"""
+    try:
+        r = subprocess.run(["tasklist", "/FO", "CSV", "/NH"],
+                           capture_output=True, timeout=15)
+    except Exception:
+        return None
+    out = r.stdout.decode("gbk", errors="replace").lower()
+    for line in out.splitlines():
+        name = line.split('","')[0].strip('"').strip()
+        if name.startswith("codex") or name.startswith("chatgpt"):
+            return True
+    return False
+
+
+def read_session_title(p: Path, scan=65536):
+    """从 rollout 提取任务标题(首条用户消息, 截断60字), 供用户核对接管对象。"""
+    try:
+        head = p.open("r", encoding="utf-8", errors="replace").read(scan)
+    except OSError:
+        return ""
+    m = re.search(r'"role"\s*:\s*"user"\s*,\s*"content"\s*:\s*"((?:[^"\\]|\\.)*)"',
+                  head)
+    if not m:
+        m = re.search(r'"operation":"enqueue"[^\n]*?"content":'
+                      r'"((?:[^"\\]|\\.)*)"', head)
+    if not m:
+        return ""
+    return _json_str(m.group(1)).strip()[:60]
+
+
 def find_last_codex_session(cwd=None):
     """找最近活跃的 codex 会话: 全局按 rollout mtime 降序取最新。
     'last'的语义 = 用户最近在用的那个(正在生成的会话 mtime 必然最新);
@@ -650,9 +682,11 @@ def main():
                     return 1
                 rollout, scwd = got
                 sid = args.adopt
-            ivl("ADOPT", session=sid,
+            ivl("ADOPT", session=sid, title=read_session_title(rollout) if rollout else "",
                 rollout=rollout.name[:60] if rollout else "(文件未定位)",
                 session_cwd=scwd or "?")
+            if rollout:
+                log(f"ADOPT   任务标题: {read_session_title(rollout)}")
             if rollout:
                 wait_session_quiet(rollout)
             driver.session_id = sid
@@ -801,16 +835,34 @@ def main():
                     detail=f"会话始终被占用(耐心等待{busy_waits}次)")
                 break
             lockf = CODEX_LOCKS / f"{driver.session_id}.lock"
-            if lockf.exists() and busy_waits % 6 != 5:
-                # 锁文件在: 静默轮询; 但每6轮(约2分钟)做一次真实resume试探——
-                # App异常退出会留下残留锁文件, 文件存在不等于真有人写
-                if busy_waits % 3 == 0:
-                    ivl("BUSY_WAIT", wait_sec=20, n=busy_waits + 1, lock="held")
+            if lockf.exists():
                 busy_waits += 1
+                app = codex_app_running()
+                if app is False:
+                    # App确认已退出但锁文件残留 → 立即清除, ≤20秒后接管
+                    try:
+                        lockf.unlink()
+                        ivl("STALE_LOCK_REMOVED", n=busy_waits)
+                    except OSError as e:
+                        ivl("WARN", msg=f"清理残留锁失败: {e}")
+                    time.sleep(5)
+                    continue
+                if app is None and busy_waits % 6 == 0:
+                    # 进程检测失败时退回真实试探
+                    ivl("BUSY_TAKEOVER", lock="probe-unknown")
+                    driver.resume(resume_path)
+                    ivl("RESUMED_BUSY", pid=driver.proc.pid,
+                        provider=driver.provider_name)
+                    launched_at = time.time()
+                    outcome, outcome_detail = None, ""
+                    last_error_note = ""
+                    continue
+                if busy_waits % 9 == 1:
+                    ivl("BUSY_WAIT", wait_sec=20, n=busy_waits,
+                        lock="held", app="alive")
                 time.sleep(20)
                 continue
-            ivl("BUSY_TAKEOVER",
-                lock="released" if not lockf.exists() else "probe-stale")
+            ivl("BUSY_TAKEOVER", lock="released")
             driver.resume(resume_path)
             ivl("RESUMED_BUSY", pid=driver.proc.pid, provider=driver.provider_name)
             launched_at = time.time()

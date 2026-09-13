@@ -44,3 +44,11 @@
 {"ts": "2026-09-13T13:48:18", "event": "HEARTBEAT", "alive": true, "stale_sec": 30}
 {"ts": "2026-09-13T13:48:48", "event": "HEARTBEAT", "alive": true, "stale_sec": 60}
 {"ts": "2026-09-13T13:49:18", "event": "HEARTBEAT", "alive": true, "stale_sec": 91}
+{"ts": "2026-09-13T13:49:48", "event": "HEARTBEAT", "alive": true, "stale_sec": 121}
+{"ts": "2026-09-13T13:50:18", "event": "HEARTBEAT", "alive": true, "stale_sec": 151}
+{"ts": "2026-09-13T13:50:49", "event": "HEARTBEAT", "alive": true, "stale_sec": 181}
+{"ts": "2026-09-13T13:51:19", "event": "HEARTBEAT", "alive": true, "stale_sec": 211}
+{"ts": "2026-09-13T13:51:49", "event": "HEARTBEAT", "alive": true, "stale_sec": 242}
+{"ts": "2026-09-13T13:52:19", "event": "HEARTBEAT", "alive": true, "stale_sec": 272}
+{"ts": "2026-09-13T13:52:49", "event": "HEARTBEAT", "alive": true, "stale_sec": 302}
+{"ts": "2026-09-13T13:53:19", "event": "HEARTBEAT", "alive": true, "stale_sec": 332}

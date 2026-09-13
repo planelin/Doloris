@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="zh-CN" data-root="..">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="终态报告 — Agent 监管系统监控台第 12 项监管机制：Terminal Report。">
+  <meta name="theme-color" content="#07110f">
+  <title>12 终态报告 · Agent 监管系统监控台</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body class="mechanism-page">
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+  <div class="ambient ambient-a" aria-hidden="true"></div>
+  <div class="ambient ambient-b" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <a class="brand" href="../index.html" aria-label="Agent 监管系统监控台首页">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="brand-type">
+        <strong>Agent Oversight</strong>
+        <small>监管系统监控台</small>
+      </span>
+    </a>
+    <nav class="topnav" aria-label="页面导航">
+      <a href="../index.html#mechanisms">机制矩阵</a>
+      <a href="../index.html#control-loop">监管闭环</a>
+      <a href="12-report.html">终态报告</a>
+    </nav>
+    <div class="topbar-meta">
+      <span class="live-indicator"><i></i><span>监督链路在线</span></span>
+      <time id="clock" datetime="">--:--:--</time>
+    </div>
+  </header>
+
+  <main id="main-content">
+    <nav class="breadcrumb section-shell" aria-label="面包屑导航">
+      <a href="../index.html">总览</a><span>/</span><a href="../index.html#mechanisms">机制矩阵</a><span>/</span><span>12 终态报告</span>
+    </nav>
+
+    <section class="page-hero section-shell">
+      <div>
+        <p class="eyebrow"><span>MECHANISM 12</span> / TERMINAL REPORT</p>
+        <h1>终态报告</h1>
+        <p class="page-lead">监管闭环的最后一步，是把过程收敛成一个结论。终态报告只回答一个问题：这次运行到底是成功、失败，还是被放弃——以及判断依据是什么。</p>
+        <dl class="page-meta">
+        <div><dt>当前状态</dt><dd>在线运行</dd></div>
+        <div><dt>终态种类</dt><dd>成功 / 失败 / 放弃</dd></div>
+        <div><dt>数据来源</dt><dd>干预存档 + 验收清单</dd></div>
+        </dl>
+      </div>
+      <div class="diagram">
+        <p class="diagram-title">终态收敛路径</p>
+      <div class="diagram-row"><span class="dot"></span><span>运行结束：正常结束、异常退出或被击杀</span><span class="tag">结束</span></div>
+      <p class="diagram-arrow">↓</p>
+      <div class="diagram-row"><span class="dot"></span><span>汇总接管次数、退避时长、轮换次数</span><span class="tag">汇总</span></div>
+      <p class="diagram-arrow">↓</p>
+      <div class="diagram-row"><span class="dot"></span><span>读取验收清单的勾选状态作为判据</span><span class="tag">判据</span></div>
+      <p class="diagram-arrow">↓</p>
+      <div class="diagram-row"><span class="dot"></span><span>判定终态：成功 / 失败 / 放弃</span><span class="tag">判定</span></div>
+      <p class="diagram-arrow">↓</p>
+      <div class="diagram-row"><span class="dot standby"></span><span>输出报告并给出下一步动作</span><span class="tag">输出</span></div>
+      </div>
+    </section>
+
+    <div class="doc-layout section-shell">
+      <article class="doc-main">
+        <section class="doc-block">
+          <h2>机制要点</h2>
+        <p>终态只有三种，并且必须互斥：成功（判据全部满足）、失败（判据不满足且不再重试）、放弃（预算耗尽或被人为停止）。"基本完成"不是终态，它只是没有结论。</p>
+        <p>报告要能解释为什么，而不只是结果如何：接管了几次、退避了多久、换过哪些端点、有没有触碰授权边界。只有结论没有依据的报告，会在下一个问题出现时立刻失效。</p>
+        <p>报告是给人看的：开头先给结论，后面才是依据与时间线。把最重要的信息埋在第三百行，等于没有写。</p>
+        <p>成功也必须写报告。没有报告的成功无法复现，也就无法成为后续对比的基线；反过来，失败如果写清楚了依据，本身就是有价值的知识。</p>
+        <p>报告与干预存档互相印证：报告给结论，存档给证据，两者不一致时以存档为准并标记异常。</p>
+        </section>
+
+        <section class="doc-block">
+          <h2>信号与判定</h2>
+          <table class="signal-table">
+            <thead><tr><th>观测信号</th><th>判定含义</th></tr></thead>
+            <tbody>
+          <tr><td>验收清单全部勾选</td><td>候选成功终态，需独立校验复现判据</td></tr>
+          <tr><td>存在未勾项且预算耗尽</td><td>失败或放弃终态，按"是否仍可继续"区分并写明原因</td></tr>
+          <tr><td>同一阶段接管达到上限</td><td>失败终态：问题不在"谁来跑"，而在任务本身</td></tr>
+          <tr><td>端点池全部不可用</td><td>失败终态，并附端点健康快照</td></tr>
+          <tr><td>人为停止运行</td><td>放弃终态，记录停止者与停止原因</td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section class="doc-block">
+          <h2>触发与处置</h2>
+          <ol class="step-list">
+        <li>运行一结束就汇总事实：接管次数、退避总时长、轮换次数、边界触发情况。</li>
+        <li>读取验收清单的勾选状态，把它作为唯一成功判据，不用阶段描述代替。</li>
+        <li>判定终态：全勾为成功；有未勾且不可继续为失败；预算耗尽或人为停止为放弃。</li>
+        <li>按"结论 → 依据 → 时间线"的顺序写报告，把最关键的判断放在开头。</li>
+        <li>把报告落盘到运行目录，并与干预存档相互引用，保证事后可回溯到具体证据行。</li>
+        <li>给出下一步建议：复现、调整阈值、补齐授权，或直接关闭——终态之后系统应当停机，而不是继续空转。</li>
+          </ol>
+        </section>
+
+        <section class="doc-block">
+          <h2>失效模式</h2>
+        <p>没有终态：任务永远停在"快好了"，既不能验收也不能复盘，最后只能靠人盯着。</p>
+        <p>用"基本完成"代替结论：未完成的部分被语言抹平，失败无法被记录，也就无法被修复。</p>
+        <p>只写结果不写依据：报告读起来像结论，遇到追问时没有任何可追溯的材料。</p>
+        <p>成功不写报告：下一次遇到相同任务时，没有任何基线可以对照，调优只能重新猜。</p>
+          <div class="callout">
+            <div><strong>结论：</strong> 没有终态的自动化，最终都会退化成需要人盯着的自动化。报告就是让它能够自己结束的那份声明。</div>
+          </div>
+        </section>
+      </article>
+
+      <aside class="doc-aside">
+        <div class="panel">
+          <h3>参数速查</h3>
+          <dl class="spec-list">
+        <div><dt>终态种类</dt><dd>成功 / 失败 / 放弃</dd></div>
+        <div><dt>输入</dt><dd>干预存档 + 验收清单</dd></div>
+        <div><dt>输出</dt><dd><code>runs/&lt;时间戳&gt;/report.md</code></dd></div>
+        <div><dt>结构</dt><dd>结论 → 依据 → 时间线</dd></div>
+        <div><dt>成功判据</dt><dd>清单全勾且可复现</dd></div>
+        <div><dt>终态后动作</dt><dd>停机，不继续空转</dd></div>
+          </dl>
+        </div>
+        <div class="panel">
+          <h3>关联机制</h3>
+          <ul class="link-list">
+        <li><a href="03-takeover.html"><span class="idx">03</span><span>会话接管</span></a></li>
+        <li><a href="07-checklist.html"><span class="idx">07</span><span>验收清单</span></a></li>
+        <li><a href="10-chaos.html"><span class="idx">10</span><span>混沌测试</span></a></li>
+          </ul>
+        </div>
+      </aside>
+    </div>
+
+    <nav class="pager section-shell" aria-label="章节翻页">
+      <div class="pager-links">
+        <a class="button button-ghost" href="11-boundary.html">← 11 授权边界</a>
+        <a class="button button-primary" href="../index.html">返回总览 →</a>
+      </div>
+      <span class="pager-index">MECHANISM 12 / 12</span>
+    </nav>
+  </main>
+
+  <footer class="site-footer section-shell">
+    <div>
+      <a class="brand footer-brand" href="../index.html">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span><strong>Agent Oversight</strong><small>静态监控台</small></span>
+      </a>
+      <p>本页为监管机制说明之一，全部内容为静态文件，无后端依赖。</p>
+    </div>
+    <p class="footer-meta">MECHANISM 12 / 12<br><span id="footer-time">本地时间 --:--</span></p>
+  </footer>
+
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-CN" data-root="..">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="心跳检测 — Agent 监管系统监控台第 01 项监管机制：Heartbeat。">
+  <meta name="theme-color" content="#07110f">
+  <title>01 心跳检测 · Agent 监管系统监控台</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body class="mechanism-page">
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+  <div class="ambient ambient-a" aria-hidden="true"></div>
+  <div class="ambient ambient-b" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <a class="brand" href="../index.html" aria-label="Agent 监管系统监控台首页">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="brand-type">
+        <strong>Agent Oversight</strong>
+        <small>监管系统监控台</small>
+      </span>
+    </a>
+    <nav class="topnav" aria-label="页面导航">
+      <a href="../index.html#mechanisms">机制矩阵</a>
+      <a href="../index.html#control-loop">监管闭环</a>
+      <a href="12-report.html">终态报告</a>
+    </nav>
+    <div class="topbar-meta">
+      <span class="live-indicator"><i></i><span>监督链路在线</span></span>
+      <time id="clock" datetime="">--:--:--</time>
+    </div>
+  </header>
+
+  <main id="main-content">
+    <nav class="breadcrumb section-shell" aria-label="面包屑导航">
+      <a href="../index.html">总览</a><span>/</span><a href="../index.html#mechanisms">机制矩阵</a><span>/</span><span>01 心跳检测</span>
+    </nav>
+
+    <section class="page-hero section-shell">
+      <div>
+        <p class="eyebrow"><span>MECHANISM 01</span> / HEARTBEAT</p>
+        <h1>心跳检测</h1>
+        <p class="page-lead">心跳是监管系统的最低分辨率信号：它回答的不是"任务做完了吗"，而是"这个 Agent 现在还活着吗、活着在做什么"。没有心跳，退避、接管、轮换全都失去判定依据。</p>
+        <dl class="page-meta">
+        <div><dt>当前状态</dt><dd>在线运行</dd></div>
+        <div><dt>采集间隔</dt><dd>5 秒</dd></div>
+        <div><dt>判定阈值</dt><dd>warn 90s / kill 300s</dd></div>
+        </dl>
+      </div>
+      <div class="diagram">
+        <p class="diagram-title">心跳生命周期</p>
+      <div class="diagram-row"><span class="dot"></span><span>进程启动，写入首条心跳</span><span class="tag">t0</span></div>
+      <p class="diagram-arrow">↓</p>
+      <div class="diagram-row"><span class="dot"></span><span>心跳携带 时间戳 + 阶段 + 已完成项数</span><span class="tag">可判定</span></div>
+      <p class="diagram-arrow">↓</p>
+      <div class="diagram-row"><span class="dot"></span><span>监管侧每 5 秒采样并比对阈值</span><span class="tag">观测中</span></div>
+      <p class="diagram-arrow">↓</p>
+      <div class="diagram-row"><span class="dot warn"></span><span>超过 kill 阈值 → 判定僵死</span><span class="tag">告警</span></div>
+      <p class="diagram-arrow">↓</p>
+      <div class="diagram-row"><span class="dot standby"></span><span>触发接管续跑，心跳恢复写入</span><span class="tag">恢复</span></div>
+      </div>
+    </section>
+
+    <div class="doc-layout section-shell">
+      <article class="doc-main">
+        <section class="doc-block">
+          <h2>机制要点</h2>
+        <p>心跳不是一句"我还活着"的空包。它必须带三样东西：时间戳、当前阶段、已完成项数。只有时间戳的心跳无法区分"正在长推理"和"进程还活着但已经空转"，而后者恰恰是无人值守里最常见的隐性故障。</p>
+        <p>阈值要分级：<code>warn</code>（如 90 秒）只记录并告警，允许长推理、写盘点、跑测试这类合法暂停；<code>kill</code>（如 300 秒）才真正动手。一刀切的紧阈值会把正常的长任务误杀成"故障"。</p>
+        <p>监管者必须与被监管进程分离——独立进程或独立机器。如果看门狗和任务跑在同一个进程里，一次段错误就会把两者一起带走，心跳检测形同不存在。</p>
+        <p>心跳只负责"观测面"：它产生信号，不做决策。重试节奏交给<strong>指数退避</strong>，接管动作交给<strong>会话接管</strong>，端点切换交给<strong>供应商轮换</strong>。</p>
+        </section>
+
+        <section class="doc-block">
+          <h2>信号与判定</h2>
+          <table class="signal-table">
+            <thead><tr><th>观测信号</th><th>判定含义</th></tr></thead>
+            <tbody>
+          <tr><td>心跳间隔 ≤ 30 秒</td><td>存活，继续观测，不产生任何干预</td></tr>
+          <tr><td>心跳缺失 ≥ 90 秒</td><td>warn：记录并告警，可能是长推理或落盘点，暂不动手</td></tr>
+          <tr><td>心跳缺失 ≥ 300 秒</td><td>kill：判定僵死，先取现场再进入接管流程</td></tr>
+          <tr><td>心跳在，但阶段长时间不变</td><td>空转：进程活着却没有推进，按停滞处理而非按死亡处理</td></tr>
+          <tr><td>心跳时间戳倒退或抖动异常</td><td>可疑：可能存在第二个写入者或时钟异常，先停写再排查</td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section class="doc-block">
+          <h2>触发与处置</h2>
+          <ol class="step-list">
+        <li>进程启动后立即写入首条心跳，不要等第一个阶段完成才写，否则启动期是观测盲区。</li>
+        <li>每次阶段切换、每完成一项工作立即刷新心跳，让"进度"和"存活"共用一个信号。</li>
+        <li>监管侧固定间隔采样（如 5 秒一次），只读不写，避免与被监管进程争抢文件锁。</li>
+        <li>超过 warn 阈值只告警不动手，并把当时的阶段写进干预存档，供事后判断是否是误报。</li>
+        <li>超过 kill 阈值先取现场：保存最后若干行日志、当前阶段、已完成项数，再两段式终止（先优雅退出，超时再强杀）。</li>
+        <li>接管者续跑时继续向同一个心跳文件追加，保持时间线连续，让报告能还原完整过程。</li>
+          </ol>
+        </section>
+
+        <section class="doc-block">
+          <h2>失效模式</h2>
+        <p>心跳只写时间戳不写阶段，导致"活着但空转"永远不可见——这是本机制最常见也最贵的失效方式。</p>
+        <p>看门狗与被监控进程同生共死：故障一来两条链路一起消失，没人报警。</p>
+        <p>阈值过紧，长推理被当成僵死反复击杀，任务永远跑不到终点；阈值过松，故障被发现时上下文早已丢失。</p>
+        <p>心跳写在与产物相同的文件或锁上，写入冲突时心跳先坏，观测面随之失明（参见第 11 项：文件系统冲突）。</p>
+          <div class="callout">
+            <div><strong>注意：</strong> 心跳是"活着的证据"，不是"完成的证据"。任务是否完成只有<strong>验收清单</strong>说了算，别让心跳正常被误读成任务成功。</div>
+          </div>
+        </section>
+      </article>
+
+      <aside class="doc-aside">
+        <div class="panel">
+          <h3>参数速查</h3>
+          <dl class="spec-list">
+        <div><dt>采样间隔</dt><dd><code>5s</code></dd></div>
+        <div><dt>告警阈值</dt><dd><code>90s</code>（warn）</dd></div>
+        <div><dt>击穿阈值</dt><dd><code>300s</code>（kill）</dd></div>
+        <div><dt>心跳字段</dt><dd><code>ts / stage / done</code></dd></div>
+        <div><dt>载体</dt><dd>心跳文件或结构化日志行</dd></div>
+        <div><dt>分离要求</dt><dd>监管者独立进程</dd></div>
+          </dl>
+        </div>
+        <div class="panel">
+          <h3>关联机制</h3>
+          <ul class="link-list">
+        <li><a href="03-takeover.html"><span class="idx">03</span><span>会话接管</span></a></li>
+        <li><a href="12-report.html"><span class="idx">11</span><span>终态报告</span></a></li>
+        <li><a href="07-checklist.html"><span class="idx">07</span><span>验收清单</span></a></li>
+          </ul>
+        </div>
+      </aside>
+    </div>
+
+    <nav class="pager section-shell" aria-label="章节翻页">
+      <div class="pager-links">
+        <a class="button button-ghost" href="../index.html">← 返回总览</a>
+        <a class="button button-primary" href="02-backoff.html">02 指数退避 →</a>
+      </div>
+      <span class="pager-index">MECHANISM 01 / 12</span>
+    </nav>
+  </main>
+
+  <footer class="site-footer section-shell">
+    <div>
+      <a class="brand footer-brand" href="../index.html">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span><strong>Agent Oversight</strong><small>静态监控台</small></span>
+      </a>
+      <p>本页为监管机制说明之一，全部内容为静态文件，无后端依赖。</p>
+    </div>
+    <p class="footer-meta">MECHANISM 01 / 12<br><span id="footer-time">本地时间 --:--</span></p>
+  </footer>
+
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>
