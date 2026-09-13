@@ -60,7 +60,10 @@ QUICK_PROMPT = """你被监管系统接管(原会话中断, 现在无头续跑)�
 2. 新产出的文件一律放入当前工作目录下的 afk-work/ 子目录。
 3. 维护 afk-work/PROGRESS.md: 逐条列出剩余工作项(- [ ]), 每完成一项改为 - [x];
    若会话中的任务已全部完成, 也要创建该文件, 写明"无剩余工作"并把清单全部勾选。
-4. 清单全部勾完才允许停止。全程不要提问, 不要等待确认。
+4. 遇到需要用户决策的问题(方向取舍/方案选择/参数确认): 结束回合, 在最终消息以
+   【决策请求】开头, 列出问题与你建议的选项, 然后停止——会有决策代理替用户答复
+   并让你继续; 除此之外不要停下来等待确认。
+5. 清单全部勾完才允许停止。
 """
 
 
@@ -569,14 +572,12 @@ def discover_antigravity_project_id(agexe, csrf, ports):
     return None
 
 
-def run_l2_antigravity(run_dir, prompt, n, scwd, project_id, model="flash",
-                       timeout_sec=1800):
-    """经agentapi桥创建Antigravity修复会话(异步), 轮询verdict文件回收决议。"""
-    verdict_file = Path(scwd) / "afk-l2-verdict.txt"
-    full_prompt = L2_PROMPT_TMPL.format(
-        sid="(见会话历史)", scwd=scwd, errors=prompt, err_tail="(同上)", n=n
-    ) + f"\n【交付】把最终决议写入文件: {verdict_file}\n"
-    full_prompt = full_prompt.replace("\n", " | ")
+def run_l2_antigravity(run_dir, full_prompt, n, scwd, verdict_file,
+                       project_id=None, model="flash", timeout_sec=1800):
+    """经agentapi桥创建Antigravity会话(异步), 轮询verdict文件回收输出。
+    full_prompt 由调用方组好(含交付文件指令), 此处压平换行后发送。"""
+    verdict_file = Path(scwd) / verdict_file
+    flat = full_prompt.replace("\n", " | ")
     log_path = run_dir / f"l2-{n}.log"
     csrf, ports, agexe = discover_antigravity_bridge()
     if not csrf or not ports or not agexe.exists():
@@ -596,7 +597,7 @@ def run_l2_antigravity(run_dir, prompt, n, scwd, project_id, model="flash",
         try:
             r = subprocess.run(
                 [str(agexe), "agentapi", "new-conversation",
-                 f"--model={model}", full_prompt],
+                 f"--model={model}", flat],
                 capture_output=True, timeout=120, env=env, cwd=str(WS))
         except subprocess.TimeoutExpired:
             last_err = "new-conversation超时"
@@ -622,8 +623,21 @@ def run_l2_antigravity(run_dir, prompt, n, scwd, project_id, model="flash",
 
 
 # ---------------------------------------------------------------- L2 升级agent
-L2_PROMPT_TMPL = """你是监管系统的L2诊断修复agent, 运行在稳定通道上(与故障的codex中转无关)。
+ASK_MARKERS = ("【决策请求】", "【需要决策】", "[决策请求]")
 
+L2_INTERACT_TMPL = """你是监管系统的L2决策代理, 用户暂时不在场, 由你代表用户为 codex worker 的决策请求拍板。
+
+任务上下文: 会话 {sid} (cwd={scwd})
+
+worker的决策请求原文:
+{question}
+
+委托策略(代表用户决策的边界):
+- 技术方向/实现方案/参数选择/路径取舍/依赖选型: 你直接决定, 给出明确、可直接执行的指令并说明理由
+- 涉及花钱、删除数据、对外发布、不可逆破坏性操作: 不要拍板, 最后一行输出 DEFER
+"""
+
+L2_PROMPT_TMPL = """你是监管系统的L2诊断修复agent, 运行在稳定通道上(与故障的codex中转无关)。
 背景: 一个 codex CLI 无头 worker 在接管会话 {sid} (cwd={scwd}) 中反复失败,
 L1看门狗(退避重试/换端点)已耗尽预算。你是最后一道自动防线。
 
@@ -678,22 +692,58 @@ def run_l2_agent(l2_cmd, run_dir, prompt, n, proxy):
     verdict = "NO-VERDICT"
     for line in reversed(text.splitlines()):
         line = line.strip()
-        if line.endswith("FIXED") or line.endswith("NEW_SESSION") \
-                or line.endswith("UNFIXABLE"):
+        if line.endswith(("FIXED", "NEW_SESSION", "UNFIXABLE",
+                          "PROCEED", "DEFER")):
             verdict = line.split()[-1]
             break
     return verdict, text, log_path
 
 
+def worker_last_message(run_dir):
+    """worker 最后留言: codex 走 -o 落盘文件; claude 取 stdout 尾部。"""
+    lm = run_dir / "codex-last-message.txt"
+    try:
+        if lm.exists():
+            return lm.read_text(encoding="utf-8", errors="replace")[-1500:]
+    except OSError:
+        pass
+    try:
+        out = run_dir / "worker-stdout.log"
+        return (out.read_text(encoding="utf-8", errors="replace")[-1500:]
+                if out.exists() else "")
+    except OSError:
+        return ""
+
+
 def l2_dispatch(l2_cmd, args, proxy, run_dir, driver, session_cwd, n,
-                outcome_detail, errors_text, err_tail):
-    """按通道路由调用L2 agent, 返回 (verdict, text, log_path)。"""
+                outcome_detail, errors_text, err_tail, kind="repair"):
+    """按通道与种类路由调用L2 agent, 返回 (verdict, text, log_path)。
+    kind=repair: 诊断修复(决议: FIXED/NEW_SESSION/UNFIXABLE)
+    kind=interaction: 代答决策请求(决议: PROCEED/DEFER, text=给codex的指令)"""
     if l2_cmd.lower() in ("antigravity", "agy"):
-        return run_l2_antigravity(run_dir, errors_text, n, session_cwd,
+        if kind == "interaction":
+            vfile = "afk-l2-answer.txt"
+            full = L2_INTERACT_TMPL.format(sid=driver.session_id,
+                                           scwd=session_cwd,
+                                           question=errors_text)
+            full += (f"\n【交付】把你的完整决定(可直接发给codex执行的指令)写入文件: "
+                     f"{Path(session_cwd) / vfile}，并在最后一行单独输出: PROCEED 或 DEFER。")
+        else:
+            vfile = "afk-l2-verdict.txt"
+            full = L2_PROMPT_TMPL.format(sid=driver.session_id, scwd=session_cwd,
+                                         errors=errors_text,
+                                         err_tail=err_tail or "(无)", n=n)
+            full += (f"\n【交付】把最终决议(单独一词: FIXED/NEW_SESSION/UNFIXABLE)"
+                     f"写入文件: {Path(session_cwd) / vfile}。")
+        return run_l2_antigravity(run_dir, full, n, session_cwd, vfile,
                                   args.l2_project_id or None, model=args.l2_model)
-    prompt = L2_PROMPT_TMPL.format(sid=driver.session_id, scwd=session_cwd,
-                                   errors=errors_text,
-                                   err_tail=err_tail or "(无)", n=n)
+    if kind == "interaction":
+        prompt = L2_INTERACT_TMPL.format(sid=driver.session_id,
+                                         scwd=session_cwd, question=errors_text)
+    else:
+        prompt = L2_PROMPT_TMPL.format(sid=driver.session_id, scwd=session_cwd,
+                                       errors=errors_text,
+                                       err_tail=err_tail or "(无)", n=n)
     return run_l2_agent(l2_cmd, run_dir, prompt, n, proxy)
 
 
@@ -757,6 +807,7 @@ class CodexDriver:
 
     def _common(self):
         return ["-C", str(self.cwd), "-s", "workspace-write",
+                "-c", "sandbox_workspace_write.network_access=true",
                 "--skip-git-repo-check", "--json", "-o", str(self.last_msg)]
 
     def launch(self, prompt_path: Path):
@@ -773,6 +824,7 @@ class CodexDriver:
         self._spawn_once(["exec", "resume", self.session_id,
                           "-c", "sandbox_mode=workspace-write",
                           "-c", "approval_policy=never",
+                          "-c", "sandbox_workspace_write.network_access=true",
                           "--skip-git-repo-check", "--json",
                           "-o", str(self.last_msg), "-"], prompt_path)
         log(f"RESUME  codex session={self.session_id[:8]}")
@@ -943,6 +995,8 @@ def main():
     ap.add_argument("--l2-max", type=int, default=2, help="L2升级次数上限")
     ap.add_argument("--l2-model", default="flash",
                     help="antigravity L2模型档位: flash_lite/flash/pro")
+    ap.add_argument("--max-interactions", type=int, default=10,
+                    help="交互决策(agy代答)次数上限")
     ap.add_argument("--l2-project-id", default="",
                     help="antigravity L2的项目id; 留空则自动从最近会话元数据发现")
     args = ap.parse_args()
@@ -1115,6 +1169,7 @@ def main():
     resumes = 0
     busy_waits = 0              # SESSION_BUSY 耐心等待次数(不占resume预算)
     l2_calls = 0                # L2升级agent已调用次数
+    interactions = 0            # 交互决策(agy代答)已处理次数
     early_exits = 0             # worker空转退出(rc=0但验收不过)计数→矛盾态熔断
     total_kills = 0             # 梯度心跳阈值基准
     net_off_adapter = None      # 断网chaos: 当前被断的网卡
@@ -1193,13 +1248,19 @@ def main():
             total_kills += 1
             fails_on_provider += 1
             if rc == 0:
-                ok, detail = verify()
-                ivl("EXIT_OK", acceptance=detail)
-                if ok:
-                    outcome, outcome_detail = "success", detail
+                last_msg = worker_last_message(run_dir)
+                if any(m in last_msg for m in ASK_MARKERS):
+                    interactions += 1
+                    ivl("INTERACTION", n=interactions, snippet=last_msg[:160])
+                    outcome, outcome_detail = "interaction", last_msg
                 else:
-                    early_exits += 1
-                    outcome, outcome_detail = "early_exit", detail
+                    ok, detail = verify()
+                    ivl("EXIT_OK", acceptance=detail)
+                    if ok:
+                        outcome, outcome_detail = "success", detail
+                    else:
+                        early_exits += 1
+                        outcome, outcome_detail = "early_exit", detail
             else:
                 err_tail = ""
                 try:
@@ -1221,10 +1282,38 @@ def main():
                     outcome, outcome_detail = "crash", f"exit_code={rc}"
 
         # --- 验收前置守卫: worker死亡/空转/被锁, 但产物已齐 → 免唤醒直接成功 ---
-        if outcome in ("crash", "hang", "early_exit", "busy"):
+        if outcome in ("crash", "hang", "early_exit", "busy", "interaction"):
             ok, detail = verify()
             if ok:
                 outcome, outcome_detail = "success", "验收通过(免唤醒): " + detail
+
+        # --- 交互决策: worker提问 → agy按委托策略代答 → 决定喂回codex ---
+        if outcome == "interaction":
+            if interactions >= args.max_interactions:
+                ivl("TERMINAL", state="FAILED",
+                    detail=f"交互请求超过上限({interactions}次), 需人工介入")
+                break
+            ivl("L2_CONSULT", n=interactions, question=outcome_detail[:150])
+            verdict, answer, l2_log = l2_dispatch(
+                l2_cmd, args, proxy, run_dir, driver, session_cwd,
+                interactions, "interaction", outcome_detail, outcome_detail,
+                kind="interaction")
+            ivl("L2_ANSWER", verdict=verdict, answer=answer[:150],
+                log=str(l2_log.name))
+            if verdict == "DEFER" or not answer.strip():
+                ivl("TERMINAL", state="FAILED",
+                    detail="L2将决策DEFER给用户 — 需人工介入")
+                break
+            answer_path = run_dir / f"answer-{interactions}.txt"
+            answer_path.write_text(
+                "关于你的决策请求, 用户(经L2决策代理)的决定如下:\n" + answer +
+                "\n请按此决定继续执行任务, 完成后更新PROGRESS.md。\n", encoding="utf-8")
+            driver.resume(answer_path)
+            ivl("RESUMED_WITH_DECISION", n=interactions, pid=driver.proc.pid)
+            launched_at = time.time()
+            outcome, outcome_detail = None, ""
+            last_error_note = ""
+            continue
 
         # --- busy 耐心通道: 轮询锁文件(锁在=App开着, 不spawn注定失败的进程) ---
         if outcome == "busy":
