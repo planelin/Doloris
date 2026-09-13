@@ -55,16 +55,6 @@ STALE_LIMITS = [600, 1200, 1800]                   # 按总击杀次数取值, �
 #   codex自会在~4分钟内自行退出(crash路径), 挂死击杀只是最后手段, 阈值必须宽
 FAILS_BEFORE_SWITCH = 2                            # 同供应商连续死亡次数→换端点
 
-QUICK_PROMPT = """你被监管系统接管(原会话中断, 现在无头续跑)。
-1. 读取会话历史, 确认未完成的工作并继续执行; 不要重做已完成的部分。
-2. 新产出的文件一律放入当前工作目录下的 afk-work/ 子目录。
-3. 维护 afk-work/PROGRESS.md: 逐条列出剩余工作项(- [ ]), 每完成一项改为 - [x];
-   若会话中的任务已全部完成, 也要创建该文件, 写明"无剩余工作"并把清单全部勾选。
-4. 遇到需要用户决策的问题(方向取舍/方案选择/参数确认): 结束回合, 在最终消息以
-   【决策请求】开头, 列出问题与你建议的选项, 然后停止——会有决策代理替用户答复
-   并让你继续; 除此之外不要停下来等待确认。
-5. 清单全部勾完才允许停止。
-"""
 
 
 def log(msg):
@@ -636,7 +626,8 @@ def run_l2_antigravity(run_dir, full_prompt, n, scwd, verdict_file,
 
 
 # ---------------------------------------------------------------- L2 升级agent
-ASK_MARKERS = ("【决策请求】", "【需要决策】", "[决策请求]")
+ASK_MARKERS = ("【决策请求】", "【需要决策】", "[决策请求]",
+               "需要用户确认", "请确认后继续", "请选择以下", "等待你的指示")
 
 L2_INTERACT_TMPL = """你是监管系统的L2决策代理, 用户暂时不在场, 由你代表用户为 codex worker 的决策请求拍板。
 
@@ -1048,27 +1039,21 @@ def main():
         except ValueError:
             ap.error('chaos 格式: kill:30 (杀进程) 或 net:30:120 (30秒时断网120秒)')
 
-    # 任务提示词: quick=内置接管指令; 任务模式=任务书+行为约束
+    # 提示词哲学: 接管/续跑一律只发"继续"——类比用户重开客户端后点发送,
+    # 任务语境全在会话历史里, afk不注入合成指令(注入会带偏worker, 22:14实锤)。
+    # 任务书(--task)是用户显式提供的例外: 仍会发送, 且同时作为验收规格锚点。
     prompt_path = run_dir / "prompt.txt"
     if args.quick:
-        prompt_path.write_text(QUICK_PROMPT, encoding="utf-8")
+        prompt_path.write_text("继续\n", encoding="utf-8")
     else:
         prompt_path.write_text(
             task_md.read_text(encoding="utf-8") +
             "\n\n[运行约束] 只使用文件读取/创建/编辑工具, 禁止执行shell命令。"
-            "完成全部要求后停止, 不要中途停下提问。\n",
+            "遇到需要用户决策的问题时, 结束回合并在最终消息以【决策请求】开头, "
+            "列出问题与选项后停止; 其余情况完成全部要求后停止。\n",
             encoding="utf-8")
     resume_path = run_dir / "resume-prompt.txt"
-    if args.quick:
-        resume_path.write_text(
-            "你刚才被中断(进程被终止), 现在无头续跑。读取会话历史与 afk-work/PROGRESS.md,"
-            "继续完成全部剩余工作; 不要重做已完成的部分; 新产出文件放入 afk-work/ 子目录;"
-            "每完成一项更新清单, 全部勾完才停止; 不要提问。\n", encoding="utf-8")
-    else:
-        resume_path.write_text(
-            "你刚才被中断了(进程被终止)。请对照任务书要求与既有进度文件(PROGRESS.md),"
-            "确认已完成哪些内容, 然后继续完成全部剩余工作。不要重做已完成的工作,"
-            "不要中途停下提问, 完成后立即更新进度文件。\n", encoding="utf-8")
+    resume_path.write_text("继续\n", encoding="utf-8")
 
     def verify():
         """终态验收分派: quick=afk-work清单全勾; 任务模式=acceptance.md/selftest"""
@@ -1324,9 +1309,8 @@ def main():
                 # 委托回worker自行判断(实测worker会按自己此前的建议继续)
                 ivl("L2_UNAVAILABLE", verdict=verdict, fallback="worker自决")
                 answer_path = run_dir / f"answer-{interactions}.txt"
-                answer_path.write_text(
-                    "决策代理暂时不可用。请自行按你此前给出的建议选项做出决定并继续执行,"
-                    "把所选选项记录进PROGRESS.md。\n", encoding="utf-8")
+                answer_path.write_text("继续，自行决定并完成剩余工作。\n",
+                                       encoding="utf-8")
                 driver.resume(answer_path)
                 ivl("RESUMED_SELFCALL", n=interactions, pid=driver.proc.pid)
                 launched_at = time.time()
@@ -1338,9 +1322,7 @@ def main():
                     detail="L2将决策DEFER给用户 — 需人工介入")
                 break
             answer_path = run_dir / f"answer-{interactions}.txt"
-            answer_path.write_text(
-                "关于你的决策请求, 用户(经L2决策代理)的决定如下:\n" + answer +
-                "\n请按此决定继续执行任务, 完成后更新PROGRESS.md。\n", encoding="utf-8")
+            answer_path.write_text(answer.strip() + "\n", encoding="utf-8")
             driver.resume(answer_path)
             ivl("RESUMED_WITH_DECISION", n=interactions, pid=driver.proc.pid)
             launched_at = time.time()
