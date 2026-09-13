@@ -379,11 +379,30 @@ def list_recent_codex_sessions(n=5):
     return out
 
 
-def close_codex_app():
+def close_codex_app(rollout_path=None, max_wait=30):
     """结束 Codex 桌面App进程族, 单写者锁随进程消亡。
-    两段式: ①不带/F的taskkill = 发WM_CLOSE, App有机会干净停止正在运行的任务
-    ②8秒不退(或托盘化)再/F强杀残余。
+    边界感知: 先盯rollout新追加部分等到 压缩/回合边界 标记(≤max_wait),
+    再两段式关闭(礼貌WM_CLOSE→8秒→强杀残余)。
     仅允许在【尚无我方worker】的接管准备阶段调用。"""
+    base = None
+    if rollout_path and Path(rollout_path).exists():
+        try:
+            base = Path(rollout_path).stat().st_size
+        except OSError:
+            base = None
+    deadline = time.time() + max_wait
+    while base is not None and time.time() < deadline:
+        try:
+            with open(rollout_path, "rb") as f:
+                f.seek(base)
+                fresh = f.read().decode("utf-8", errors="replace")
+        except OSError:
+            break
+        if fresh and any(m in fresh for m in
+                         ("compacted", "compact", "task_complete", "summar")):
+            log("CLOSE    检测到安全边界标记, 开始关闭App")
+            break
+        time.sleep(2)
     killed = []
     for img in ("ChatGPT.exe", "codex.exe"):
         subprocess.run(["taskkill", "/IM", img], capture_output=True)  # 礼貌关闭
@@ -1130,7 +1149,7 @@ def main():
                         except (EOFError, OSError):
                             ans = "y"
                         if ans in ("", "y", "yes"):
-                            killed = close_codex_app()
+                            killed = close_codex_app(rollout)
                             app_killed = True
                             ivl("APP_CLOSED", killed=killed)
                             log(f"LOCK     已结束进程: {killed or '(本就未运行)'}")

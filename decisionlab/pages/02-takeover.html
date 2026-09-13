@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="cyber">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#050b10">
+  <meta name="description" content="当心跳熄灭，连续性并不会自动转移。会话接管要做的是：在最短时间内，让一个新的主体以正确的权限、正确的上下文和正确的边界，接续尚未完成的工作。">
+  <title>02 会话接管 · 决策实验站</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+
+  <header class="site-header">
+    <a class="brand" href="../index.html" aria-label="决策实验站首页">
+      <span class="brand-mark" aria-hidden="true">决</span>
+      <span class="brand-text">决策实验站</span>
+    </a>
+    <nav class="site-nav" aria-label="主导航">
+      <a href="01-heartbeat.html">01 心跳检测</a>
+      <a href="02-takeover.html">02 会话接管</a>
+      <a href="03-decision.html">03 决策代理</a>
+      <a href="04-report.html">04 终态报告</a>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section class="page-hero">
+      <p class="eyebrow">阶段 02 / 会话接管</p>
+      <h1>会话接管</h1>
+      <p class="lead">当心跳熄灭，连续性并不会自动转移。会话接管要做的是：在最短时间内，让一个新的主体以正确的权限、正确的上下文和正确的边界，接续尚未完成的工作。</p>
+    </section>
+
+    <article class="article">
+      <section class="article-section">
+        <h2>什么情况下应该触发接管</h2>
+        <p>接管不是越早越好，也不是有异常就启动。合理的触发条件至少有三种：主体被判定失效且任务仍未结束；主体明确声明自己即将退出并请求移交；以及会话状态出现无法自洽的矛盾，例如序号倒退或权限冲突。前两种属于计划内的交接，第三种则是必须立即介入的异常。</p>
+        <p>在触发之前，系统需要确认接管是否真的可行。如果接管方尚未就绪，或者当前会话正处于一个不可中断的临界区，强行接管反而会造成状态撕裂。因此，触发判定通常要和「是否可安全接管」分开评估——前者回答要不要，后者回答能不能。</p>
+        <p>把这两件事分开，可以避免一种常见的错误：因为急着恢复服务，把一个尚未完成写入的会话草率地交给新主体，最终产生两份互相矛盾的状态。</p>
+      </section>
+
+      <section class="article-section">
+        <h2>交接包里必须有上下文</h2>
+        <p>接管方最怕的不是任务难，而是不知道为什么走到这一步。一个合格的交接包应当包含原始目标、已经做出的关键决定、被否决的备选方案，以及每条决定背后的理由。只交接结论而不交接推理，会让接管方在遇到相似情境时重复踩坑，甚至做出与历史相悖的选择。</p>
+        <p>除了推理，交接包还要带上可验证的证据：涉及的数据版本、观察到的事实、尚未确认的假设，以及当前存在的风险。证据让接管方能够独立复核，而不是被动接受前任的判断。当接管方发现证据与结论不一致时，它有权提出质疑，这正是接管比简单替换更可靠的地方。</p>
+        <p>最后，交接包需要标注哪些内容仍在变化。任务很少停在静止状态，可能还有未完成的请求、等待中的回复或即将到期的约束。把这些「进行中的东西」显式列出，接管方才能判断自己接手的究竟是一个稳定局面，还是一个仍在演化的过程。</p>
+      </section>
+
+      <section class="article-section">
+        <h2>权限与边界的重新声明</h2>
+        <p>接管方继承的是任务，而不是前任的全部权限。每次接管都应当重新声明：可以读什么、可以写什么、可以对外承诺什么，以及在什么条件下必须停下来请求确认。权限的继承如果过于宽松，会把一次局部接管放大成一次全局风险。</p>
+        <p>边界还包括时间与范围。接管通常带有明确的期限，超过期限仍未完成时应当重新评估，而不是无限期地延长。范围则决定了接管方能否修改早期决定——有些任务允许推翻历史，有些则要求保持既定方向，只能调整执行细节。</p>
+        <p>把这些边界写清楚，既能保护系统，也能保护接管方。它让接管方知道自己在什么范围内拥有裁量权，不必在每一次选择前都陷入犹豫，同时也不会因为越界而制造新的混乱。</p>
+      </section>
+
+      <section class="article-section">
+        <h2>当接管无法完成时</h2>
+        <p>不是所有会话都能被顺利接管。有时上下文已经损坏，有时接管方不具备必需的权限，有时任务本身依赖一个已经消失的外部状态。这些情况需要一条明确的降级路径：冻结当前会话、保全已有证据、升级给具备更高权限的主体，并明确告知相关方目前的进展已经暂停。</p>
+        <p>降级并不是失败，而是对现实的诚实回应。相比让一个准备不足的主体勉强接手，清楚地承认「现在无法安全接管」，更有助于避免连锁错误。这也为下一步的决策代理划定了前提：只有在接管成功、状态明确之后，代理的判断才有可靠的基础。</p>
+        <div class="callout">
+          <p>接管失败的记录同样重要。它标出了一个系统当前能力的真实边界，而下一次改进往往就从这个边界开始。</p>
+        </div>
+      </section>
+    </article>
+
+    <nav class="pager" aria-label="阶段导航">
+      <a class="pager-prev" href="01-heartbeat.html">← 上一站：心跳检测</a>
+      <a class="pager-next" href="03-decision.html">下一站：决策代理 →</a>
+    </nav>
+  </main>
+
+  <footer class="site-footer">
+    <p>决策实验站 · 阶段 02</p>
+    <p>接过来的不只是任务，还有责任。</p>
+  </footer>
+
+  <script src="../assets/app.js"></script>
+</body>
+</html>
