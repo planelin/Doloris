@@ -34,6 +34,7 @@ import subprocess
 import sys
 import time
 import uuid
+import zipfile
 from datetime import datetime
 from pathlib import Path
 
@@ -1086,6 +1087,78 @@ def wait_session_quiet(rollout: Path, quiet_sec=15, max_wait=90):
     return False
 
 
+BACKUP_EXCLUDE_DIRS = {
+    ".git", ".svn", ".hg", "node_modules", ".venv", "venv", "env",
+    "__pycache__", ".codex", ".idea", ".vscode", "dist", "build",
+    ".next", ".nuxt", "target", "bin", "obj",
+}
+
+
+def backup_workspace(scwd: Path, run_dir: Path, max_size_mb: int = 300) -> Path | None:
+    """在接管前对目标工作区做一次轻量快照备份。
+    安全设计:
+      - 仅读 scwd, 产物严格保存在 run_dir/ (如 runs/<ts>/backup-pre-adopt-<proj>-<ts>.zip), 零侵入目标工程
+      - 自动忽略 .git, node_modules, .venv, __pycache__, .codex 等巨型/派生目录
+      - 单文件 > 50MB 忽略, 整体解压前容量超限熔断, 避免拖慢接管或撑爆磁盘
+      - 发生任何异常只打印告警, 绝不阻断接管主流程
+    """
+    if not scwd.exists() or not scwd.is_dir():
+        log(f"BACKUP  目标目录不存在或非目录, 跳过备份: {scwd}")
+        return None
+
+    proj_name = scwd.name or "workspace"
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    archive_path = run_dir / f"backup-pre-adopt-{proj_name}-{ts}.zip"
+
+    max_bytes = max_size_mb * 1024 * 1024
+    total_bytes = 0
+    file_count = 0
+    skipped_large = 0
+
+    log(f"BACKUP  正在对工作区进行快照备份: {scwd} -> {archive_path.name}")
+    try:
+        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for root, dirs, files in os.walk(scwd):
+                dirs[:] = [d for d in dirs if d.lower() not in BACKUP_EXCLUDE_DIRS]
+                for file in files:
+                    fp = Path(root) / file
+                    try:
+                        st = fp.stat()
+                        if st.st_size > 50 * 1024 * 1024:
+                            skipped_large += 1
+                            continue
+                        if total_bytes + st.st_size > max_bytes:
+                            log(f"BACKUP  工作区快照达到上限 ({max_size_mb}MB), 停止追加剩余文件")
+                            break
+                        rel_path = fp.relative_to(scwd)
+                        zf.write(fp, arcname=str(rel_path))
+                        total_bytes += st.st_size
+                        file_count += 1
+                    except (OSError, PermissionError):
+                        continue
+                if total_bytes > max_bytes:
+                    break
+        if file_count == 0:
+            log("BACKUP  工作区为空或所有文件均被过滤, 无需备份")
+            try:
+                archive_path.unlink()
+            except OSError:
+                pass
+            return None
+
+        size_mb = archive_path.stat().st_size / (1024 * 1024)
+        log(f"BACKUP  工作区快照完成: {archive_path.name} ({file_count} 个文件, 压缩后 {size_mb:.2f}MB, 过滤超大文件: {skipped_large})")
+        return archive_path
+    except Exception as e:
+        log(f"WARN    工作区快照备份异常: {e}")
+        try:
+            if archive_path.exists():
+                archive_path.unlink()
+        except OSError:
+            pass
+        return None
+
+
 class CodexDriver:
     """codex CLI 驱动 (codex exec / codex exec resume)。
     与 claude 驱动的差异:
@@ -1136,15 +1209,15 @@ class CodexDriver:
         if not self.session_id:
             raise RuntimeError("resume 前必须先发现 session_id")
         self.jsonl = None  # resume 可能新建 rollout, 重新发现
-        # resume 不认 -C/-s(继承原会话的cwd与沙箱——桌面创建的会话常是只读沙箱!),
-        # 但接受 -c 配置覆盖: 必须显式改写为可写, 否则worker无法落盘任何产物
-        self._spawn_once(["exec", "resume", self.session_id,
+        # 显式指定 -C self.cwd, 锁定工作区跟原会话物理路径绝对一致, 杜绝codex切换工作区
+        # 并接受 -c 配置覆盖: 显式改写沙箱为可写
+        self._spawn_once(["exec", "-C", str(self.cwd), "resume", self.session_id,
                           "-c", "sandbox_mode=workspace-write",
                           "-c", "approval_policy=never",
                           "-c", "sandbox_workspace_write.network_access=true",
                           "--skip-git-repo-check", "--json",
                           "-o", str(self.last_msg), "-"], prompt_path)
-        log(f"RESUME  codex session={self.session_id[:8]}")
+        log(f"RESUME  codex session={self.session_id[:8]} cwd={self.cwd}")
         return self.proc
 
     def discover_session(self, since_ts) -> bool:
@@ -1455,7 +1528,7 @@ def main():
                 return 1
         driver = ClaudeDriver(WS, run_dir, working, proxy)
     else:
-        driver = CodexDriver(WS, run_dir)
+        driver = CodexDriver(work_dir, run_dir)
         if args.adopt:
             if args.adopt == "last":
                 cands = list_recent_codex_sessions(5)
@@ -1479,7 +1552,7 @@ def main():
                     pick = int(raw) if raw.isdigit() and 1 <= int(raw) <= len(cands) else 1
                 sid, rollout, scwd, _, _ = cands[pick - 1]
                 if scwd and scwd != str(WS):
-                    log(f"WARN    接管会话 cwd={scwd} (非{WS}), 验收锚点随之转移")
+                    log(f"ADOPT   接管会话 cwd={scwd} (非{WS}), 工作目录与验收锚点绝对对齐目标工程")
             else:
                 got = find_codex_session_by_id(args.adopt)
                 if not got:
@@ -1524,9 +1597,15 @@ def main():
             driver.jsonl = rollout  # 心跳基线; resume后由 discover_session 重新定位
             agy_mgr.set_codex_session_id(sid)
             if scwd:
-                # 验收锚点跟随被接管会话的真实工作区
+                # 验收锚点与工作区完全跟随被接管会话的真实工作区
                 session_cwd = scwd
                 work_dir = Path(scwd)
+                driver.cwd = Path(scwd)
+                # 接管前自动对目标工作区建立快照备份 (存放在 runs/<ts>/, 零污染目标工程)
+                bk = backup_workspace(Path(scwd), run_dir)
+                if bk:
+                    ivl("WORKSPACE_BACKUP", archive=str(bk.name), src=scwd,
+                        size_mb=round(bk.stat().st_size / (1024 * 1024), 2))
     ivl("LAUNCH", session=driver.session_id or "(运行时发现)",
         provider=driver.provider_name,
         chaos=str(chaos) if chaos else "off")
