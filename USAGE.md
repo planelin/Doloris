@@ -55,12 +55,11 @@ claude通道已弃用（同为中转，稳定性不合格）。
   备选端点与key，绕开故障路由）；判定 `NEW_SESSION`（上下文污染，记录后继续）；
   判定 `UNFIXABLE`（基础设施故障 → 诚实FAILED）
 - L2 修复后追加 4 次续跑预算；最多升级 `--l2-max`（默认2）次
-- **Antigravity 通道**：`--l2-cmd antigravity`——经 `language_server.exe agentapi` 桥创建
-  修复会话（桥接三件套自动动态发现：CSRF取自App日志最新spawn行、网关端口取自
-  language_server监听端口、项目id默认取最近会话元数据，可 `--l2-project-id` 指定；
-  模型 `--l2-model flash_lite/flash/pro`）。异步执行+轮询verdict文件（agent把决议
-  写入项目目录`afk-l2-verdict.txt`）。**观察修复过程：直接打开Antigravity App**，
-  L2修复会话会出现在对应项目的会话列表里，全程可视
+- **Antigravity 通道**：`--l2-cmd antigravity`——由 `AntigravityManager` 管理无头/有头双模桥接：
+  - 优先复用已有实例（桌面端开着时直接复用）；若桌面端关闭，按需懒拉起无头守护进程（`--headless`，无窗口，低功耗），任务收尾自动回收；
+  - **单一会话强绑定**：1 个 Codex 会话严格对应 1 个 AGY 会话，首轮 `new-conversation` 注入全景背景，后续决策与修复一律通过 `send-message` 增量通信，且自动持久化至 `runs/<最新>/agy_session.json`；
+  - 桥接三件套动态发现：CSRF、LS监听端口、项目id（默认取最近会话元数据，可 `--l2-project-id` 指定；模型 `--l2-model flash_lite/flash/pro`）；
+  - 轮询verdict文件回收输出（决策代答写入 `afk-l2-answer.txt`，故障诊断写入 `afk-l2-verdict.txt`）。
 - 禁用L2：`--l2-cmd off`
 - 每次L2的提示词与回复完整留档：`runs/<最新>/l2-N-prompt.txt` / `l2-N.log`
 
@@ -120,6 +119,6 @@ work-xxx/                  # worker 的实际产出
 
 ## 已知边界（下一步清单）
 
-- L2 升级 agent 未接入：上下文污染换新会话+交接摘要、矛盾态诊断、托管交互问答
-- 关机与推送通知未启用（报告已就位，通知通道待定）
+- L2 升级 agent 换会话闭环：上下文污染判定 `NEW_SESSION` 时的新会话开辟与交接摘要注入
+- 关机与多通道推送通知（报告已就位，通知通道如飞书/钉钉/企业微信/Bark待接入）
 - claude 驱动的干预存档（git commit 前置）尚未实现，回档脚本未写

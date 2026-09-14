@@ -24,6 +24,7 @@ supervise.py — L1/L1.5 看门狗 v0.2 (Claude 无头驱动)
 """
 
 import argparse
+import atexit
 import json
 import os
 import re
@@ -563,6 +564,106 @@ UNFIXABLE)写入这个文件: {verdict_file}
 """
 
 
+class AntigravityManager:
+    """管理 Antigravity L2 桥接生命周期与单一会话强绑定。
+    - 优先复用系统中已有运行的 Antigravity 实例 (开发/调试时可视)
+    - 若未运行，按需懒拉起无头守护实例 (ELECTRON_OZONE_PLATFORM_HINT=headless, CREATE_NO_WINDOW)
+    - 严格保持 1 Codex Session <-> 1 AGY Conversation 映射:
+      首次 new-conversation 获得 cid 后，写入内存并落盘至 runs/<ts>/agy_session.json;
+      后续交互一律走 send-message 增量推进;
+    - 任务结束或异常退出时，若曾自主拉起无头守护进程，自动清理回收。
+    """
+
+    def __init__(self, run_dir: Path, codex_session_id: str = None):
+        self.run_dir = run_dir
+        self.codex_session_id = codex_session_id or "unknown"
+        self.session_file = run_dir / "agy_session.json"
+        self.cid = None
+        self.port = None
+        self.spawned_proc = None
+        self._load_persisted_cid()
+
+    def set_codex_session_id(self, sid: str):
+        self.codex_session_id = sid or "unknown"
+        self._load_persisted_cid()
+
+    def _load_persisted_cid(self):
+        try:
+            if self.session_file.exists():
+                data = json.loads(self.session_file.read_text(encoding="utf-8"))
+                saved_cid = data.get("agy_conversation_id")
+                if saved_cid:
+                    self.cid = saved_cid
+                    log(f"L2        从历史文件恢复单一AGY会话: {self.cid}")
+        except Exception:
+            pass
+
+    def persist_cid(self, cid: str):
+        self.cid = cid
+        try:
+            data = {
+                "codex_session_id": self.codex_session_id,
+                "agy_conversation_id": cid,
+                "updated_at": datetime.now().isoformat(timespec="seconds")
+            }
+            self.session_file.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception as e:
+            log(f"WARN      持久化AGY会话ID失败: {e}")
+
+    def ensure_bridge(self, timeout=30):
+        """确保 Antigravity 桥可用: 优先复用已有实例; 没有则无头自启。"""
+        csrf, ports, agexe = discover_antigravity_bridge()
+        if csrf and ports and agexe.exists():
+            return csrf, ports, agexe
+
+        app_exe = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs/antigravity/Antigravity.exe"
+        if not app_exe.exists() or not agexe.exists():
+            return None, [], agexe
+
+        if self.spawned_proc is None or self.spawned_proc.poll() is not None:
+            log("L2        未检测到运行中的Antigravity，按需拉起无头守护进程...")
+            env = dict(os.environ)
+            env["ELECTRON_OZONE_PLATFORM_HINT"] = "headless"
+            env["ELECTRON_ENABLE_LOGGING"] = "1"
+            cflags = 0x08000000 if os.name == "nt" else 0
+            try:
+                self.spawned_proc = subprocess.Popen(
+                    [str(app_exe), "--headless"],
+                    env=env,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=cflags,
+                    cwd=str(WS)
+                )
+                log(f"L2        无头守护进程已启动 (PID {self.spawned_proc.pid})，等待网关就绪...")
+            except Exception as e:
+                log(f"L2        按需拉起无头守护进程失败: {e}")
+                return None, [], agexe
+
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            time.sleep(2)
+            csrf, ports, agexe = discover_antigravity_bridge()
+            if csrf and ports:
+                log(f"L2        无头网关就绪 (端口: {','.join(ports)})")
+                return csrf, ports, agexe
+        log(f"WARN      无头网关等待超时({timeout}s)")
+        return None, [], agexe
+
+    def teardown(self):
+        """安全回收自主拉起的无头进程"""
+        if self.spawned_proc is not None:
+            try:
+                if self.spawned_proc.poll() is None:
+                    log(f"L2        正在回收按需拉起的无头Antigravity进程 (PID {self.spawned_proc.pid})...")
+                    subprocess.run(["taskkill", "/PID", str(self.spawned_proc.pid), "/T", "/F"],
+                                   capture_output=True)
+            except Exception as e:
+                log(f"WARN      回收无头进程异常: {e}")
+            finally:
+                self.spawned_proc = None
+
+
 def discover_antigravity_bridge():
     """动态发现Antigravity桥: csrf(App日志最新spawn行) + LS网关端口(netstat)。"""
     csrf = None
@@ -605,7 +706,7 @@ def discover_antigravity_project_id(agexe, csrf, ports):
                 r = subprocess.run(
                     [str(agexe), "agentapi", "get-conversation-metadata",
                      db.stem], capture_output=True, timeout=60, env=env,
-                    cwd=str(WS))
+                     cwd=str(WS))
                 m = re.search(r'"projectId"\s*:\s*"([0-9a-f-]{36})"',
                               (r.stdout or b"").decode("utf-8", errors="replace"))
                 if m:
@@ -617,7 +718,7 @@ def discover_antigravity_project_id(agexe, csrf, ports):
 
 def run_l2_antigravity(run_dir, full_prompt, short_prompt, n, scwd, verdict_file,
                        conv_holder=None, project_id=None, model="flash",
-                       timeout_sec=1800, log_name=None):
+                       timeout_sec=1800, log_name=None, agy_mgr=None):
     """经agentapi桥调用Antigravity。一个codex会话对应一个agy会话:
     首次 new-conversation(全量背景) 并记住conversationId,
     后续 send-message(增量提问) 复用同一会话——agy保持上下文不再重读。
@@ -626,7 +727,10 @@ def run_l2_antigravity(run_dir, full_prompt, short_prompt, n, scwd, verdict_file
     轮询verdict文件回收输出。"""
     verdict_file = Path(scwd) / verdict_file
     log_path = run_dir / f"{log_name or 'l2'}.log"
-    csrf, ports, agexe = discover_antigravity_bridge()
+    if agy_mgr is not None:
+        csrf, ports, agexe = agy_mgr.ensure_bridge()
+    else:
+        csrf, ports, agexe = discover_antigravity_bridge()
     if not csrf or not ports or not agexe.exists():
         with open(log_path, "wb") as f:
             f.write("NO-BRIDGE: 未发现运行中的Antigravity language_server".encode("utf-8"))
@@ -634,8 +738,17 @@ def run_l2_antigravity(run_dir, full_prompt, short_prompt, n, scwd, verdict_file
     verdict_file.parent.mkdir(parents=True, exist_ok=True)
     if verdict_file.exists():
         verdict_file.unlink()
+
     cid = getattr(conv_holder, "_agy_cid", None) if conv_holder else None
+    if not cid and agy_mgr is not None:
+        cid = agy_mgr.cid
+        if cid and conv_holder is not None:
+            conv_holder._agy_cid = cid
+
     good_port = getattr(conv_holder, "_agy_port", None) if conv_holder else None
+    if not good_port and agy_mgr is not None:
+        good_port = agy_mgr.port
+
     if good_port and good_port in ports:
         ports.remove(good_port)
         ports.insert(0, good_port)  # 上次成功的端口优先
@@ -675,14 +788,21 @@ def run_l2_antigravity(run_dir, full_prompt, short_prompt, n, scwd, verdict_file
                 cid = None  # 会话确实失效, 降级重建
                 if conv_holder is not None:
                     conv_holder._agy_cid = None
+                if agy_mgr is not None:
+                    agy_mgr.persist_cid("")
                 continue
             if transient and cid:
                 continue  # 瞬时连接故障: 保留cid换下一端口重试send
             continue
         m = re.search(r'"conversationId"\s*:\s*"([^"]+)"', out)
-        if m and conv_holder is not None:
-            conv_holder._agy_cid = m.group(1)
-            conv_holder._agy_port = port
+        if m:
+            new_cid = m.group(1)
+            if conv_holder is not None:
+                conv_holder._agy_cid = new_cid
+                conv_holder._agy_port = port
+            if agy_mgr is not None:
+                agy_mgr.persist_cid(new_cid)
+                agy_mgr.port = port
         deadline = time.time() + timeout_sec
         while time.time() < deadline:
             time.sleep(20)
@@ -793,7 +913,7 @@ def worker_last_message(run_dir):
 
 
 def l2_dispatch(l2_cmd, args, proxy, run_dir, driver, session_cwd, n,
-                outcome_detail, errors_text, err_tail, kind="repair"):
+                outcome_detail, errors_text, err_tail, kind="repair", agy_mgr=None):
     """按通道与种类路由调用L2 agent, 返回 (verdict, text, log_path)。
     kind=repair: 诊断修复(决议: FIXED/NEW_SESSION/UNFIXABLE)
     kind=interaction: 代答决策请求(决议: PROCEED/DEFER, text=给codex的指令)"""
@@ -819,13 +939,16 @@ def l2_dispatch(l2_cmd, args, proxy, run_dir, driver, session_cwd, n,
                      f"{Path(session_cwd) / vfile}。")
         project_id = args.l2_project_id or None
         if not project_id:
-            csrf, ports, agexe = discover_antigravity_bridge()
+            if agy_mgr is not None:
+                csrf, ports, agexe = agy_mgr.ensure_bridge()
+            else:
+                csrf, ports, agexe = discover_antigravity_bridge()
             if csrf and ports:
                 project_id = discover_antigravity_project_id(agexe, csrf, ports)
                 log(f"L2        项目id自动发现: {project_id or '失败'}")
         return run_l2_antigravity(run_dir, full, short, n, session_cwd, vfile,
                                   conv_holder=driver, project_id=project_id,
-                                  model=args.l2_model)
+                                  model=args.l2_model, agy_mgr=agy_mgr)
     if kind == "interaction":
         prompt = L2_INTERACT_TMPL.format(sid=driver.session_id,
                                          scwd=session_cwd, question=errors_text)
@@ -1103,6 +1226,8 @@ def main():
     run_dir = WS / "runs" / ts
     run_dir.mkdir(parents=True, exist_ok=True)
     ivl_path = run_dir / "interventions.jsonl"
+    agy_mgr = AntigravityManager(run_dir)
+    atexit.register(agy_mgr.teardown)
 
     def ivl(event, **kw):
         rec = {"ts": datetime.now().isoformat(timespec="seconds"), "event": event, **kw}
@@ -1224,6 +1349,7 @@ def main():
                     wait_session_quiet(rollout)
             driver.session_id = sid
             driver.jsonl = rollout  # 心跳基线; resume后由 discover_session 重新定位
+            agy_mgr.set_codex_session_id(sid)
             if scwd:
                 # 验收锚点跟随被接管会话; quick模式固定用 afk-work
                 work_dir = Path(scwd) / ("afk-work" if args.quick else args.work_dir)
@@ -1275,6 +1401,8 @@ def main():
         now = time.time()
         if hasattr(driver, "discover_session"):  # codex: 每次 spawn 后重新发现 rollout
             driver.discover_session(launched_at)
+            if driver.session_id and agy_mgr.codex_session_id != driver.session_id:
+                agy_mgr.set_codex_session_id(driver.session_id)
         alive = driver.proc.poll() is None
         if alive:
             worker_runtime += 5
@@ -1380,7 +1508,7 @@ def main():
             verdict, answer, l2_log = l2_dispatch(
                 l2_cmd, args, proxy, run_dir, driver, session_cwd,
                 interactions, "interaction", outcome_detail, outcome_detail,
-                kind="interaction")
+                kind="interaction", agy_mgr=agy_mgr)
             ivl("L2_ANSWER", verdict=verdict, answer=answer[:150],
                 log=str(l2_log.name))
             if verdict in ("NO-VERDICT", "NO-BRIDGE"):
@@ -1473,7 +1601,8 @@ def main():
                         l2_cmd, args, proxy, run_dir, driver, session_cwd,
                         l2_calls, outcome_detail,
                         f"矛盾态: worker连续2次空转退出但验收不通过: {outcome_detail}\n"
-                        f"worker最后留言: {last_msg}", outcome_detail)
+                        f"worker最后留言: {last_msg}", outcome_detail,
+                        kind="repair", agy_mgr=agy_mgr)
                     ivl("L2_RESULT", verdict=verdict, log=str(l2_log.name))
                     if verdict == "UNFIXABLE":
                         ivl("TERMINAL", state="FAILED",
@@ -1522,7 +1651,8 @@ def main():
                     ivl("L2_ESCALATE", agent=l2_cmd, call=l2_calls)
                     verdict, text, l2_log = l2_dispatch(
                         l2_cmd, args, proxy, run_dir, driver, session_cwd,
-                        l2_calls, outcome_detail, errors, err_tail)
+                        l2_calls, outcome_detail, errors, err_tail,
+                        kind="repair", agy_mgr=agy_mgr)
                     ivl("L2_RESULT", verdict=verdict, log=str(l2_log.name))
                     if verdict == "UNFIXABLE":
                         ivl("TERMINAL", state="FAILED",
@@ -1581,6 +1711,7 @@ def main():
     (run_dir / "report.md").write_text(report, encoding="utf-8")
     log(f"REPORT   {run_dir / 'report.md'}")
     log(f"TERMINAL {state} — SHUTDOWN WOULD HAPPEN HERE")
+    agy_mgr.teardown()
     return 0 if state == "SUCCESS" else 1
 
 
