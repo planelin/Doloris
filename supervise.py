@@ -250,12 +250,22 @@ class ClaudeDriver:
             prompt_path,
         )
 
-    def kill_tree(self):
+    def kill_tree(self, timeout=5):
         if self.proc and self.proc.poll() is None:
+            try:
+                self.interrupt()
+                if self.wait_exit(timeout):
+                    log(f"KILL    进程树 pid={self.proc.pid} 已优雅退出")
+                    return
+            except Exception:
+                pass
             subprocess.run(["taskkill", "/PID", str(self.proc.pid), "/T", "/F"],
                            capture_output=True)
-            self.proc.wait()
-            log(f"KILL    进程树 pid={self.proc.pid} 已终止")
+            try:
+                self.proc.wait(timeout=3)
+            except Exception:
+                pass
+            log(f"KILL    进程树 pid={self.proc.pid} 已强制终止")
 
     def heartbeat_age(self, launched_at) -> float:
         if self.jsonl.exists():
@@ -567,11 +577,12 @@ UNFIXABLE)写入这个文件: {verdict_file}
 class AntigravityManager:
     """管理 Antigravity L2 桥接生命周期与单一会话强绑定。
     - 优先复用系统中已有运行的 Antigravity 实例 (开发/调试时可视)
-    - 若未运行，按需懒拉起无头守护实例 (ELECTRON_OZONE_PLATFORM_HINT=headless, CREATE_NO_WINDOW)
+    - 若未运行，在后台直接启动轻量语言服务核心 (language_server.exe --standalone)，
+      完全规避与桌面端 Electron 的单实例互斥锁，用户前台可自由开关 App。
     - 严格保持 1 Codex Session <-> 1 AGY Conversation 映射:
       首次 new-conversation 获得 cid 后，写入内存并落盘至 runs/<ts>/agy_session.json;
       后续交互一律走 send-message 增量推进;
-    - 任务结束或异常退出时，若曾自主拉起无头守护进程，自动清理回收。
+    - 任务结束或异常退出时，两段式优雅回收自主拉起的独立后台进程，保护 SQLite WAL。
     """
 
     def __init__(self, run_dir: Path, codex_session_id: str = None):
@@ -581,6 +592,7 @@ class AntigravityManager:
         self.cid = None
         self.port = None
         self.spawned_proc = None
+        self.custom_csrf = None
         self._load_persisted_cid()
 
     def set_codex_session_id(self, sid: str):
@@ -610,56 +622,90 @@ class AntigravityManager:
         except Exception as e:
             log(f"WARN      持久化AGY会话ID失败: {e}")
 
+    def _find_ports_for_pid(self, pid: int) -> list:
+        ports = []
+        try:
+            r = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, timeout=10)
+            for line in (r.stdout or "").splitlines():
+                if "LISTENING" in line and "127.0.0.1" in line and line.rstrip().endswith(str(pid)):
+                    port = line.split()[1].rsplit(":", 1)[-1]
+                    if port not in ports:
+                        ports.append(port)
+        except Exception:
+            pass
+        return ports
+
     def ensure_bridge(self, timeout=30):
-        """确保 Antigravity 桥可用: 优先复用已有实例; 没有则无头自启。"""
+        """确保 Antigravity 桥可用: 优先复用已有实例; 没有则独立启动后台 language_server。"""
         csrf, ports, agexe = discover_antigravity_bridge()
         if csrf and ports and agexe.exists():
             return csrf, ports, agexe
 
-        app_exe = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs/antigravity/Antigravity.exe"
-        if not app_exe.exists() or not agexe.exists():
+        if not agexe.exists():
             return None, [], agexe
 
         if self.spawned_proc is None or self.spawned_proc.poll() is not None:
-            log("L2        未检测到运行中的Antigravity，按需拉起无头守护进程...")
-            env = dict(os.environ)
-            env["ELECTRON_OZONE_PLATFORM_HINT"] = "headless"
-            env["ELECTRON_ENABLE_LOGGING"] = "1"
-            cflags = 0x08000000 if os.name == "nt" else 0
+            log("L2        未检测到运行中的Antigravity，启动专用独立后台服务(language_server.exe)...")
+            self.custom_csrf = str(uuid.uuid4())
+            cmd = [
+                str(agexe),
+                "--standalone",
+                "--app_data_dir=antigravity",
+                "--subclient_type=hub",
+                "--override_ide_name=antigravity",
+                "--override_ide_version=2.12.2",
+                "--override_user_agent_name=antigravity",
+                f"--csrf_token={self.custom_csrf}",
+                "--https_server_port=0",
+                "--api_server_url=https://generativelanguage.googleapis.com",
+                "--cloud_code_endpoint=https://daily-cloudcode-pa.googleapis.com",
+            ]
+            cflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
             try:
                 self.spawned_proc = subprocess.Popen(
-                    [str(app_exe), "--headless"],
-                    env=env,
+                    cmd,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     creationflags=cflags,
                     cwd=str(WS)
                 )
-                log(f"L2        无头守护进程已启动 (PID {self.spawned_proc.pid})，等待网关就绪...")
+                log(f"L2        独立后台服务已启动 (PID {self.spawned_proc.pid})，等待网关就绪...")
             except Exception as e:
-                log(f"L2        按需拉起无头守护进程失败: {e}")
+                log(f"L2        启动独立后台服务失败: {e}")
                 return None, [], agexe
 
         deadline = time.time() + timeout
         while time.time() < deadline:
-            time.sleep(2)
-            csrf, ports, agexe = discover_antigravity_bridge()
-            if csrf and ports:
-                log(f"L2        无头网关就绪 (端口: {','.join(ports)})")
-                return csrf, ports, agexe
-        log(f"WARN      无头网关等待超时({timeout}s)")
+            time.sleep(1)
+            ports = self._find_ports_for_pid(self.spawned_proc.pid)
+            if ports:
+                log(f"L2        独立后台网关就绪 (端口: {','.join(ports)})")
+                return self.custom_csrf, ports, agexe
+        log(f"WARN      独立后台网关等待超时({timeout}s)")
         return None, [], agexe
 
     def teardown(self):
-        """安全回收自主拉起的无头进程"""
+        """两段式安全优雅回收后台语言服务进程 (保护 SQLite WAL 与未结事务)"""
         if self.spawned_proc is not None:
             try:
                 if self.spawned_proc.poll() is None:
-                    log(f"L2        正在回收按需拉起的无头Antigravity进程 (PID {self.spawned_proc.pid})...")
-                    subprocess.run(["taskkill", "/PID", str(self.spawned_proc.pid), "/T", "/F"],
-                                   capture_output=True)
+                    log(f"L2        正在优雅回收后台Antigravity进程 (PID {self.spawned_proc.pid})...")
+                    try:
+                        if os.name == "nt":
+                            os.kill(self.spawned_proc.pid, signal.CTRL_BREAK_EVENT)
+                        else:
+                            self.spawned_proc.terminate()
+                    except Exception:
+                        self.spawned_proc.terminate()
+                    try:
+                        self.spawned_proc.wait(timeout=5)
+                        log("L2        后台Antigravity进程已优雅退出")
+                    except subprocess.TimeoutExpired:
+                        log("L2        优雅退出超时，执行强杀兜底...")
+                        subprocess.run(["taskkill", "/PID", str(self.spawned_proc.pid), "/T", "/F"],
+                                       capture_output=True)
             except Exception as e:
-                log(f"WARN      回收无头进程异常: {e}")
+                log(f"WARN      回收后台进程异常: {e}")
             finally:
                 self.spawned_proc = None
 
@@ -832,6 +878,10 @@ worker的决策请求原文:
 委托策略(代表用户决策的边界):
 - 技术方向/实现方案/参数选择/路径取舍/依赖选型: 你直接决定, 给出明确、可直接执行的指令并说明理由
 - 涉及花钱、删除数据、对外发布、不可逆破坏性操作: 不要拍板, 最后一行输出 DEFER
+
+【输出规范】
+请简要说明决定与理由，随后务必包含一段明确的「给 Codex Worker 的执行指令：」，列出 worker 接下来应执行的具体动作。
+最后一行单独输出一个词: PROCEED 或 DEFER。
 """
 
 L2_PROMPT_TMPL = """你是监管系统的L2诊断修复agent, 运行在稳定通道上(与故障的codex中转无关)。
@@ -856,6 +906,61 @@ worker stderr 尾部:
 约束: 不要动 ~/.codex/sessions/ 下的会话轨迹文件; 修改配置前把原文件复制为 *.bak_{n}。
 完成后, 在最终回复的最后一行单独输出决议: FIXED 或 NEW_SESSION 或 UNFIXABLE。
 """
+
+
+def clean_l2_decision_text(raw_text: str) -> str:
+    """清洗L2决策代答文本，去除前导分析与尾部控制标记，提取纯净的执行指令回喂worker。"""
+    if not raw_text:
+        return "继续，自行决定并完成剩余工作。\n"
+    text = raw_text.lstrip("\ufeff\u200b").strip()
+    lines = [line.rstrip() for line in text.splitlines()]
+
+    # 去除首尾的 ``` 标记与空行
+    while lines and (lines[0].strip().startswith("```") or not lines[0].strip()):
+        lines.pop(0)
+    while lines and (lines[-1].strip().startswith("```") or not lines[-1].strip()):
+        lines.pop()
+
+    # 过滤末尾单独成行的 PROCEED / DEFER
+    while lines and (lines[-1].strip().upper() in ("PROCEED", "DEFER") or not lines[-1].strip()):
+        lines.pop()
+
+    # 再次去除可能由 PROCEED 前后包裹的代码块闭合 ```
+    while lines and (lines[-1].strip().startswith("```") or not lines[-1].strip()):
+        lines.pop()
+
+    # 寻找明确的执行指令起始段
+    instruction_markers = [
+        "给 Codex Worker 的执行指令：",
+        "给 Codex Worker 的执行指令:",
+        "给worker的执行指令：",
+        "给worker的执行指令:",
+        "【给 Codex Worker 的执行指令】",
+        "【执行指令】",
+        "执行指令：",
+        "执行指令:",
+        "【行动指令】",
+        "行动指令：",
+        "行动指令:"
+    ]
+    marker_idx = -1
+    for idx, line in enumerate(lines):
+        for m in instruction_markers:
+            if m in line:
+                marker_idx = idx
+                break
+        if marker_idx != -1:
+            break
+
+    if marker_idx != -1:
+        instruction_lines = lines[marker_idx:]
+        cleaned = "\n".join(instruction_lines).strip()
+    else:
+        cleaned = "\n".join(lines).strip()
+
+    # 过滤掉内容中残留的独立代码块标记行
+    cleaned_lines = [l for l in cleaned.splitlines() if not l.strip().startswith("```")]
+    return "\n".join(cleaned_lines).strip() + "\n"
 
 
 def run_l2_agent(l2_cmd, run_dir, prompt, n, proxy):
@@ -1069,12 +1174,22 @@ class CodexDriver:
             return True
         return self.jsonl is not None  # 续写场景: 无新文件, 沿用已知 jsonl
 
-    def kill_tree(self):
+    def kill_tree(self, timeout=5):
         if self.proc and self.proc.poll() is None:
+            try:
+                self.interrupt()
+                if self.wait_exit(timeout):
+                    log(f"KILL    进程树 pid={self.proc.pid} 已优雅退出")
+                    return
+            except Exception:
+                pass
             subprocess.run(["taskkill", "/PID", str(self.proc.pid), "/T", "/F"],
                            capture_output=True)
-            self.proc.wait()
-            log(f"KILL    进程树 pid={self.proc.pid} 已终止")
+            try:
+                self.proc.wait(timeout=3)
+            except Exception:
+                pass
+            log(f"KILL    进程树 pid={self.proc.pid} 已强制终止")
 
     def heartbeat_age(self, launched_at) -> float:
         if self.jsonl and self.jsonl.exists():
@@ -1155,16 +1270,73 @@ def check_acceptance(task_dir: Path, work_dir: Path):
     return (not problems), ("全部满足" if not problems else "; ".join(problems[:4]))
 
 
-def check_acceptance_quick(work_dir: Path):
-    """快速模式验收: afk-work/PROGRESS.md 存在且全部勾完(≥1勾, 0未勾)。"""
-    prog = work_dir / "PROGRESS.md"
-    if not prog.exists():
-        return False, "afk-work/PROGRESS.md 不存在(worker未建立清单)"
-    txt = prog.read_text(encoding="utf-8", errors="replace")
-    done = txt.count("- [x]") + txt.count("- [X]")
-    todo = txt.count("- [ ]")
-    ok = done >= 1 and todo == 0
-    return ok, f"快速验收: 勾选{done}, 未勾{todo}"
+DONE_SIGNALS = [
+    "已全部完成", "全部完成", "任务已完成", "所有任务已完成", "没有等待执行的后续阶段",
+    "无剩余工作", "全部阶段已完成", "已完成所有", "所有要求已完成", "全部进度项",
+    "all tasks completed", "all done", "work complete", "finished all tasks",
+    "everything is complete", "all requirements completed"
+]
+
+
+def check_acceptance_natural(session_cwd: Path, last_msg: str = "") -> tuple:
+    """无感透明验收:
+    1. 优先在被接管的工作目录内探测项目原生清单 (PROGRESS.md / TODO.md / last_msg 中提及的清单);
+       只要清单中全部勾选 (done>=1, todo==0) 则判定完工;
+       若清单中存在明确未勾选项 (todo>0), 则判定未完成。
+    2. 若无清单, 则根据 worker 最后留言的完工语义 (DONE_SIGNALS 且无提问请求) 判定。"""
+    last_msg = last_msg or ""
+    cwd = Path(session_cwd)
+
+    # 1. 寻找可能存在的项目清单文件
+    checklist_candidates = []
+    # 检查 last_msg 中是否明确提到了某个清单路径 (如 `decisionlab/PROGRESS.md`)
+    for m in re.finditer(r'([a-zA-Z0-9_\-/\\]+\.md)', last_msg):
+        cand = cwd / m.group(1).replace("\\", "/")
+        if cand.exists() and cand.is_file() and cand not in checklist_candidates:
+            checklist_candidates.append(cand)
+
+    # 检查根目录及子目录下的常见清单
+    for name in ("PROGRESS.md", "TODO.md", "checklist.md"):
+        root_cand = cwd / name
+        if root_cand.exists() and root_cand.is_file() and root_cand not in checklist_candidates:
+            checklist_candidates.append(root_cand)
+        for sub in cwd.glob(f"*/{name}"):
+            if sub.is_file() and sub not in checklist_candidates:
+                checklist_candidates.append(sub)
+
+    # 评估发现的清单
+    for p in checklist_candidates:
+        try:
+            txt = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        done = txt.count("- [x]") + txt.count("- [X]")
+        todo = txt.count("- [ ]")
+        if done >= 1 and todo == 0:
+            try:
+                rel_path = p.relative_to(cwd)
+            except ValueError:
+                rel_path = p.name
+            return True, f"项目清单已全部勾选完成 ({rel_path}: 勾选{done}, 剩余0)"
+        elif todo > 0:
+            try:
+                rel_path = p.relative_to(cwd)
+            except ValueError:
+                rel_path = p.name
+            return False, f"项目清单仍有未完成项 ({rel_path}: 勾选{done}, 剩余{todo})"
+
+    # 2. 若未发现有效清单，依赖 worker 自然完工语义
+    has_ask = any(m in last_msg for m in ASK_MARKERS)
+    if not has_ask:
+        for sig in DONE_SIGNALS:
+            if sig in last_msg:
+                return True, f"识别到自然完工语义: '{sig}'"
+
+    return False, "未检测到已完成清单或明确完工语义"
+
+
+def check_acceptance_quick(work_dir: Path, last_msg: str = ""):
+    return check_acceptance_natural(work_dir, last_msg)
 
 
 def _acceptance_selftest(work_dir: Path):
@@ -1199,7 +1371,7 @@ def main():
     ap.add_argument("--adopt", default="",
                     help="接管已有codex会话: 'last'(本目录最近会话) 或 session-id")
     ap.add_argument("--quick", action="store_true",
-                    help="快速挂机: 内置续跑指令, 验收=afk-work/PROGRESS.md全部勾完")
+                    help="快速挂机: 无感接管当前会话, 基于自然完工语义与项目清单自动验收")
     ap.add_argument("--yes", action="store_true",
                     help="跳过交互确认(自动选最新会话/自动关App)")
     ap.add_argument("--l2-cmd", default="antigravity",
@@ -1219,8 +1391,8 @@ def main():
         ap.error('--task 必填 (零准备挂机请用: --adopt last --quick)')
 
     task_md = Path(args.task).resolve() if args.task else None
-    work_dir = WS / args.work_dir  # worker cwd=WS, 产物约定落在 <启动目录>/<work-dir>
     session_cwd = str(WS)          # 接管模式下跟随被接管会话的工作目录
+    work_dir = Path(session_cwd)   # 默认工作区对齐项目真实根目录
     l2_cmd = None if args.l2_cmd.strip().lower() in ("off", "none") else args.l2_cmd.strip()
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = WS / "runs" / ts
@@ -1260,10 +1432,11 @@ def main():
     resume_path.write_text("继续\n", encoding="utf-8")
 
     def verify():
-        """终态验收分派: quick=afk-work清单全勾; 任务模式=acceptance.md/selftest"""
-        if args.quick:
-            return check_acceptance_quick(work_dir)
-        return check_acceptance(task_md.parent, work_dir)
+        """终态验收分派: 显式任务模式=acceptance.md/selftest; 接管/快速挂机=自然完工语义+项目原生清单"""
+        if task_md:
+            return check_acceptance(task_md.parent, Path(session_cwd))
+        last_msg = worker_last_message(run_dir)
+        return check_acceptance_natural(Path(session_cwd), last_msg)
 
     keep_awake()
     proxy = detect_system_proxy()
@@ -1351,25 +1524,12 @@ def main():
             driver.jsonl = rollout  # 心跳基线; resume后由 discover_session 重新定位
             agy_mgr.set_codex_session_id(sid)
             if scwd:
-                # 验收锚点跟随被接管会话; quick模式固定用 afk-work
-                work_dir = Path(scwd) / ("afk-work" if args.quick else args.work_dir)
+                # 验收锚点跟随被接管会话的真实工作区
                 session_cwd = scwd
+                work_dir = Path(scwd)
     ivl("LAUNCH", session=driver.session_id or "(运行时发现)",
         provider=driver.provider_name,
         chaos=str(chaos) if chaos else "off")
-
-    # quick模式: 归档上一轮遗留的清单, 否则旧清单会让验收瞬间假通过
-    if args.quick:
-        prog = work_dir / "PROGRESS.md"
-        if prog.exists():
-            arch = work_dir / "archive"
-            arch.mkdir(parents=True, exist_ok=True)
-            dest = arch / f"PROGRESS-{ts}.md"
-            try:
-                prog.replace(dest)
-                ivl("ARCHIVE_STALE_CHECKLIST", dest=str(dest))
-            except OSError as e:
-                ivl("WARN", msg=f"归档旧清单失败: {e}")
 
     launched_at = time.time()
     run_started_at = launched_at  # 总时长上限的计时基准(含所有退避)
@@ -1528,8 +1688,9 @@ def main():
                 ivl("TERMINAL", state="FAILED",
                     detail="L2将决策DEFER给用户 — 需人工介入")
                 break
+            cleaned_answer = clean_l2_decision_text(answer)
             answer_path = run_dir / f"answer-{interactions}.txt"
-            answer_path.write_text(answer.strip() + "\n", encoding="utf-8")
+            answer_path.write_text(cleaned_answer, encoding="utf-8")
             driver.resume(answer_path)
             ivl("RESUMED_WITH_DECISION", n=interactions, pid=driver.proc.pid)
             launched_at = time.time()

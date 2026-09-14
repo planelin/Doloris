@@ -12,8 +12,8 @@ cd C:\Agents\zcode\double
 # ── 日常推荐: 零准备快速托管 ──
 # 在 Codex 界面推进项目 → 要出门 → 双击 afk.cmd, 或:
 python supervise.py --adopt last --quick
-# 无需建任何文件夹: 内置续跑指令接管最近会话; 产物进被接管会话目录下的 afk-work/;
-# 完成判据 = afk-work/PROGRESS.md 全部勾完。回来先读 runs/<最新>/report.md。
+# 零侵入透明挂机: 无需建任何特定文件夹，Worker 在其原本的项目目录正常工作；
+# 完成判据 = 自动识别自然完工语义或项目原生清单（PROGRESS.md/TODO.md）全勾。回来先读 runs/<最新>/report.md。
 
 # ── 严肃任务: 显式任务书(可自定义验收) ──
 # 接管既有会话 + 任务书:
@@ -39,11 +39,10 @@ python supervise.py --task tasks/<你的任务>/task.md
 > afk 不做UI自动化。
 >
 > **运行中如何共处**：接管期间 App 里**看不到实时进展**（锁会挡住视图刷新）——观察
-> 用 afk 黑窗口、项目目录的 `afk-work/PROGRESS.md`、`runs/<最新>/interventions.jsonl`。
+> 用 afk 黑窗口、项目原生清单（如 `PROGRESS.md`）、`runs/<最新>/interventions.jsonl`。
 > afk 结束（SUCCESS/FAILED）后锁自动释放，打开 App 点会话即可拿回继续交互。
 > ADOPT 日志会打印**任务标题**（首条用户消息前60字），用于核对接管对象是否正确。
-> 另外quick模式每次启动会把上一轮遗留的`afk-work/PROGRESS.md`归档到
-> `afk-work/archive/`，防止旧清单造成假验收通过。
+> afk 绝不修改或归档用户的项目文件，保持对工程环境的零侵入。
 
 ## L2 升级agent（稳定通道救火队）
 
@@ -56,10 +55,11 @@ claude通道已弃用（同为中转，稳定性不合格）。
   判定 `UNFIXABLE`（基础设施故障 → 诚实FAILED）
 - L2 修复后追加 4 次续跑预算；最多升级 `--l2-max`（默认2）次
 - **Antigravity 通道**：`--l2-cmd antigravity`——由 `AntigravityManager` 管理无头/有头双模桥接：
-  - 优先复用已有实例（桌面端开着时直接复用）；若桌面端关闭，按需懒拉起无头守护进程（`--headless`，无窗口，低功耗），任务收尾自动回收；
+  - 优先复用已有实例（桌面端开着时直接复用）；若桌面端关闭，在后台直接启动轻量独立微核心（`resources/bin/language_server.exe --standalone`），彻底避开桌面端单实例互斥锁，用户前台可自由开/关 App；
   - **单一会话强绑定**：1 个 Codex 会话严格对应 1 个 AGY 会话，首轮 `new-conversation` 注入全景背景，后续决策与修复一律通过 `send-message` 增量通信，且自动持久化至 `runs/<最新>/agy_session.json`；
   - 桥接三件套动态发现：CSRF、LS监听端口、项目id（默认取最近会话元数据，可 `--l2-project-id` 指定；模型 `--l2-model flash_lite/flash/pro`）；
-  - 轮询verdict文件回收输出（决策代答写入 `afk-l2-answer.txt`，故障诊断写入 `afk-l2-verdict.txt`）。
+  - 轮询verdict文件回收输出（决策代答写入 `afk-l2-answer.txt`，经清洗后纯净回喂 Worker；故障诊断写入 `afk-l2-verdict.txt`）；
+  - **两段式安全停机**：回收与销毁时优先发送 `CTRL_BREAK` 等优雅信号，留出刷盘缓冲，保护 SQLite WAL 数据库完好。
 - 禁用L2：`--l2-cmd off`
 - 每次L2的提示词与回复完整留档：`runs/<最新>/l2-N-prompt.txt` / `l2-N.log`
 
