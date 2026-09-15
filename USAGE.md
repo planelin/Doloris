@@ -12,6 +12,11 @@ cd C:\Agents\zcode\double
 # ── 日常推荐: 零准备快速托管 ──
 # 在 Codex 界面推进项目 → 要出门 → 双击 afk.cmd, 或:
 python supervise.py --adopt last --quick
+# 交互式序号/ID选择: 自动展示官方真实标题（去重展现最近活跃会话），输入序号(1-8)或粘贴会话ID/URL快速锁定；
+# 命令行快捷锁定:
+python supervise.py --adopt 1 --quick                                          # 直接接管最近活跃的第1个会话
+python supervise.py --adopt codex://threads/01a09ef4-c117-... --quick         # 直接按 App 线程链接锁定接管
+python supervise.py --adopt 01a09ef4-c117-79f2-8686-187495420f62 --quick       # 直接按会话 UUID 锁定接管
 # 零侵入透明挂机: 无需建任何特定文件夹，Worker 在其原本的项目目录正常工作；
 # 完成判据 = 自动识别自然完工语义或项目原生清单（PROGRESS.md/TODO.md）全勾。回来先读 runs/<最新>/report.md。
 

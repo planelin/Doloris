@@ -307,6 +307,8 @@ class ClaudeDriver:
 
 CODEX_SESSIONS = HOME / ".codex" / "sessions"
 CODEX_LOCKS = HOME / ".codex" / "thread-writer-locks"
+CODEX_SESSION_INDEX = HOME / ".codex" / "session_index.jsonl"
+CODEX_STATE_DB = HOME / ".codex" / "state_5.sqlite"
 
 
 def _json_str(s: str) -> str:
@@ -346,6 +348,50 @@ def codex_app_running():
     return False
 
 
+def clean_session_id(raw: str) -> str:
+    """清洗会话标识, 兼容 URL (codex://threads/<uuid>)、相对路径 (threads/<uuid>)、带空白或斜杠的 UUID。"""
+    s = raw.strip()
+    if s.startswith("codex://"):
+        s = s[len("codex://"):]
+    s = s.strip("/\\")
+    if s.startswith("threads/"):
+        s = s[len("threads/"):]
+    return s.strip()
+
+
+def load_codex_thread_titles() -> dict[str, str]:
+    """从 ~/.codex/session_index.jsonl 与 state_5.sqlite 加载官方会话标题。
+    优先读取 session_index.jsonl 中的 thread_name，次选 state_5.sqlite 的 threads.name。
+    """
+    titles = {}
+    if CODEX_SESSION_INDEX.exists():
+        try:
+            for line in CODEX_SESSION_INDEX.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                    if "id" in d and d.get("thread_name"):
+                        titles[d["id"]] = d["thread_name"].strip()
+                except Exception:
+                    continue
+        except Exception:
+            pass
+    if CODEX_STATE_DB.exists():
+        try:
+            con = sqlite3.connect(f"file:{CODEX_STATE_DB}?mode=ro", uri=True)
+            cur = con.cursor()
+            cur.execute("SELECT id, name FROM threads WHERE name IS NOT NULL")
+            for sid, name in cur.fetchall():
+                if sid not in titles and name and name.strip():
+                    titles[sid] = name.strip()
+            con.close()
+        except Exception:
+            pass
+    return titles
+
+
 def read_session_title(p: Path, scan=262144):
     """从 rollout 提取任务标题(首条真实用户输入, 截断60字)。兼容三种形态:
     user消息 content / input_text条目 / queue-operation enqueue。
@@ -367,25 +413,40 @@ def read_session_title(p: Path, scan=262144):
     return ""
 
 
-def list_recent_codex_sessions(n=5):
-    """最近 n 个会话, 按活跃时间降序。
+def list_recent_codex_sessions(n=8):
+    """最近 n 个去重后的会话, 按活跃时间降序。
+    每个会话保证唯一，且指向其最新的 rollout 文件。
+    标题优先从官方 session_index / state_5 提取，缺失时回退首轮输入。
     返回 [(sid, rollout_path, session_cwd, title, age_str), ...]"""
-    items = []
     if not CODEX_SESSIONS.exists():
-        return items
+        return []
+    titles_map = load_codex_thread_titles()
+    sessions = {}
     for p in CODEX_SESSIONS.rglob("rollout-*.jsonl"):
         meta = _read_meta(p)
         if not meta:
             continue
+        sid, scwd = meta
         try:
             mt = p.stat().st_mtime
         except OSError:
             continue
-        items.append((mt, meta[0], p, meta[1]))
-    items.sort(reverse=True)
+        if sid not in sessions or mt > sessions[sid]["mtime"]:
+            sessions[sid] = {
+                "mtime": mt,
+                "path": p,
+                "sid": sid,
+                "scwd": scwd,
+            }
+
+    sorted_sessions = sorted(sessions.values(), key=lambda x: x["mtime"], reverse=True)
     out = []
-    for mt, sid, p, scwd in items[:n]:
-        title = read_session_title(p)
+    for item in sorted_sessions[:n]:
+        sid = item["sid"]
+        p = item["path"]
+        scwd = item["scwd"]
+        mt = item["mtime"]
+        title = titles_map.get(sid) or read_session_title(p)
         age = time.strftime("%m-%d %H:%M", time.localtime(mt))
         out.append((sid, p, scwd, title, age))
     return out
@@ -508,13 +569,27 @@ def find_last_codex_session(cwd=None):
     return sid, p, scwd
 
 
-def find_codex_session_by_id(sid: str):
-    if not CODEX_SESSIONS.exists():
+def find_codex_session_by_id(raw_sid: str):
+    """根据会话 ID（支持 URL/前缀）查找对应的最新 rollout 文件与 cwd。
+    若存在多个 rollout（续跑/恢复），优先返回 mtime 最新的那一个。
+    返回 (actual_sid, rollout_path, session_cwd) 或 None。
+    """
+    sid = clean_session_id(raw_sid)
+    if not sid or not CODEX_SESSIONS.exists():
         return None
+    matches = []
     for p in CODEX_SESSIONS.rglob("rollout-*.jsonl"):
         meta = _read_meta(p)
-        if meta and meta[0] == sid:
-            return p, meta[1]
+        if meta and (meta[0] == sid or meta[0].startswith(sid)):
+            try:
+                mt = p.stat().st_mtime
+            except OSError:
+                mt = 0
+            matches.append((mt, meta[0], p, meta[1]))
+    if matches:
+        matches.sort(reverse=True)
+        _, actual_sid, p, scwd = matches[0]
+        return actual_sid, p, scwd
     return None
 
 
@@ -1530,38 +1605,67 @@ def main():
     else:
         driver = CodexDriver(work_dir, run_dir)
         if args.adopt:
-            if args.adopt == "last":
-                cands = list_recent_codex_sessions(5)
+            adopt_arg = clean_session_id(args.adopt)
+            is_digit_index = adopt_arg.isdigit() and 1 <= int(adopt_arg) <= 20
+
+            if args.adopt == "last" or is_digit_index:
+                cands = list_recent_codex_sessions(8)
                 if not cands:
                     ivl("TERMINAL", state="FAILED", detail="未找到可接管的codex会话")
                     log("TERMINAL FAILED — SHUTDOWN WOULD HAPPEN HERE")
                     return 1
-                pick = 1
-                if args.yes or not sys.stdin.isatty():
+
+                if is_digit_index:
+                    pick_idx = int(adopt_arg)
+                    if pick_idx > len(cands):
+                        ivl("TERMINAL", state="FAILED",
+                            detail=f"序号 {pick_idx} 超出会话列表范围 (当前仅有 {len(cands)} 个会话)")
+                        log(f"TERMINAL FAILED — 序号 {pick_idx} 超出范围")
+                        return 1
+                    sid, rollout, scwd, title, _ = cands[pick_idx - 1]
+                    log(f"ADOPT   指定序号 [{pick_idx}] 接管会话: {sid[:8]} ({title or '无标题'})")
+                elif args.yes or not sys.stdin.isatty():
                     log("ADOPT   非交互模式, 自动选择最新会话")
+                    sid, rollout, scwd, title, _ = cands[0]
                 else:
-                    print("选择要接管的会话:")
+                    print("\n选择要接管的会话:")
                     for i, (sid_, p_, scwd_, title_, age_) in enumerate(cands, 1):
                         mark = "*" if scwd_ == str(WS) else " "
-                        print(f"  [{i}]{mark} {age_}  {title_ or '(无标题)'}")
+                        print(f"  [{i}]{mark} {age_}  [{sid_[:8]}]  {title_ or '(无标题)'}")
                         print(f"      cwd={scwd_}")
                     try:
-                        raw = input("序号[1]: ").strip()
+                        raw = input(f"\n输入序号 (1-{len(cands)}) 或 会话ID/URL [1]: ").strip()
                     except (EOFError, OSError):
                         raw = ""
-                    pick = int(raw) if raw.isdigit() and 1 <= int(raw) <= len(cands) else 1
-                sid, rollout, scwd, _, _ = cands[pick - 1]
+
+                    if not raw:
+                        sid, rollout, scwd, title, _ = cands[0]
+                    elif raw.isdigit() and 1 <= int(raw) <= len(cands):
+                        sid, rollout, scwd, title, _ = cands[int(raw) - 1]
+                    else:
+                        cleaned_input = clean_session_id(raw)
+                        matched = [c for c in cands if c[0] == cleaned_input or c[0].startswith(cleaned_input)]
+                        if matched:
+                            sid, rollout, scwd, title, _ = matched[0]
+                        else:
+                            got = find_codex_session_by_id(cleaned_input)
+                            if not got:
+                                ivl("TERMINAL", state="FAILED", detail=f"找不到指定的会话: {raw}")
+                                log(f"TERMINAL FAILED — 找不到指定的会话: {raw}")
+                                return 1
+                            sid, rollout, scwd = got
+                            title = load_codex_thread_titles().get(sid) or read_session_title(rollout)
+
                 if scwd and scwd != str(WS):
                     log(f"ADOPT   接管会话 cwd={scwd} (非{WS}), 工作目录与验收锚点绝对对齐目标工程")
             else:
                 got = find_codex_session_by_id(args.adopt)
                 if not got:
                     ivl("TERMINAL", state="FAILED", detail=f"找不到会话 {args.adopt}")
-                    log("TERMINAL FAILED — SHUTDOWN WOULD HAPPEN HERE")
+                    log(f"TERMINAL FAILED — 找不到会话 {args.adopt}")
                     return 1
-                rollout, scwd = got
-                sid = args.adopt
-            title = read_session_title(rollout) if rollout else ""
+                sid, rollout, scwd = got
+                title = load_codex_thread_titles().get(sid) or read_session_title(rollout)
             ivl("ADOPT", session=sid, title=title,
                 rollout=rollout.name[:60] if rollout else "(文件未定位)",
                 session_cwd=scwd or "?")
