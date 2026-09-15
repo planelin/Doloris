@@ -838,6 +838,42 @@ def discover_antigravity_project_id(agexe, csrf, ports):
     return None
 
 
+def check_agy_transcript_error(cid: str) -> str | None:
+    """检查 AGY 本地会话日志是否已中断报错且停止更新。
+    返回错误简述, 若仍在正常交互/生成或无错误则返回 None。
+    100% 纯本地硬盘读取, 零网络调用。
+    """
+    if not cid:
+        return None
+    agy_brain = HOME / ".gemini" / "antigravity" / "brain"
+    t_path = agy_brain / cid / ".system_generated" / "logs" / "transcript.jsonl"
+    if not t_path.exists():
+        return None
+    try:
+        st = t_path.stat()
+        # 若文件在最近 15 秒内被修改过，说明模型/系统可能仍在重试中，暂不判定为死锁
+        if time.time() - st.st_mtime < 15:
+            return None
+        lines = t_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        if not lines:
+            return None
+        for line in reversed(lines[-5:]):
+            if not line.strip():
+                continue
+            try:
+                data = json.loads(line)
+            except Exception:
+                continue
+            if data.get("type") == "ERROR_MESSAGE" or data.get("status") == "ERROR":
+                content = data.get("content", "")
+                if "stream was interrupted" in content or "network issue" in content:
+                    return f"AGY云端网络流中断: {content[:100]}"
+                return f"AGY执行报错: {content[:100]}"
+    except Exception:
+        pass
+    return None
+
+
 def run_l2_antigravity(run_dir, full_prompt, short_prompt, n, scwd, verdict_file,
                        conv_holder=None, project_id=None, model="flash",
                        timeout_sec=1800, log_name=None, agy_mgr=None):
@@ -925,15 +961,27 @@ def run_l2_antigravity(run_dir, full_prompt, short_prompt, n, scwd, verdict_file
             if agy_mgr is not None:
                 agy_mgr.persist_cid(new_cid)
                 agy_mgr.port = port
+        active_cid = new_cid or cid
         deadline = time.time() + timeout_sec
+        interrupted = False
         while time.time() < deadline:
-            time.sleep(20)
+            time.sleep(5)
             if verdict_file.exists():
                 v = verdict_file.read_text(encoding="utf-8", errors="replace")
                 v = v.lstrip("\ufeff\u200b").strip()
                 verdict = v.split()[-1] if v else "NO-VERDICT"
                 return verdict, v, log_path
-        last_err = "verdict文件超时未出现"
+
+            # 本地嗅探 AGY 转录日志: 秒级识别断网/流中断报错，杜绝盲等30分钟
+            if active_cid:
+                agy_err = check_agy_transcript_error(active_cid)
+                if agy_err:
+                    log(f"L2      检测到 AGY 本地会话中断 ({active_cid[:8]}): {agy_err}")
+                    last_err = agy_err
+                    interrupted = True
+                    break
+        if not interrupted:
+            last_err = "verdict文件超时未出现"
         break
     with open(log_path, "ab") as f:
         f.write(f"\n[L2-ANTIGRAVITY-FAIL] {last_err}\n".encode("utf-8", errors="replace"))
@@ -1509,8 +1557,8 @@ def main():
                     help="任务书路径; 快速模式(--adopt + --quick)可不填")
     ap.add_argument("--chaos", default="", help='故障注入, 如 "kill:120"')
     ap.add_argument("--max-resumes", type=int, default=8)
-    ap.add_argument("--max-run-sec", type=int, default=3600,
-                    help="总时长上限(秒), 0=不设限; 真实数据收集建议 0")
+    ap.add_argument("--max-run-sec", type=int, default=0,
+                    help="总时长上限(秒), 默认0=不设限(跑完为止); 亦可显式指定秒数")
     ap.add_argument("--no-probe", action="store_true", help="跳过启动探针")
     ap.add_argument("--driver", choices=["claude", "codex"], default=None,
                     help="不填时自动推断: --adopt→codex, 否则claude")

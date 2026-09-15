@@ -96,7 +96,7 @@ work-xxx/chapters/ch*.md :12           # 至少12个非空文件（glob 相对�
 | `--chaos kill:N` | 关 | 测试用：worker 运行 N 秒时杀掉它，验证自愈 |
 | `--chaos net:N:M` | 关 | 测试用：N 秒时断网 M 秒（模拟中转宕机，需管理员；结束/退出自动恢复） |
 | `--max-resumes` | 8 | 续跑预算，耗尽即 FAILED 终态 |
-| `--max-run-sec` | 3600 | 总时长上限（含退避），超限 FAILED |
+| `--max-run-sec` | 0 (不设限) | 总时长上限（秒），默认0=跑完为止，不设超时熔断 |
 | `--no-probe` | 关 | 跳过 claude 启动探针 |
 | `--heartbeat-stale` | 150 | 挂死阈值（claude），按击杀次数梯度 150→300→450s |
 
