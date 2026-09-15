@@ -970,6 +970,10 @@ def run_l2_antigravity(run_dir, full_prompt, short_prompt, n, scwd, verdict_file
                 v = verdict_file.read_text(encoding="utf-8", errors="replace")
                 v = v.lstrip("\ufeff\u200b").strip()
                 verdict = v.split()[-1] if v else "NO-VERDICT"
+                try:
+                    verdict_file.unlink()
+                except OSError:
+                    pass
                 return verdict, v, log_path
 
             # 本地嗅探 AGY 转录日志: 秒级识别断网/流中断报错，杜绝盲等30分钟
@@ -1476,57 +1480,110 @@ DONE_SIGNALS = [
 
 def check_acceptance_natural(session_cwd: Path, last_msg: str = "") -> tuple:
     """无感透明验收:
-    1. 优先在被接管的工作目录内探测项目原生清单 (PROGRESS.md / TODO.md / last_msg 中提及的清单);
-       只要清单中全部勾选 (done>=1, todo==0) 则判定完工;
-       若清单中存在明确未勾选项 (todo>0), 则判定未完成。
-    2. 若无清单, 则根据 worker 最后留言的完工语义 (DONE_SIGNALS 且无提问请求) 判定。"""
+    1. 前置守卫: 若 worker 最后留言包含提问/决策请求 (ASK_MARKERS)，说明仍在交互中，绝不可判定为完工。
+    2. 优先在被接管的工作目录内探测项目原生清单 (PROGRESS.md / TODO.md / last_msg 中提及的清单):
+       - 严格排除内部与历史目录 (afk-work, runs, .git, node_modules 等);
+       - 按文件最近修改时间 (st_mtime) 倒序优先判定当前活跃任务的清单;
+       - 只要活跃清单中存在未勾选项 (todo > 0)，判定未完成;
+       - 活跃清单全部勾选 (done >= 1, todo == 0) 判定完工。
+    3. 若无清单, 则根据 worker 最后留言的完工语义 (DONE_SIGNALS) 判定。"""
     last_msg = last_msg or ""
     cwd = Path(session_cwd)
 
-    # 1. 寻找可能存在的项目清单文件
-    checklist_candidates = []
-    # 检查 last_msg 中是否明确提到了某个清单路径 (如 `decisionlab/PROGRESS.md`)
-    for m in re.finditer(r'([a-zA-Z0-9_\-/\\]+\.md)', last_msg):
-        cand = cwd / m.group(1).replace("\\", "/")
-        if cand.exists() and cand.is_file() and cand not in checklist_candidates:
-            checklist_candidates.append(cand)
+    # 1. 前置守卫: 若 worker 正在向用户/L2提问或请求决策，绝对未完工
+    for m in ASK_MARKERS:
+        if m in last_msg:
+            return False, f"worker正在等待交互决策代答 ({m})"
 
-    # 检查根目录及子目录下的常见清单
+    # 目录黑名单：排除 afk 内部文件、运行日志、临时目录、版本控制等
+    EXCLUDE_DIR_NAMES = {
+        "afk-work", "runs", "scratch", "dist", "build", "target", "out",
+        ".git", ".github", ".codex", ".gemini", ".agents", ".vscode", ".idea",
+        "node_modules", "__pycache__", ".venv", "venv", "env"
+    }
+
+    def is_excluded_path(p: Path) -> bool:
+        try:
+            rel = p.relative_to(cwd)
+            parts = rel.parts
+        except ValueError:
+            parts = p.parts
+        for part in parts:
+            part_low = part.lower()
+            if part_low in EXCLUDE_DIR_NAMES:
+                return True
+            if part_low.startswith(("backup-", "work-", "afk-")):
+                return True
+        return False
+
+    checklist_candidates = []
+    seen = set()
+
+    def add_candidate(p: Path):
+        try:
+            p_res = p.resolve()
+            if p_res.is_file() and not is_excluded_path(p_res) and p_res not in seen:
+                seen.add(p_res)
+                checklist_candidates.append(p_res)
+        except Exception:
+            pass
+
+    # 2. 从 last_msg 提取可能明确提及的清单文件
+    for m in re.finditer(r'([a-zA-Z0-9_\-/\\]+\.md)', last_msg):
+        rel_str = m.group(1).replace("\\", "/")
+        cand = cwd / rel_str
+        if cand.exists():
+            add_candidate(cand)
+        else:
+            fname = Path(rel_str).name
+            if fname.lower() in ("progress.md", "todo.md", "checklist.md"):
+                try:
+                    for sub_cand in cwd.rglob(fname):
+                        add_candidate(sub_cand)
+                except Exception:
+                    pass
+
+    # 3. 扫描根目录及子目录下的常见清单
     for name in ("PROGRESS.md", "TODO.md", "checklist.md"):
         root_cand = cwd / name
-        if root_cand.exists() and root_cand.is_file() and root_cand not in checklist_candidates:
-            checklist_candidates.append(root_cand)
-        for sub in cwd.glob(f"*/{name}"):
-            if sub.is_file() and sub not in checklist_candidates:
-                checklist_candidates.append(sub)
-
-    # 评估发现的清单
-    for p in checklist_candidates:
+        if root_cand.exists():
+            add_candidate(root_cand)
         try:
-            txt = p.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        done = txt.count("- [x]") + txt.count("- [X]")
-        todo = txt.count("- [ ]")
-        if done >= 1 and todo == 0:
-            try:
-                rel_path = p.relative_to(cwd)
-            except ValueError:
-                rel_path = p.name
-            return True, f"项目清单已全部勾选完成 ({rel_path}: 勾选{done}, 剩余0)"
-        elif todo > 0:
-            try:
-                rel_path = p.relative_to(cwd)
-            except ValueError:
-                rel_path = p.name
-            return False, f"项目清单仍有未完成项 ({rel_path}: 勾选{done}, 剩余{todo})"
+            for sub in cwd.glob(f"*/{name}"):
+                add_candidate(sub)
+            for sub in cwd.glob(f"*/*/{name}"):
+                add_candidate(sub)
+        except Exception:
+            pass
 
-    # 2. 若未发现有效清单，依赖 worker 自然完工语义
-    has_ask = any(m in last_msg for m in ASK_MARKERS)
-    if not has_ask:
-        for sig in DONE_SIGNALS:
-            if sig in last_msg:
-                return True, f"识别到自然完工语义: '{sig}'"
+    # 4. 按最近修改时间倒序排列：当前活跃被编辑的清单优先级最高
+    if checklist_candidates:
+        checklist_candidates.sort(
+            key=lambda p: p.stat().st_mtime if p.exists() else 0,
+            reverse=True
+        )
+
+        primary = checklist_candidates[0]
+        try:
+            txt = primary.read_text(encoding="utf-8", errors="replace")
+            done = txt.count("- [x]") + txt.count("- [X]")
+            todo = txt.count("- [ ]")
+            try:
+                rel_path = primary.relative_to(cwd)
+            except ValueError:
+                rel_path = primary.name
+
+            if todo > 0:
+                return False, f"项目清单仍有未完成项 ({rel_path}: 勾选{done}, 剩余{todo})"
+            elif done >= 1 and todo == 0:
+                return True, f"项目清单已全部勾选完成 ({rel_path}: 勾选{done}, 剩余0)"
+        except OSError:
+            pass
+
+    # 5. 若未发现有效清单，依赖 worker 自然完工语义
+    for sig in DONE_SIGNALS:
+        if sig in last_msg:
+            return True, f"识别到自然完工语义: '{sig}'"
 
     return False, "未检测到已完成清单或明确完工语义"
 
@@ -1884,7 +1941,7 @@ def main():
                     outcome, outcome_detail = "crash", f"exit_code={rc}"
 
         # --- 验收前置守卫: worker死亡/空转/被锁, 但产物已齐 → 免唤醒直接成功 ---
-        if outcome in ("crash", "hang", "early_exit", "busy", "interaction"):
+        if outcome in ("crash", "hang", "early_exit", "busy"):
             ok, detail = verify()
             if ok:
                 outcome, outcome_detail = "success", "验收通过(免唤醒): " + detail
