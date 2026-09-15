@@ -952,16 +952,16 @@ def run_l2_antigravity(run_dir, full_prompt, short_prompt, n, scwd, verdict_file
             if transient and cid:
                 continue  # 瞬时连接故障: 保留cid换下一端口重试send
             continue
+        active_cid = cid
         m = re.search(r'"conversationId"\s*:\s*"([^"]+)"', out)
         if m:
-            new_cid = m.group(1)
+            active_cid = m.group(1)
             if conv_holder is not None:
-                conv_holder._agy_cid = new_cid
+                conv_holder._agy_cid = active_cid
                 conv_holder._agy_port = port
             if agy_mgr is not None:
-                agy_mgr.persist_cid(new_cid)
+                agy_mgr.persist_cid(active_cid)
                 agy_mgr.port = port
-        active_cid = new_cid or cid
         deadline = time.time() + timeout_sec
         interrupted = False
         while time.time() < deadline:
