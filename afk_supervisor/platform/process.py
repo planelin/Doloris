@@ -186,7 +186,7 @@ def codex_app_running() -> bool:
 
 
 def close_codex_app(rollout_path=None, max_wait=40, wait_boundary=True, on_event=None) -> List[str]:
-    """Automatically close verified desktop PIDs; never resume on uncertainty."""
+    """Automatically close verified desktop PIDs; wait for tool completions before kill."""
     from afk_supervisor.sessions.rollout import codex_handoff_state
     pids_fn = get_sym("get_codex_desktop_pids", get_codex_desktop_pids)
     target_pids = pids_fn()
@@ -205,21 +205,6 @@ def close_codex_app(rollout_path=None, max_wait=40, wait_boundary=True, on_event
                     on_event("HANDOFF_BOUNDARY", **snapshot)
                 previous = signature
             if snapshot["state"] == "safe":
-                if not snapshot["turn_ended"]:
-                    # Freeze model-side generation before closing so it cannot
-                    # dispatch a new tool between the boundary sample and kill.
-                    from afk_supervisor.platform.gui import pause_codex_gui_session
-                    pause_fn = get_sym("pause_codex_gui_session", pause_codex_gui_session)
-                    remaining = max(0, deadline - time.monotonic())
-                    if on_event:
-                        on_event("HANDOFF_PAUSE", reason="模型侧边界可中断，先暂停以防新工具进入")
-                    if not pause_fn(rollout_path, max_wait=remaining):
-                        raise RuntimeError("自动暂停原任务失败，未关闭 App、未启动无头端")
-                    confirmed = codex_handoff_state(rollout_path)
-                    if confirmed["state"] != "safe" or not confirmed["turn_ended"]:
-                        raise RuntimeError(f"暂停后缺少安全终止事件: {confirmed}")
-                    if on_event:
-                        on_event("HANDOFF_BOUNDARY", **confirmed)
                 break
             remaining = deadline - time.monotonic()
             if remaining <= 0:

@@ -1,21 +1,23 @@
-# Contributing to AFK Supervisor
+# Contributing to Doloris (ドロリス)
 
-Thank you for your interest in contributing to AFK Supervisor!
+Thank you for your interest in contributing to **Doloris**!
 
 ## Architecture Overview
 
-AFK is a task supervision and self-healing engine for long-running AI coding agents (Codex / Claude).
-The system follows a two-tier design:
+Doloris is an autonomous task supervision, watchdog, self-healing, and desktop-companion engine for long-running AI coding agents (Codex / Claude).
+The system follows a decoupled design:
 - **L1 Orchestrator / Watchdog** (`afk_supervisor/`):
   - Manages worker process lifecycles, heartbeats, hang detection, and safe handoffs.
   - Implements 3 modes:
-    - Mode 1 (`afk.cmd`): Kill & Resume (safe app shutdown, headless resume in the same thread).
-    - Mode 2 (`afk2.cmd`): Fork Headless (safe pause of parent, fork child thread, headless execution).
-    - Mode 3 (`afk3.cmd`): Dual-Head GUI (UI Automation direct injection into desktop app).
+    - Mode 1: Fork Headless (`doloris fork` / `afk2.cmd`): Safe pause of parent task, fork child thread, keep App alive.
+    - Mode 2: Kill & Resume (`doloris resume` / `afk.cmd`): Safe app shutdown, headless resume in same thread.
+    - Mode 3: Dual-Head GUI (`doloris gui` / `afk3.cmd`): UI Automation direct injection into desktop app.
   - Collects structured evidence and evaluates delivery acceptance.
 - **L2 Delegated Intelligence** (`afk_supervisor/l2/`):
   - Resolves questions/decisions posed by workers without requiring human presence.
   - Automatically diagnoses and repairs common local/environment errors.
+- **Desktop Companion & BYOP (Phase 2 Roadmap)**:
+  - Bring Your Own Pet (BYOP) sprite mapping protocol and desktop mascot overlay engine.
 
 ## Development Setup
 
@@ -25,7 +27,7 @@ The system follows a two-tier design:
    - PowerShell 5.1+
 
 2. **Zero External Dependencies**:
-   AFK is built entirely using Python's standard library. No `pip install` of third-party runtime libraries is required!
+   Doloris core is built entirely using Python's standard library. No `pip install` of third-party runtime libraries is required!
 
 3. **Editable Installation**:
    ```bash
@@ -49,7 +51,7 @@ OK (failures=0, errors=0)
 
 ## Guidelines
 
-- **Zero-Dependency Core**: Maintain zero external runtime dependencies. Rely on Python standard library modules.
+- **Zero-Dependency Core**: Maintain zero external runtime dependencies for the core supervisor.
 - **Safe Boundary Checks**: Never bypass single-writer locks or file silence assumptions. All handoffs must be verified against structured rollout events.
 - **Evidence-Based Acceptance**: Completion must be backed by tangible evidence (deliverables, checklists, test executions), not superficial completion claims.
 - **Cross-Codepage Cleanliness**: Keep batch scripts (`*.cmd`) in pure ASCII to prevent issues with GBK/UTF-8 codepage mismatches on Windows command prompts.

@@ -3,16 +3,18 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "afk-supervisor"
+name = "doloris"
 version = "1.0.0"
-description = "Headless & GUI long-running task supervision and self-healing system for AI coding agents (Codex / Claude)"
+description = "Doloris (ドロリス) - Desktop Cyber-Companion & Autonomous Task Supervisor for AI Coding Agents (Codex / Claude)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [
-    { name = "AFK Supervisor Contributors" }
+    { name = "Doloris Project Contributors" }
 ]
 keywords = [
+    "doloris",
+    "desktop-pet",
     "ai-agent",
     "codex",
     "claude",
@@ -20,7 +22,8 @@ keywords = [
     "supervisor",
     "self-healing",
     "automation",
-    "task-orchestration"
+    "task-orchestration",
+    "byop"
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -37,9 +40,10 @@ classifiers = [
 dependencies = []
 
 [project.scripts]
+doloris = "afk_supervisor.cli:main"
 afk = "afk_supervisor.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/your-username/afk-supervisor"
-Documentation = "https://github.com/your-username/afk-supervisor#readme"
-Repository = "https://github.com/your-username/afk-supervisor"
+Homepage = "https://github.com/your-username/doloris"
+Documentation = "https://github.com/your-username/doloris#readme"
+Repository = "https://github.com/your-username/doloris"

@@ -14,10 +14,11 @@ from typing import Optional, Tuple
 
 
 def codex_handoff_state(path) -> dict:
-    """Read typed lifecycle and tool events, never elapsed silence.
+    """Read typed lifecycle and tool events to assess a kill handoff boundary.
 
-    Scan the complete log: an outstanding call may precede a large output.
-    Missing, partial or unrecognised evidence never authorises shutdown.
+    High-risk boundary: unreturned tool calls in flight (pending_calls).
+    All other states (idle, reasoning, message generation, turn complete, turn aborted, etc.)
+    are safe to directly kill because model-side generation can be cleanly resumed by codex resume.
     """
     pending = set()
     anonymous = 0
@@ -25,7 +26,6 @@ def codex_handoff_state(path) -> dict:
     turn_ended = False
     last_event = ""
     invalid = False
-    unknown_boundary = False
     last_agent_message = ""
     try:
         p = Path(path)
@@ -48,56 +48,43 @@ def codex_handoff_state(path) -> dict:
                     continue
                 kind = obj.get("type")
                 event = payload.get("type", "")
-                if kind not in ("event_msg", "response_item"):
-                    if kind not in ("session_meta", "turn_context", "compacted"):
-                        unknown_boundary = True
-                    continue
-                if event in ("token_count", "thread_settings_applied", "item_completed"):
-                    continue
-                last_event = event
-                supported = (
-                    {"task_started", "turn_started", "user_message", "task_complete", "turn_aborted",
-                     "agent_message", "agent_reasoning", "agent_reasoning_raw_content"}
-                    if kind == "event_msg" else
-                    {"reasoning", "message", "function_call", "custom_tool_call", "local_shell_call",
-                     "function_call_output", "custom_tool_call_output", "local_shell_output"}
-                )
-                if event not in supported:
-                    unknown_boundary = True
-                    continue
-                if kind == "event_msg" and event in ("agent_message", "agent_reasoning", "agent_reasoning_raw_content"):
-                    turn_ended = False
-                if kind == "response_item" and event in ("reasoning", "message"):
-                    # Any new generation after a terminal marker reopens activity.
-                    if event == "reasoning" or payload.get("role") == "assistant":
-                        turn_ended = False
-                if kind == "event_msg" and event in (
-                    "task_started", "turn_started", "user_message", "task_complete", "turn_aborted"
+                if event in ("token_count", "thread_settings_applied", "item_completed") or kind in (
+                    "token_usage_record", "world_state", "turn_context", "session_meta", "compacted"
                 ):
+                    continue
+                last_event = event or kind or ""
+                if kind == "event_msg" and event in ("task_complete", "turn_aborted"):
                     known = True
-                    unknown_boundary = False
-                    turn_ended = event in ("task_complete", "turn_aborted")
+                    turn_ended = True
                     last_agent_message = payload.get("last_agent_message", "") if event == "task_complete" else ""
-                elif kind == "response_item" and event == "message" and payload.get("role") == "user":
+                elif kind == "event_msg" and event in ("task_started", "turn_started", "user_message", "agent_message", "agent_reasoning", "agent_reasoning_raw_content"):
                     known = True
                     turn_ended = False
-                elif kind == "response_item" and event in (
-                    "function_call", "custom_tool_call", "local_shell_call"
+                elif kind == "response_item" and event in ("reasoning", "message", "compaction"):
+                    known = True
+                    turn_ended = False
+                elif kind == "response_item" and (
+                    event.endswith("_call") or event in ("function_call", "custom_tool_call", "local_shell_call", "web_search_call", "tool_search_call")
                 ):
                     known = True
                     turn_ended = False
-                    call_id = payload.get("call_id") or payload.get("id")
-                    if call_id:
-                        pending.add(str(call_id))
-                    else:
-                        anonymous += 1
-                elif kind == "response_item" and event in (
-                    "function_call_output", "custom_tool_call_output", "local_shell_output"
+                    if payload.get("status") != "completed":
+                        call_id = payload.get("call_id") or payload.get("id")
+                        if call_id:
+                            pending.add(str(call_id))
+                        else:
+                            anonymous += 1
+                elif kind == "response_item" and (
+                    event.endswith("_output") or event in ("function_call_output", "custom_tool_call_output", "local_shell_output", "tool_search_output")
                 ):
+                    known = True
+                    turn_ended = False
                     call_id = payload.get("call_id") or payload.get("id")
                     if call_id:
                         pending.discard(str(call_id))
                     # An uncorrelated output cannot clear another outstanding call.
+                else:
+                    turn_ended = False
         after = p.stat()
         age = round(max(0, time.time() - after.st_mtime), 1)
         pending_ids = sorted(pending) + ["<missing-call-id>"] * anonymous
@@ -107,8 +94,6 @@ def codex_handoff_state(path) -> dict:
             state, reason = "unknown", "轨迹包含损坏/尚未写完的 JSON 事件"
         elif pending_ids:
             state, reason = "unsafe", f"工具调用尚未返回: {', '.join(pending_ids)}"
-        elif unknown_boundary:
-            state, reason = "unknown", "最新边界含未识别事件，等待受支持的生命周期确认"
         elif not known:
             state, reason = "unknown", "没有可确认生命周期或工具边界的事件"
         else:

@@ -81,13 +81,13 @@ python supervise.py --adopt <uuid> --quick                 # 显式使用经典 
 > 选定任务后 AFK **自动关闭 App**，不再询问是否关闭、不要求用户手工退出；`--yes` 只跳过会话选择。关闭 App 不依赖锁文件是否存在。
 > 当前写锁目录是 `~/.codex/thread-writer-locks/`（不是旧的 `~/.codex/locks/`）。AFK 不删除锁文件：App 完全退出后用操作系统锁探测验证释放，再由 Codex resume 自行获取正式写锁。
 >
-> **“安全边界”不是“静默”**：扫描 rollout 的结构化事件，按 `call_id` 配对 `function_call` / `custom_tool_call` 及对应 output；仍有未返回调用就等待。没有在途工具、但模型还在生成时，自动暂停目标任务并确认 `turn_aborted` / `task_complete` 后关闭 App；已结束回合直接关闭。文件的 `mtime` 只作为日志中的 `file_age_sec` 展示，不用于许可关闭或接管。
+> **“安全边界”精准排除高危崩溃状态**：扫描 rollout 的结构化事件，按 `call_id` 配对工具调用（`*_call` 与 `*_output`）。仅当存在**在途工具调用未返回**（如命令/脚本正在执行、文件写入未完成）的高危边界时进行等待；只要没有在途工具（模型处于文本生成、思考、已完成回合或空闲等任何状态），均可直接安全退出 App，由无头端接管并无缝继续。无需人工或 GUI 暂停。文件的 `mtime` 只作为日志中的 `file_age_sec` 展示，不用于许可关闭或接管。
 > 这些是轨迹中已记录调用的交接证据，不是对任意脱离工具运行的后台作业、其他 App 任务的安全保证；kill 前不要在同一 App 中并行运行不希望中断的任务。
 >
-> 安全检查默认最多等待 90 秒，可用 `afk.cmd --handoff-timeout-sec 300` 延长。无法确认边界、暂停失败、进程无法退出或写锁仍被其他进程持有时，记录 `FAILED` 和报告/通知，**不超时盲杀、不启动冲突的无头 worker**。
-> GUI 自动暂停需要可操作的桌面；已空闲会话关闭和无头续跑不需要点击操作。可在看到 `WRITER_RELEASED` / `ADOPTED_RESUME` 后锁屏。
+> 安全检查默认最多等待 90 秒，可用 `afk.cmd --handoff-timeout-sec 300` 延长。若工具调用超时仍未返回、进程无法退出或写锁仍被其他进程持有时，记录 `FAILED` 和报告/通知，**不超时盲杀、不启动冲突的无头 worker**。
+> 整个关闭与无头续跑链路无需人工点击操作，可在看到 `WRITER_RELEASED` / `ADOPTED_RESUME` 后放心锁屏。
 >
-> **可观测性**：`interventions.jsonl` 依次记录 `HANDOFF_START`、`HANDOFF_BOUNDARY`（状态、原因、最新事件、未返回调用 ID、文件年龄）、必要时 `HANDOFF_PAUSE`、`APP_CLOSED`、`WRITER_RELEASED`，再进入 `LAUNCH` / `ADOPTED_RESUME`。`APP_CLOSED` 只在退出检查成功后记录。
+> **可观测性**：`interventions.jsonl` 依次记录 `HANDOFF_START`、`HANDOFF_BOUNDARY`（状态、原因、最新事件、未返回调用 ID、文件年龄）、`APP_CLOSED`、`WRITER_RELEASED`，再进入 `LAUNCH` / `ADOPTED_RESUME`。`APP_CLOSED` 只在退出检查成功后记录。
 > **不要用“归档”或删除会话交接**，它们会改变或破坏 rollout 锚点。
 >
 > **运行中如何共处**：接管期间 App 里**看不到实时进展**（锁会挡住视图刷新）——观察

@@ -104,42 +104,24 @@ class TestAutomaticClose(KillFixture):
         self.assertEqual(terminate.call_count, 2)
         self.assertEqual(audit.call_args.args[0], "HANDOFF_BOUNDARY")
 
-    def test_waits_for_tool_result_then_pauses_model_and_closes(self):
+    def test_waits_for_tool_result_then_closes_directly(self):
         terminate = self.simulated_desktop()
         self.write(self.event("function_call", call_id="a"))
         def complete_tool(seconds):
             self.clock.sleep(seconds)
             self.write(self.event("function_call", call_id="a"), self.event("function_call_output", call_id="a"))
-        def pause_parent(*args, **kwargs):
-            terminate.assert_not_called()
-            self.write(self.event("turn_aborted"))
-            return True
-        with patch("time.sleep", side_effect=complete_tool), patch.object(supervise, "pause_codex_gui_session", side_effect=pause_parent) as pause:
+        with patch("time.sleep", side_effect=complete_tool), patch.object(supervise, "pause_codex_gui_session") as pause:
             self.assertEqual(process.close_codex_app(self.rollout), ["111", "222"])
-        pause.assert_called_once()
+        pause.assert_not_called()
+        self.assertEqual(terminate.call_count, 2)
 
-    def test_unsafe_timeout_never_kills(self):
-        terminate = self.simulated_desktop()
-        self.write(self.event("function_call", call_id="slow"))
-        with self.assertRaisesRegex(RuntimeError, "超时"):
-            process.close_codex_app(self.rollout, max_wait=2)
-        terminate.assert_not_called()
-
-    def test_unknown_timeout_never_kills(self):
-        terminate = self.simulated_desktop()
-        self.rollout.write_text("{}\n", encoding="utf-8")
-        with self.assertRaises(RuntimeError):
-            process.close_codex_app(self.rollout, max_wait=1)
-        terminate.assert_not_called()
-
-    def test_pause_failure_or_false_confirmation_never_kills(self):
+    def test_active_model_generation_closes_directly_without_gui_pause(self):
         terminate = self.simulated_desktop()
         self.write(self.event("task_started"))
-        for result in (False, True):
-            with self.subTest(result=result), patch.object(supervise, "pause_codex_gui_session", return_value=result):
-                with self.assertRaises(RuntimeError):
-                    process.close_codex_app(self.rollout)
-        terminate.assert_not_called()
+        with patch.object(supervise, "pause_codex_gui_session") as pause:
+            self.assertEqual(process.close_codex_app(self.rollout), ["111", "222"])
+        pause.assert_not_called()
+        self.assertEqual(terminate.call_count, 2)
 
     def test_restarted_app_prevents_success(self):
         self.simulated_desktop()
