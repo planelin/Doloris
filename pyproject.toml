@@ -41,6 +41,7 @@ dependencies = []
 
 [project.scripts]
 doloris = "afk_supervisor.cli:main"
+doloris-app = "doloris_app.main:main"
 afk = "afk_supervisor.cli:main"
 
 [project.urls]

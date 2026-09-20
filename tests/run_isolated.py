@@ -62,7 +62,7 @@ def main():
         clone.mkdir()
         for name in ("supervise.py", "afk_protocol.py", "test_supervise.py", "gui_inject.ps1"):
             shutil.copy2(source / name, clone / name)
-        for name in ("afk_supervisor", "tests"):
+        for name in ("afk_supervisor", "doloris_app", "tests"):
             shutil.copytree(source / name, clone / name, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
         # Skill metadata tests read documentation only; no skill instructions run.
         skill = source / ".agents" / "skills" / "afk-supervisor-reviewer" / "SKILL.md"
