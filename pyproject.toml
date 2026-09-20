@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "afk-supervisor"
+version = "1.0.0"
+description = "Headless & GUI long-running task supervision and self-healing system for AI coding agents (Codex / Claude)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "AFK Supervisor Contributors" }
+]
+keywords = [
+    "ai-agent",
+    "codex",
+    "claude",
+    "antigravity",
+    "supervisor",
+    "self-healing",
+    "automation",
+    "task-orchestration"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Testing",
+    "Topic :: System :: Monitoring",
+]
+dependencies = []
+
+[project.scripts]
+afk = "afk_supervisor.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/your-username/afk-supervisor"
+Documentation = "https://github.com/your-username/afk-supervisor#readme"
+Repository = "https://github.com/your-username/afk-supervisor"

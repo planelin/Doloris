@@ -2,7 +2,7 @@
 
 ## 第一步：在Codex里开任务（模拟平时干活）
 
-在 Codex（桌面App/IDE，工作目录 = `C:\Agents\zcode\double`）新建会话，粘贴以下提示词：
+在 Codex（桌面App/IDE，工作目录 = `<your-workspace-path>`）新建会话，粘贴以下提示词：
 
 ```text
 在 testproj/ 目录下构建一个「Agent监管系统监控台」纯静态网站，按顺序推进，每完成一个文件算一步：
@@ -23,14 +23,14 @@
 **玩法A（纯观察托管）**：直接双击 `afk.cmd`，或终端运行：
 
 ```bash
-cd C:\Agents\zcode\double
+cd <your-workspace-path>
 .\afk.cmd
 ```
 
 **玩法B（观察击杀+自愈，推荐）**：注入一次确定性故障，看它自己爬起来：
 
 ```bash
-cd C:\Agents\zcode\double
+cd <your-workspace-path>
 .\afk.cmd --chaos kill:30
 ```
 

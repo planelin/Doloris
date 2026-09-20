@@ -1,0 +1,1 @@
+"""AFK Supervisor test suite."""

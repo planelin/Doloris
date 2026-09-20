@@ -1,2 +1,0 @@
-{"ts": "2026-09-12T23:15:45", "event": "EGRESS", "proxy": "http://127.0.0.1:7897", "driver": "codex"}
-{"ts": "2026-09-12T23:15:45", "event": "ADOPT", "session": "01a094c3-5b85-7fc1-a49c-8bfc41281f55", "rollout": "rollout-2026-09-12T21-36-06-01a094c3-5b85-7fc1-a49c-8bfc4128", "session_cwd": "C:\\Agents\\zcode\\double"}

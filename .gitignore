@@ -1,0 +1,41 @@
+# AFK Runtime and logs
+runs/
+*.log
+afk-l2-*.txt
+afk-l2-*.json
+protocol-*.json
+pool-health.json
+
+# Backups and archives (Large files, do not push to Git)
+*.7z
+*.zip
+*.tar
+*.gz
+
+# Python cache, build artifacts and environments
+__pycache__/
+*.py[cod]
+*$py.class
+dist/
+build/
+*.egg-info/
+.venv/
+venv/
+env/
+
+# IDE, Scratch and Environment
+.vscode/
+.idea/
+scratch/
+.env
+.env.*
+
+# OS generated files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Database artifacts
+*.sqlite-shm
+*.sqlite-wal

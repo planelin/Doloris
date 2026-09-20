@@ -1,8 +1,0 @@
-{"ts": "2026-09-12T22:44:49", "event": "EGRESS", "proxy": "http://127.0.0.1:7897", "driver": "codex"}
-{"ts": "2026-09-12T22:44:49", "event": "ADOPT", "session": "01a09613-4efd-7af2-8665-8b5da21ba98f", "rollout": "rollout-2026-09-12T22-44-03-01a09613-4efd-7af2-8665-8b5da21b", "session_cwd": "C:\\Agents\\zcode\\double"}
-{"ts": "2026-09-12T22:45:04", "event": "LAUNCH", "session": "01a09613-4efd-7af2-8665-8b5da21ba98f", "provider": "codex(cc-switch本地代理)", "chaos": "('kill', 60)"}
-{"ts": "2026-09-12T22:45:04", "event": "ADOPTED_RESUME", "pid": 32140}
-{"ts": "2026-09-12T22:45:09", "event": "HEARTBEAT", "alive": true, "stale_sec": 5}
-{"ts": "2026-09-12T22:45:39", "event": "HEARTBEAT", "alive": true, "stale_sec": 35}
-{"ts": "2026-09-12T22:45:54", "event": "EXIT_OK", "acceptance": "全部满足"}
-{"ts": "2026-09-12T22:45:54", "event": "TERMINAL", "state": "SUCCESS", "detail": "全部满足"}

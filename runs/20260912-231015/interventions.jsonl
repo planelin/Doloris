@@ -1,4 +1,0 @@
-{"ts": "2026-09-12T23:10:15", "event": "EGRESS", "proxy": "http://127.0.0.1:7897", "driver": "codex"}
-{"ts": "2026-09-12T23:10:15", "event": "ADOPT", "session": "01a09627-c44d-7503-958d-c7fdda041c09", "rollout": "rollout-2026-09-12T23-06-23-01a09627-c44d-7503-958d-c7fdda04", "session_cwd": "C:\\Agents\\zcode\\double"}
-{"ts": "2026-09-12T23:10:30", "event": "LAUNCH", "session": "01a09627-c44d-7503-958d-c7fdda041c09", "provider": "codex(cc-switch本地代理)", "chaos": "off"}
-{"ts": "2026-09-12T23:10:30", "event": "ADOPTED_RESUME", "pid": 31972}

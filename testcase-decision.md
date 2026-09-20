@@ -3,7 +3,7 @@
 测试目标: 验证 v2.5 交互决策环路——codex在决策门停下 → afk识别【决策请求】→
 agy(flash)按委托策略代答 → 决定喂回codex → 产物肉眼可验证。
 
-## 第一步: Codex新会话(工作目录 = C:\Agents\zcode\double), 粘贴此提示词
+## 第一步: Codex新会话(工作目录 = `<your-workspace-path>`), 粘贴此提示词
 
 ```text
 在 decisionlab/ 目录下构建一个「决策实验站」纯静态网站。严格按以下阶段顺序推进,

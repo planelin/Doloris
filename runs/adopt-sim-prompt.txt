@@ -1,1 +1,0 @@
-在 work-adopt/chapters/ 下写 ch01.md 和 ch02.md (每章至少80字, 主题: 心跳检测与指数退避), 并创建 work-adopt/PROGRESS.md 用 - [x] 勾选已完成项。写完这两章就停下。

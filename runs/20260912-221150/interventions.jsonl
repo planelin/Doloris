@@ -1,9 +1,0 @@
-{"ts": "2026-09-12T22:11:50", "event": "EGRESS", "proxy": "(直连)", "driver": "codex"}
-{"ts": "2026-09-12T22:11:50", "event": "LAUNCH", "session": "(运行时发现)", "provider": "codex(cc-switch本地代理)", "chaos": "off"}
-{"ts": "2026-09-12T22:11:50", "event": "SPAWNED", "pid": 30616}
-{"ts": "2026-09-12T22:11:55", "event": "HEARTBEAT", "alive": true, "stale_sec": 5}
-{"ts": "2026-09-12T22:12:00", "event": "ERROR_SIGNATURE", "patterns": ["500", "rate_limit"]}
-{"ts": "2026-09-12T22:12:05", "event": "ERROR_SIGNATURE", "patterns": ["rate_limit"]}
-{"ts": "2026-09-12T22:12:25", "event": "HEARTBEAT", "alive": true, "stale_sec": 35}
-{"ts": "2026-09-12T22:12:30", "event": "EXIT_OK", "acceptance": "全部满足"}
-{"ts": "2026-09-12T22:12:30", "event": "TERMINAL", "state": "SUCCESS", "detail": "全部满足"}

@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AFK_AGY_Protocol_v1",
+  "description": "Structured JSON protocol between AFK Supervisor and AGY L2 Expert for DECIDE, REPAIR, and REVIEW modes.",
+  "type": "object",
+  "required": [
+    "protocol",
+    "request_id",
+    "task_id",
+    "mode",
+    "reviewed_revision",
+    "verdict",
+    "criteria",
+    "blockers",
+    "next_action",
+    "repairs"
+  ],
+  "properties": {
+    "protocol": {
+      "type": "string",
+      "const": "afk_agy_protocol_v1"
+    },
+    "request_id": {
+      "type": "string",
+      "description": "The exact request ID provided by AFK for the current turn."
+    },
+    "task_id": {
+      "type": "string",
+      "description": "The current task/session identifier."
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["DECIDE", "REPAIR", "REVIEW"]
+    },
+    "reviewed_revision": {
+      "type": "string",
+      "description": "Evidence revision hash provided by AFK (required in REVIEW mode, or empty/current in other modes)."
+    },
+    "verdict": {
+      "type": "string",
+      "description": "The outcome verdict. Allowed values depend on mode: DECIDE -> PROCEED/STOP; REPAIR -> REPAIRED/UNRESOLVED/STOP; REVIEW -> PASS/FAIL/INCONCLUSIVE."
+    },
+    "criteria": {
+      "type": "array",
+      "description": "Itemized criteria reviews (required for REVIEW mode).",
+      "items": {
+        "type": "object",
+        "required": ["id", "verdict", "evidence_ids", "reason"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Stable criterion ID matching the baseline requirements."
+          },
+          "verdict": {
+            "type": "string",
+            "enum": ["PASS", "FAIL", "UNKNOWN"]
+          },
+          "evidence_ids": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Specific evidence IDs from the EvidencePacket supporting this verdict."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Brief, factual justification based on the cited evidence."
+          }
+        }
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "List of outstanding blockers or unconfirmed requirements."
+    },
+    "next_action": {
+      "type": "object",
+      "required": ["type", "instructions"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["worker_instruction", "worker_fix", "gather_evidence", "switch_to_repair", "terminate_blocked", "terminate_success"]
+        },
+        "instructions": {
+          "type": "string",
+          "description": "Clear, direct, factual instructions for the worker or next step. MUST NOT contain orders to refresh timestamps, tick boxes without evidence, state '已全部完成', or suppress stops."
+        },
+        "detail": {
+          "type": "string"
+        }
+      }
+    },
+    "repairs": {
+      "type": "array",
+      "description": "List of actual repair actions taken by AGY (empty if no repairs made or in REVIEW mode).",
+      "items": {
+        "type": "object",
+        "required": ["action", "target", "verification", "rollback"],
+        "properties": {
+          "action": { "type": "string" },
+          "target": { "type": "string" },
+          "verification": { "type": "string" },
+          "rollback": { "type": "string" }
+        }
+      }
+    }
+  }
+}
