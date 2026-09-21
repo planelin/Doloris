@@ -2,7 +2,6 @@
   <img src="https://img.shields.io/badge/Python-3.10%2B-blue.svg" alt="Python Version" />
   <img src="https://img.shields.io/badge/License-MIT-emerald.svg" alt="License" />
   <img src="https://img.shields.io/badge/Dependencies-Zero%20External-orange.svg" alt="Zero Dependencies" />
-  <img src="https://img.shields.io/badge/Tests-200%20Passed%20(100%25)-indigo.svg" alt="200 Tests Passed" />
   <img src="https://img.shields.io/badge/BYOP-Custom%20Pet%20Ready-pink.svg" alt="BYOP Ready" />
   <img src="https://img.shields.io/badge/Platform-Windows-lightgrey.svg" alt="Platform Windows" />
 </p>
@@ -53,7 +52,7 @@ $ .\doloris.cmd fork --adopt last --quick
 [20:45:16] 🚀 DISPATCH  清洗决策指令并安全回喂 Worker -> 任务继续推进，无需等待离席人类！
 [20:46:20] 🔧 REPAIR    检测到网络 429 抖动 -> 指数退避重试 (1/3) -> 自动恢复！
 [20:48:30] 🎯 ACCEPT    真实验收：12个页面与 PROGRESS.md 全部完成勾选
-[20:48:31] 🏆 TERMINAL  SUCCESS — 终态报告已生成，Webhook 卡片已送达飞书/钉钉！
+[20:48:31] 🏆 TERMINAL  SUCCESS — 终态报告已生成
 ```
 
 ---
@@ -77,7 +76,7 @@ Doloris 提供了三种开箱即用的交接形态，随时根据需要灵活切
 Doloris 采用**“底层大脑 + 表现层身体”完全解耦**的架构：
 - **底层大脑（Python 3.10+ 标准库）**：负责严格的生命周期判定、写锁释放、L2 委托决策与自愈；
 - **表现层桌宠（Desktop Mascot Engine）**：
-  - **内置免素材矢量皮肤**：首发搭载 **Doloris 摇滚柴柴**（纯代码矢量动态绘制，带鸭舌帽、吉他与萌系表情）与经典 **金毛小代班**；
+  - **内置免素材矢量皮肤**：首发搭载 **Doloris**（纯代码矢量动态绘制，带鸭舌帽、吉他与萌系表情）与经典 **金毛小代班**；
   - **BYOP 自定义导入**：支持用户直接将任意素材包放入 `./pets/` 或 `~/.codex/pets/`，引擎自动加载：
     1. **Codex V2 官方 Atlas 大图**：将 1536x2288 的 `spritesheet.png` 放入文件夹，引擎自动按 8x11 矩阵切片为各状态动画；
     2. **分状态帧动画目录**：支持直接按动作建立子文件夹（`idle/`, `running/`, `waiting/`, `failed/`, `review/`）放入 PNG 序列图。
@@ -160,7 +159,7 @@ flowchart TD
 * 🖱️ **自由移动**：按住**鼠标左键**即可将桌宠拖拽至屏幕任意位置。
 * 🔍 **无级缩放**：按住 `Ctrl + 鼠标滚轮` 即可在 **5% ~ 500%** 之间平滑无级缩放；亦可在右键菜单中直接输入精确百分比。
 * 💬 **状态感知气泡**：桌宠头顶带有动态漫画气泡，实时展示任务心跳（打工中、决策思考中、故障自愈中、已完工）；完工后点击气泡可直接打开交付报告！
-* 🎨 **皮肤切换**：右键菜单支持在默认皮肤（Doloris 摇滚柴柴）与经典皮肤（金毛小代班）及自定义 BYOP 皮肤之间无缝热插拔。
+* 🎨 **皮肤切换**：右键菜单支持在默认皮肤（Doloris）与测试皮肤（金毛小代班）及自定义 BYOP 皮肤之间无缝热插拔。
 
 ---
 
