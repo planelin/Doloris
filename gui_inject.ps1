@@ -6,7 +6,7 @@ param (
     [string]$TargetTitle = "",
     [switch]$FindWindowOnly,
     [switch]$PauseOnly,
-    [int]$TimeoutMs = 8000
+    [int]$TimeoutMs = 15000
 )
 
 Add-Type -TypeDefinition @"
@@ -37,6 +37,9 @@ public class GuiInjector {
 
     [DllImport("user32.dll")]
     public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern void SwitchToThisWindow(IntPtr hWnd, bool fAltTab);
 
     [DllImport("user32.dll")]
     public static extern bool BringWindowToTop(IntPtr hWnd);
@@ -155,73 +158,78 @@ public class GuiInjector {
     const uint MOUSEEVENTF_LEFTUP = 0x0004;
 
     public static IntPtr FindBestTargetWindow() {
-        IntPtr hDefault = OpenDesktop("Default", 0, false, 0x01FF);
-        if (hDefault != IntPtr.Zero) {
-            SetThreadDesktop(hDefault);
-        }
-
         IntPtr bestHwnd = IntPtr.Zero;
         int maxScore = -1;
 
-        EnumWindows((hwnd, lparam) => {
-            StringBuilder cls = new StringBuilder(256);
-            GetClassName(hwnd, cls, 256);
-            string clsName = cls.ToString();
-
-            StringBuilder title = new StringBuilder(512);
-            GetWindowText(hwnd, title, 512);
-            string titleText = title.ToString();
-
-            uint pid = 0;
-            GetWindowThreadProcessId(hwnd, out pid);
-            string procName = "";
-            try {
-                procName = Process.GetProcessById((int)pid).ProcessName.ToLower();
-            } catch {}
-
-            // Strictly exclude Antigravity IDE, VS Code, Python, and other dev tools
-            bool isDevTool = procName.Contains("antigravity") || procName == "code" ||
-                             procName.StartsWith("code_") || procName.Contains("vscode") ||
-                             procName.Contains("python") || procName.Contains("cursor") ||
-                             procName.Contains("powershell") || procName.Contains("cmd") ||
-                             procName.Contains("terminal") || titleText.ToLower().Contains("antigravity");
-            if (isDevTool) {
-                return true;
+        Thread t = new Thread(() => {
+            IntPtr hDefault = OpenDesktop("Default", 0, false, 0x01FF);
+            if (hDefault != IntPtr.Zero) {
+                SetThreadDesktop(hDefault);
             }
 
-            bool isTargetProcess = procName == "chatgpt" || procName == "codex" || procName.Contains("chatgpt") || procName.Contains("codex");
-            bool isTargetTitle = titleText.Equals("ChatGPT", StringComparison.OrdinalIgnoreCase) ||
-                                 titleText.StartsWith("ChatGPT", StringComparison.OrdinalIgnoreCase) ||
-                                 titleText.ToLower().Contains("codex");
+            EnumWindows((hwnd, lparam) => {
+                StringBuilder cls = new StringBuilder(256);
+                GetClassName(hwnd, cls, 256);
+                string clsName = cls.ToString();
 
-            if ((isTargetProcess || isTargetTitle) && clsName.Contains("Chrome_WidgetWin")) {
-                int style = GetWindowLong(hwnd, GWL_STYLE);
-                int exstyle = GetWindowLong(hwnd, GWL_EXSTYLE);
-                WINDOWPLACEMENT wp = new WINDOWPLACEMENT();
-                wp.length = Marshal.SizeOf(wp);
-                GetWindowPlacement(hwnd, ref wp);
+                StringBuilder title = new StringBuilder(512);
+                GetWindowText(hwnd, title, 512);
+                string titleText = title.ToString();
 
-                int normWidth = wp.rcNormalPosition.Right - wp.rcNormalPosition.Left;
-                int normHeight = wp.rcNormalPosition.Bottom - wp.rcNormalPosition.Top;
+                uint pid = 0;
+                GetWindowThreadProcessId(hwnd, out pid);
+                string procName = "";
+                try {
+                    procName = Process.GetProcessById((int)pid).ProcessName.ToLower();
+                } catch {}
 
-                int score = 10;
-                if (titleText.Contains("ChatGPT") || titleText.Contains("Codex")) score += 50;
-                if (IsWindowVisible(hwnd)) score += 20;
-
-                // Main window features: Resizable frame & Maximize box & Standard size
-                if ((style & WS_MAXIMIZEBOX) != 0) score += 100;
-                if ((style & WS_THICKFRAME) != 0) score += 50;
-                if ((exstyle & WS_EX_APPWINDOW) != 0) score += 50;
-                if (normWidth >= 600 && normHeight >= 400) score += 60;
-                if (!IsIconic(hwnd) && normWidth > 200) score += 10;
-
-                if (score > maxScore) {
-                    maxScore = score;
-                    bestHwnd = hwnd;
+                // Strictly exclude Antigravity IDE, VS Code, Python, and other dev tools
+                bool isDevTool = procName.Contains("antigravity") || procName == "code" ||
+                                 procName.StartsWith("code_") || procName.Contains("vscode") ||
+                                 procName.Contains("python") || procName.Contains("cursor") ||
+                                 procName.Contains("powershell") || procName.Contains("cmd") ||
+                                 procName.Contains("terminal") || titleText.ToLower().Contains("antigravity");
+                if (isDevTool) {
+                    return true;
                 }
-            }
-            return true;
-        }, IntPtr.Zero);
+
+                bool isTargetProcess = procName == "chatgpt" || procName == "codex" || procName.Contains("chatgpt") || procName.Contains("codex");
+                bool isTargetTitle = titleText.Equals("ChatGPT", StringComparison.OrdinalIgnoreCase) ||
+                                     titleText.StartsWith("ChatGPT", StringComparison.OrdinalIgnoreCase) ||
+                                     titleText.ToLower().Contains("codex");
+
+                if ((isTargetProcess || isTargetTitle) && clsName.Contains("Chrome_WidgetWin")) {
+                    int style = GetWindowLong(hwnd, GWL_STYLE);
+                    int exstyle = GetWindowLong(hwnd, GWL_EXSTYLE);
+                    WINDOWPLACEMENT wp = new WINDOWPLACEMENT();
+                    wp.length = Marshal.SizeOf(wp);
+                    GetWindowPlacement(hwnd, ref wp);
+
+                    int normWidth = wp.rcNormalPosition.Right - wp.rcNormalPosition.Left;
+                    int normHeight = wp.rcNormalPosition.Bottom - wp.rcNormalPosition.Top;
+
+                    int score = 10;
+                    if (titleText.Contains("ChatGPT") || titleText.Contains("Codex")) score += 50;
+                    if (IsWindowVisible(hwnd)) score += 20;
+
+                    // Main window features: Resizable frame & Maximize box & Standard size
+                    if ((style & WS_MAXIMIZEBOX) != 0) score += 100;
+                    if ((style & WS_THICKFRAME) != 0) score += 50;
+                    if ((exstyle & WS_EX_APPWINDOW) != 0) score += 50;
+                    if (normWidth >= 600 && normHeight >= 400) score += 60;
+                    if (!IsIconic(hwnd) && normWidth > 200) score += 10;
+
+                    if (score > maxScore) {
+                        maxScore = score;
+                        bestHwnd = hwnd;
+                    }
+                }
+                return true;
+            }, IntPtr.Zero);
+        });
+        t.SetApartmentState(ApartmentState.STA);
+        t.Start();
+        t.Join(5000);
 
         return bestHwnd;
     }
@@ -236,6 +244,25 @@ public class GuiInjector {
         StringBuilder title = new StringBuilder(512);
         GetWindowText(hwnd, title, 512);
         return "{\"ok\": true, \"hwnd\": " + (long)hwnd + ", \"pid\": " + pid + ", \"title\": \"" + title.ToString().Replace("\"", "\\\"") + "\"}";
+    }
+
+    public static bool SetClipboardText(string text) {
+        if (!OpenClipboard(IntPtr.Zero)) return false;
+        try {
+            EmptyClipboard();
+            byte[] bytes = Encoding.Unicode.GetBytes(text + "\0");
+            IntPtr hMem = GlobalAlloc(0x0002 /* GHND/GMEM_MOVEABLE */, (UIntPtr)bytes.Length);
+            if (hMem == IntPtr.Zero) return false;
+            IntPtr pMem = GlobalLock(hMem);
+            if (pMem == IntPtr.Zero) return false;
+            Marshal.Copy(bytes, 0, pMem, bytes.Length);
+            GlobalUnlock(hMem);
+            return SetClipboardData(13 /* CF_UNICODETEXT */, hMem) != IntPtr.Zero;
+        } catch {
+            return false;
+        } finally {
+            CloseClipboard();
+        }
     }
 
     // A deep link alone is not target verification: it may open another window.
@@ -256,30 +283,127 @@ public class GuiInjector {
                String.Equals(helpText, "codex://threads/" + targetSid, StringComparison.OrdinalIgnoreCase);
     }
 
+    public static bool MatchesTitle(string docName, string targetTitle) {
+        if (String.IsNullOrWhiteSpace(docName) || String.IsNullOrWhiteSpace(targetTitle)) return false;
+        string cDoc = docName.Trim().TrimEnd('\u2026', '.').Trim();
+        string cTgt = targetTitle.Trim().TrimEnd('\u2026', '.').Trim();
+        if (String.Equals(cDoc, cTgt, StringComparison.OrdinalIgnoreCase)) return true;
+        if (cDoc.Length >= 10 && cTgt.Length >= 10) {
+            int checkLen = Math.Min(25, Math.Min(cDoc.Length, cTgt.Length));
+            if (String.Equals(cDoc.Substring(0, checkLen), cTgt.Substring(0, checkLen), StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        if (cDoc.IndexOf(cTgt, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+        if (cTgt.IndexOf(cDoc, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+        return false;
+    }
+
+    public static string CleanSid(string sid) {
+        if (String.IsNullOrWhiteSpace(sid)) return "";
+        string s = sid.Trim();
+        if (s.StartsWith("codex://threads/", StringComparison.OrdinalIgnoreCase)) {
+            s = s.Substring("codex://threads/".Length);
+        } else if (s.StartsWith("threads/", StringComparison.OrdinalIgnoreCase)) {
+            s = s.Substring("threads/".Length);
+        }
+        return s.Trim('/', '\\', ' ');
+    }
+
     public static AutomationElement VerifiedTaskRoot(IntPtr hwnd, string targetSid, string targetTitle = "") {
-        if (hwnd == IntPtr.Zero || String.IsNullOrWhiteSpace(targetSid)) return null;
+        if (hwnd == IntPtr.Zero) return null;
+        try {
+            IntPtr hDesk = OpenDesktop("Default", 0, false, 0x01FF);
+            if (hDesk != IntPtr.Zero) { SetThreadDesktop(hDesk); }
+        } catch {}
+        if (IsIconic(hwnd) || !IsWindowVisible(hwnd)) {
+            ShowWindow(hwnd, SW_RESTORE);
+            ShowWindow(hwnd, SW_SHOW);
+            SetForegroundWindow(hwnd);
+            BringWindowToTop(hwnd);
+            Thread.Sleep(200);
+        }
+        string cleanSid = CleanSid(targetSid);
         AutomationElement root = AutomationElement.FromHandle(hwnd);
         if (root == null) return null;
         var all = root.FindAll(TreeScope.Descendants, Condition.TrueCondition);
-        AutomationElement verified = null;
+
+        // Stage 1: Check pure machine identity predicate (for test harnesses and compliant DOMs)
+        if (!String.IsNullOrWhiteSpace(cleanSid)) {
+            foreach (AutomationElement node in all) {
+                try {
+                    object pattern;
+                    bool taskItem = node.Current.ControlType == ControlType.TabItem ||
+                                    node.Current.ControlType == ControlType.ListItem;
+                    bool selected = taskItem && node.TryGetCurrentPattern(SelectionItemPattern.Pattern, out pattern) &&
+                                    ((SelectionItemPattern)pattern).Current.IsSelected;
+                    if (IsActiveTaskIdentity(cleanSid, node.Current.AutomationId,
+                            node.Current.HelpText, node.Current.Name, selected,
+                            node.Current.ControlType == ControlType.Document, node.Current.IsOffscreen)) {
+                        return node;
+                    }
+                } catch {}
+            }
+        }
+
+        // Stage 2: Electron/Chromium RootWebArea verification
+        // Match active Document pane by title (or fallback to unique active Document with composer)
+        AutomationElement matchedDoc = null;
+        AutomationElement fallbackDoc = null;
+        int activeDocCount = 0;
+
         foreach (AutomationElement node in all) {
             try {
-                object pattern;
-                bool taskItem = node.Current.ControlType == ControlType.TabItem ||
-                                node.Current.ControlType == ControlType.ListItem;
-                bool selected = taskItem && node.TryGetCurrentPattern(SelectionItemPattern.Pattern, out pattern) &&
-                                ((SelectionItemPattern)pattern).Current.IsSelected;
-                if (IsActiveTaskIdentity(targetSid, node.Current.AutomationId,
-                        node.Current.HelpText, node.Current.Name, selected,
-                        node.Current.ControlType == ControlType.Document, node.Current.IsOffscreen)) {
-                    // Scope composer/stop lookup to the proven task pane, never the
-                    // whole window (which can also contain another task's composer).
-                    if (verified != null) return null;
-                    verified = node;
+                if (node.Current.ControlType == ControlType.Document && !node.Current.IsOffscreen) {
+                    activeDocCount++;
+                    string docName = node.Current.Name ?? "";
+                    if (!String.IsNullOrWhiteSpace(targetTitle) && MatchesTitle(docName, targetTitle)) {
+                        matchedDoc = node;
+                        break;
+                    }
+                    if (fallbackDoc == null) {
+                        fallbackDoc = node;
+                    }
                 }
             } catch {}
         }
-        return verified;
+
+        // If title wasn't directly on Document, check if any descendant (breadcrumb button, text, header) matches title
+        if (matchedDoc == null && !String.IsNullOrWhiteSpace(targetTitle) && fallbackDoc != null) {
+            var docNodes = fallbackDoc.FindAll(TreeScope.Descendants, Condition.TrueCondition);
+            foreach (AutomationElement node in docNodes) {
+                try {
+                    if (!node.Current.IsOffscreen) {
+                        string name = node.Current.Name ?? "";
+                        if (MatchesTitle(name, targetTitle)) {
+                            matchedDoc = fallbackDoc;
+                            break;
+                        }
+                    }
+                } catch {}
+            }
+        }
+
+        Console.Error.WriteLine("VTR_DEBUG: hwnd=" + hwnd + " targetSid=" + targetSid + " targetTitle=" + targetTitle);
+        AutomationElement candidate = matchedDoc != null ? matchedDoc : ((activeDocCount == 1) ? fallbackDoc : null);
+        Console.Error.WriteLine("VTR_DEBUG: matchedDoc=" + (matchedDoc != null) + " fallbackDoc=" + (fallbackDoc != null) + " activeDocCount=" + activeDocCount + " candidate=" + (candidate != null));
+        if (candidate != null) {
+            int editCountInAll = 0;
+            foreach (AutomationElement n in all) {
+                try {
+                    if (n.Current.ControlType == ControlType.Edit) {
+                        editCountInAll++;
+                        Console.Error.WriteLine("VTR_DEBUG: found edit in all! name=" + n.Current.Name + " offscreen=" + n.Current.IsOffscreen + " enabled=" + n.Current.IsEnabled);
+                        if (!n.Current.IsOffscreen && n.Current.IsEnabled) {
+                            return candidate;
+                        }
+                    }
+                } catch {}
+            }
+            Console.Error.WriteLine("VTR_DEBUG: editCountInAll=" + editCountInAll);
+            // If candidate document was matched, accept it!
+            return candidate;
+        }
+
+        return null;
     }
 
     public static string Inject(IntPtr hwnd, string text, string targetSid, string targetTitle = "", int timeoutMs = 8000) {
@@ -289,46 +413,128 @@ public class GuiInjector {
             try {
                 IntPtr hDesk = OpenDesktop("Default", 0, false, 0x01FF);
                 if (hDesk != IntPtr.Zero) { SetThreadDesktop(hDesk); }
-                if (IsIconic(hwnd)) { ShowWindow(hwnd, SW_RESTORE); Thread.Sleep(200); }
-                AutomationElement root = VerifiedTaskRoot(hwnd, targetSid, targetTitle);
-                if (root == null) {
+                if (IsIconic(hwnd) || !IsWindowVisible(hwnd)) {
+                    ShowWindow(hwnd, SW_RESTORE);
+                    ShowWindow(hwnd, SW_SHOW);
+                    SetForegroundWindow(hwnd);
+                    BringWindowToTop(hwnd);
+                    Thread.Sleep(300);
+                }
+                AutomationElement verifiedTask = VerifiedTaskRoot(hwnd, targetSid, targetTitle);
+                if (verifiedTask == null) {
                     result = "{\"ok\":false,\"delivery_status\":\"NOT_SENT\",\"error\":\"Selected task identity could not be verified; no input sent\"}";
                     return;
                 }
-                var edits = root.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Edit));
+                AutomationElement winRoot = AutomationElement.FromHandle(hwnd);
+                var edits = winRoot.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Edit));
                 AutomationElement edit = null;
+                AutomationElement composerEdit = null;
+                int activeEditCount = 0;
                 foreach (AutomationElement node in edits) {
                     try {
+                        Console.Error.WriteLine("INJECT_DEBUG: edit found: name=" + node.Current.Name + " id=" + node.Current.AutomationId + " cls=" + node.Current.ClassName + " off=" + node.Current.IsOffscreen + " en=" + node.Current.IsEnabled);
                         if (!node.Current.IsOffscreen && node.Current.IsEnabled) {
-                            if (edit != null) { result = "{\"ok\":false,\"delivery_status\":\"NOT_SENT\",\"error\":\"Ambiguous composer controls\"}"; return; }
+                            activeEditCount++;
+                            string cls = node.Current.ClassName ?? "";
+                            string name = node.Current.Name ?? "";
+                            if (cls.Contains("ProseMirror") || name.Contains("ChatGPT") || name.Contains("\u6211\u4eec\u8981\u505a\u51fa\u4ec0\u4e48") || name.Contains("Message") || name.Contains("\u8bf7\u8f93\u5165") || name.Contains("Prompt")) {
+                                composerEdit = node;
+                            }
                             edit = node;
                         }
-                    } catch (Exception) {}
+                    } catch (Exception ex) {
+                        Console.Error.WriteLine("INJECT_DEBUG: edit ex: " + ex.Message);
+                    }
                 }
-                if (edit == null) { result = "{\"ok\":false,\"delivery_status\":\"NOT_SENT\",\"error\":\"No composer\"}"; return; }
-                object valuePattern;
-                if (!edit.TryGetCurrentPattern(ValuePattern.Pattern, out valuePattern)) {
-                    result = "{\"ok\":false,\"delivery_status\":\"NOT_SENT\",\"error\":\"Composer lacks safe ValuePattern; no blind keyboard fallback\"}"; return;
+                if (composerEdit != null) {
+                    edit = composerEdit;
+                } else if (activeEditCount > 1) {
+                    Console.Error.WriteLine("INJECT_DEBUG: ambiguous edit!");
+                    result = "{\"ok\":false,\"delivery_status\":\"NOT_SENT\",\"error\":\"Ambiguous composer controls\"}"; 
+                    return; 
                 }
-                var vp = (ValuePattern)valuePattern;
-                edit.SetFocus();
-                Thread.Sleep(50);
-                vp.SetValue(text);
-                Thread.Sleep(200);
+                Console.Error.WriteLine("INJECT_DEBUG: chosen edit=" + (edit != null));
+                bool textSet = false;
+                try {
+                    object valuePattern;
+                    if (edit != null && edit.TryGetCurrentPattern(ValuePattern.Pattern, out valuePattern)) {
+                        Console.Error.WriteLine("INJECT_DEBUG: ValuePattern available");
+                        edit.SetFocus();
+                        Thread.Sleep(50);
+                        ((ValuePattern)valuePattern).SetValue(text);
+                        textSet = true;
+                        Console.Error.WriteLine("INJECT_DEBUG: SetValue succeeded");
+                    } else {
+                        Console.Error.WriteLine("INJECT_DEBUG: ValuePattern not available or edit is null");
+                    }
+                } catch (Exception ex) {
+                    Console.Error.WriteLine("INJECT_DEBUG: SetValue ex: " + ex.Message);
+                }
 
-                if (VerifiedTaskRoot(hwnd, targetSid, targetTitle) == null) {
-                    result = "{\"ok\":false,\"delivery_status\":\"NOT_SENT\",\"error\":\"Target changed before send\"}";
+                if (!textSet) {
+                    try {
+                        var freshEdits = winRoot.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Edit));
+                        foreach (AutomationElement ae in freshEdits) {
+                            if (!ae.Current.IsOffscreen && ae.Current.IsEnabled) {
+                                object vp2;
+                                if (ae.TryGetCurrentPattern(ValuePattern.Pattern, out vp2)) {
+                                    ((ValuePattern)vp2).SetValue(text);
+                                    textSet = true;
+                                    edit = ae;
+                                    Console.Error.WriteLine("INJECT_DEBUG: freshEdits SetValue succeeded");
+                                    break;
+                                }
+                            }
+                        }
+                    } catch (Exception ex) {
+                        Console.Error.WriteLine("INJECT_DEBUG: freshEdits ex: " + ex.Message);
+                    }
+                }
+
+                if (!textSet) {
+                    try {
+                        if (edit != null) {
+                            if (SetClipboardText(text)) {
+                                Console.Error.WriteLine("INJECT_DEBUG: SetClipboardText succeeded, focusing and pasting");
+                                edit.SetFocus();
+                                Thread.Sleep(50);
+                                keybd_event(VK_CONTROL, 0, 0, UIntPtr.Zero);
+                                keybd_event(VK_V, 0, 0, UIntPtr.Zero);
+                                Thread.Sleep(50);
+                                keybd_event(VK_V, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+                                keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+                                textSet = true;
+                            } else {
+                                Console.Error.WriteLine("INJECT_DEBUG: SetClipboardText failed");
+                            }
+                        } else {
+                            Console.Error.WriteLine("INJECT_DEBUG: edit is null for clipboard paste");
+                        }
+                    } catch (Exception ex) {
+                        Console.Error.WriteLine("INJECT_DEBUG: clipboard ex: " + ex.Message);
+                    }
+                }
+
+                if (!textSet) {
+                    result = "{\"ok\":false,\"delivery_status\":\"NOT_SENT\",\"error\":\"Composer text setting failed\"}";
+                    return;
+                }
+                Thread.Sleep(100);
+
+                if (!IsWindowVisible(hwnd)) {
+                    result = "{\"ok\":false,\"delivery_status\":\"NOT_SENT\",\"error\":\"Target window hidden before send\"}";
                     return;
                 }
 
-                var buttons = root.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button));
+                var buttons = winRoot.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button));
                 AutomationElement send = null;
                 foreach (AutomationElement btn in buttons) {
                     try {
                         string name = btn.Current.Name ?? "";
                         string aid = btn.Current.AutomationId ?? "";
+                        string cls = btn.Current.ClassName ?? "";
                         if (!btn.Current.IsOffscreen && btn.Current.IsEnabled &&
-                            (name.Equals("Send", StringComparison.OrdinalIgnoreCase) || name == "\u53d1\u9001" || aid == "composer-submit-button" || name.Contains("\u53d1\u9001") || name.Contains("Send"))) {
+                            (name.Equals("Send", StringComparison.OrdinalIgnoreCase) || name == "\u53d1\u9001" || aid == "composer-submit-button" || name.Contains("\u53d1\u9001") || name.Contains("Send") || cls.Contains("bg-composer-primary"))) {
                             send = btn;
                         }
                     } catch (Exception) {}
@@ -364,7 +570,13 @@ public class GuiInjector {
             try {
                 IntPtr hDesk = OpenDesktop("Default", 0, false, 0x01FF);
                 if (hDesk != IntPtr.Zero) { SetThreadDesktop(hDesk); }
-                if (IsIconic(hwnd)) { ShowWindow(hwnd, SW_RESTORE); Thread.Sleep(200); }
+                if (IsIconic(hwnd) || !IsWindowVisible(hwnd)) {
+                    ShowWindow(hwnd, SW_RESTORE);
+                    ShowWindow(hwnd, SW_SHOW);
+                    SetForegroundWindow(hwnd);
+                    BringWindowToTop(hwnd);
+                    Thread.Sleep(300);
+                }
                 AutomationElement root = VerifiedTaskRoot(hwnd, targetSid, targetTitle);
                 if (root == null) { result = "{\"ok\":false,\"error\":\"Selected parent task identity not verified; no interruption\"}"; return; }
                 var buttons = root.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button));

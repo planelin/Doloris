@@ -345,17 +345,19 @@ def run_l2_antigravity(
                 r = subprocess.CompletedProcess([], 0, stdout=b"{}", stderr=b"")
             else:
                 atomic_json(pending_file, {"request_id": req_id, "cid": cid or "", "initial_line_count": initial_line_count, "phase": "SENDING"})
-                checkpoint("SENDING", cid=cid or "", initial_line_count=initial_line_count)
+                no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
                 if cid:
                     r = subprocess.run(
                         [str(agexe), "agentapi", "send-message", cid, sent_prompt],
-                        capture_output=True, timeout=call_timeout, env=env, cwd=str(ws)
+                        capture_output=True, timeout=call_timeout, env=env, cwd=str(ws),
+                        creationflags=no_win
                     )
                 else:
                     round_title = f"[L2 #{n} {mode}] {title[:20] if title else '监管与验收'}"
                     r = subprocess.run(
                         [str(agexe), "agentapi", "new-conversation", f"--model={model}", f"--title={round_title}", sent_prompt],
-                        capture_output=True, timeout=call_timeout, env=env, cwd=str(ws)
+                        capture_output=True, timeout=call_timeout, env=env, cwd=str(ws),
+                        creationflags=no_win
                     )
         except subprocess.TimeoutExpired:
             last_err = "调用超时，结果不确定，保留原请求等待重试观察"
@@ -554,11 +556,13 @@ def run_l2_agent(l2_cmd: str, run_dir: Path, prompt: str, n: int, proxy: Optiona
     args = ["cmd.exe", "/c", *parts, "-p"]
     ws = get_workspace_root()
     process_error = ""
+    no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
         with prompt_file.open("rb") as prompt_stream, log_path.open("wb") as log_stream:
             result = subprocess.run(
                 args, stdin=prompt_stream, stdout=log_stream, stderr=subprocess.STDOUT,
                 env=env, cwd=str(ws), timeout=timeout_sec,
+                creationflags=no_win
             )
             if result.returncode != 0:
                 process_error = f"L2 exit code {result.returncode}"

@@ -136,9 +136,10 @@ def extract_explicit_delivery_dir(text: str) -> Optional[str]:
     """从文本中提取用户显式指定的交付目录（若无则返回 None）。"""
     if not text:
         return None
+    cleaned = re.sub(r"\\([_`*~])", r"\1", text)
     kw_abs_match = re.search(
         r'(?:工作区|交付目录|delivery_dir|workspace)[\s:：=]*([a-zA-Z]:[\\/][^\s,，;；"\'\r\n]+)',
-        text,
+        cleaned,
         re.IGNORECASE,
     )
     if kw_abs_match:
@@ -279,6 +280,8 @@ def extract_task_baseline(
                             txt = str(content).strip()
                             if txt.startswith("<environment_context>"):
                                 txt = ""
+                        if txt:
+                            txt = re.sub(r"\\([_`*~])", r"\1", txt)
                         if txt and txt not in user_prompts:
                             user_prompts.append(txt)
         except Exception:

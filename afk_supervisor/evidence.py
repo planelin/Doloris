@@ -224,13 +224,14 @@ def collect_evidence(
                 mechanical_failures.append(f"清单读取失败 ({cand}): {error}")
 
     # 5. 本地自动化机械核验 (语法检查与显式断言)
+    no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     # (a) JS 语法检查 (node --check)
     js_files = [p for p in scanned_files if p.suffix.lower() == ".js"]
     for js_p in js_files:
         rel = js_p.relative_to(deliv_dir)
         clean_id = path_ids[js_p]
         try:
-            r = subprocess.run(["node", "--check", str(js_p)], capture_output=True, text=True, timeout=10)
+            r = subprocess.run(["node", "--check", str(js_p)], capture_output=True, text=True, timeout=10, creationflags=no_win)
             if r.returncode != 0:
                 err_out = (r.stderr or r.stdout or "").strip()[:400]
                 mechanical_failures.append(f"JS语法检查失败 ({rel}): {err_out[:100]}")
@@ -279,7 +280,7 @@ def collect_evidence(
         rel = py_p.relative_to(deliv_dir)
         clean_id = path_ids[py_p]
         try:
-            r = subprocess.run([sys.executable, "-I", "-B", "-c", "import pathlib, sys; compile(pathlib.Path(sys.argv[1]).read_bytes(), sys.argv[1], 'exec')", str(py_p)], capture_output=True, text=True, timeout=10)
+            r = subprocess.run([sys.executable, "-I", "-B", "-c", "import pathlib, sys; compile(pathlib.Path(sys.argv[1]).read_bytes(), sys.argv[1], 'exec')", str(py_p)], capture_output=True, text=True, timeout=10, creationflags=no_win)
             if r.returncode != 0:
                 err_out = (r.stderr or r.stdout or "").strip()[:400]
                 mechanical_failures.append(f"Python语法检查失败 ({rel}): {err_out[:100]}")

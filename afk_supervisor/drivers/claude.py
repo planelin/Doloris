@@ -41,16 +41,18 @@ def probe_pool(pool: List[Tuple[str, dict]], proxy: Optional[str], keep: int = 3
             e["HTTPS_PROXY"] = proxy
             e["HTTP_PROXY"] = proxy
         t0 = time.time()
+        no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         proc = subprocess.Popen(
             ["cmd.exe", "/c", "claude", "-p", "Reply with exactly one word: PONG"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            env=e, cwd=str(ws)
+            env=e, cwd=str(ws),
+            creationflags=no_win
         )
         try:
             out, _ = proc.communicate(timeout=timeout)
             ok = proc.returncode == 0 and "PONG" in (out or "").upper()
         except subprocess.TimeoutExpired:
-            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True)
+            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, creationflags=no_win)
             proc.wait()
             ok = False
         sec = round(time.time() - t0)
@@ -162,11 +164,12 @@ class ClaudeDriver:
         f_out = open(self.run_dir / "worker-stdout.log", "ab")
         f_err = open(self.run_dir / "worker-stderr.log", "ab")
         self._open_handles = [f_in, f_out, f_err]
+        no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         self.proc = subprocess.Popen(
             ["cmd.exe", "/c", "claude", *args],
             cwd=str(self.cwd), env=env,
             stdin=f_in, stdout=f_out, stderr=f_err,
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | no_win,
         )
         return self.proc
 
@@ -198,7 +201,8 @@ class ClaudeDriver:
                     return
             except Exception:
                 pass
-            subprocess.run(["taskkill", "/PID", str(self.proc.pid), "/T", "/F"], capture_output=True)
+            no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            subprocess.run(["taskkill", "/PID", str(self.proc.pid), "/T", "/F"], capture_output=True, creationflags=no_win)
             try:
                 self.proc.wait(timeout=3)
             except Exception:

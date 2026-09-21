@@ -50,13 +50,29 @@ def message_text(data):
     return ""
 
 
+def normalize_command_text(text: str) -> str:
+    if not text:
+        return ""
+    import re
+    # Unescape characters commonly escaped by Electron / ProseMirror / markdown serializers (\`, \_, \*, etc.)
+    t = text
+    for _ in range(5):
+        new_t = re.sub(r"\\([`*_\[\]\\~#<>])", r"\1", t)
+        if new_t == t:
+            break
+        t = new_t
+    return "".join(t.split())
+
+
 def command_accepted(events, command, *, allow_turn_start=False):
+    target_norm = normalize_command_text(command)
     for event in events:
         data = event_payload(event)
         kind = data.get("type", "")
         if data.get("role") == "user" or kind in {"user_message", "UserMessage", "user"}:
-            # Exact request text on this task, not a timestamp or another turn.
-            if message_text(data) == command.strip():
+            # Exact request text on this task, or normalized match against markdown-escaped serializers
+            msg = message_text(data)
+            if msg == command.strip() or (target_norm and normalize_command_text(msg) == target_norm):
                 return True
         if allow_turn_start and kind in {"task_started", "turn_started", "turn.started"}:
             return True

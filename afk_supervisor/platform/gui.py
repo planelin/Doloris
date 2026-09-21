@@ -153,10 +153,12 @@ def reveal_codex_session_in_ui(session_id: str, target_hwnd: int = 0) -> bool:
 
 
 def _navigate_target(target_sid):
-    if not target_sid:
+    from afk_supervisor.sessions.discovery import clean_session_id
+    clean_sid = clean_session_id(target_sid) if target_sid else ""
+    if not clean_sid:
         return False
     try:
-        os.startfile(f"codex://threads/{target_sid}")
+        os.startfile(f"codex://threads/{clean_sid}")
         time.sleep(0.5)
         return True
     except Exception as error:
@@ -170,14 +172,23 @@ def inject_into_codex_gui(
 ):
     """Navigate and require selected-task identity before send; ACK is event-based."""
     from afk_supervisor.models import DeliveryResult
+    from afk_supervisor.sessions.discovery import clean_session_id, load_codex_thread_titles, read_session_title
     import tempfile
     ws = get_workspace_root()
     ps_script = ws / "gui_inject.ps1"
     if not ps_script.exists():
         return DeliveryResult("NOT_SENT", f"GUI注入脚本未找到: {ps_script}")
-    if target_sid:
-        _navigate_target(target_sid)
+    target_sid = clean_session_id(target_sid) if target_sid else ""
+    if not target_title:
+        if rollout_path and Path(rollout_path).exists():
+            target_title = read_session_title(Path(rollout_path))
+        if not target_title and target_sid:
+            target_title = load_codex_thread_titles().get(target_sid, "")
     target_hwnd = target_hwnd or find_best_codex_window()
+    if not target_hwnd and target_sid:
+        _navigate_target(target_sid)
+        time.sleep(0.5)
+        target_hwnd = find_best_codex_window()
     if not target_hwnd:
         return DeliveryResult("NOT_SENT", "未找到桌面主窗口，未发送")
     tmp_path = Path(tempfile.gettempdir()) / f"afk_payload_{uuid.uuid4().hex}.txt"
@@ -186,7 +197,8 @@ def inject_into_codex_gui(
         command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps_script),
                    "-PayloadFile", str(tmp_path), "-TargetHwnd", str(target_hwnd),
                    "-TargetSid", target_sid, "-TargetTitle", target_title, "-TimeoutMs", "10000"]
-        result = subprocess.run(command, capture_output=True, text=True, errors="replace", timeout=18, cwd=str(ws))
+        no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        result = subprocess.run(command, capture_output=True, text=True, errors="replace", timeout=18, cwd=str(ws), creationflags=no_win)
         for line in (result.stdout or "").splitlines():
             try:
                 data = json.loads(line)
@@ -215,6 +227,7 @@ def pause_codex_gui_session(rollout_path=None, max_wait: Optional[float] = 30.0,
     """
     if not rollout_path:
         return False
+    from afk_supervisor.sessions.discovery import clean_session_id, load_codex_thread_titles, read_session_title
     p_roll = Path(rollout_path)
     snapshot = codex_handoff_state(p_roll)
     if snapshot["state"] == "safe" and snapshot["turn_ended"]:
@@ -228,6 +241,12 @@ def pause_codex_gui_session(rollout_path=None, max_wait: Optional[float] = 30.0,
         from afk_supervisor.sessions.discovery import _read_meta
         meta = _read_meta(p_roll)
         target_sid = meta[0] if meta else ""
+    target_sid = clean_session_id(target_sid) if target_sid else ""
+    if not target_title:
+        if p_roll.exists():
+            target_title = read_session_title(p_roll)
+        if not target_title and target_sid:
+            target_title = load_codex_thread_titles().get(target_sid, "")
     if target_sid:
         _navigate_target(target_sid)
     hwnd = find_best_codex_window()
@@ -237,7 +256,8 @@ def pause_codex_gui_session(rollout_path=None, max_wait: Optional[float] = 30.0,
                    "-PauseOnly", "-TargetHwnd", str(hwnd), "-TargetSid", target_sid,
                    "-TargetTitle", target_title, "-TimeoutMs", "6000"]
         try:
-            response = subprocess.run(command, capture_output=True, text=True, errors="replace", timeout=10, cwd=str(get_workspace_root()))
+            no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            response = subprocess.run(command, capture_output=True, text=True, errors="replace", timeout=10, cwd=str(get_workspace_root()), creationflags=no_win)
             log(f"PAUSE 目标 {target_sid[:8]} 暂停回执: {response.stdout.strip()[:160]}")
         except Exception as error:
             log(f"PAUSE 暂停回执不确定，继续等待轨迹确认: {error}")
@@ -265,17 +285,19 @@ def pause_codex_gui_session(rollout_path=None, max_wait: Optional[float] = 30.0,
 
 
 def ensure_codex_window_restored() -> int:
-    """双有头守护：若用户无意将 Codex 最小化到任务栏，自动恢复为常规桌面显示。"""
+    """双有头守护：若用户无意将 Codex 最小化到任务栏或隐藏到托盘，自动恢复为常规桌面显示。"""
     if sys.platform != "win32":
         return 0
     try:
         import ctypes
         user32 = ctypes.windll.user32
         best_hwnd = find_best_codex_window()
-        if best_hwnd and user32.IsIconic(best_hwnd):
-            user32.ShowWindow(best_hwnd, 9)  # SW_RESTORE
-            log(f"GUI GUARD 检测到 Codex 窗口(HWND {best_hwnd})被最小化，已自动恢复为常规桌面窗口")
-            return best_hwnd
+        if best_hwnd:
+            if user32.IsIconic(best_hwnd) or not user32.IsWindowVisible(best_hwnd):
+                user32.ShowWindow(best_hwnd, 9)  # SW_RESTORE
+                user32.ShowWindow(best_hwnd, 5)  # SW_SHOW
+                log(f"GUI GUARD 检测到 Codex 窗口(HWND {best_hwnd})被最小化或隐藏，已自动恢复为常规桌面窗口")
+                return best_hwnd
     except Exception:
         pass
     return 0

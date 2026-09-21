@@ -73,11 +73,13 @@ class CodexDriver:
         f_out = open(stdout_file, "ab")
         f_err = open(self.run_dir / "worker-stderr.log", "ab")
         self._open_handles = [f_in, f_out, f_err]
+        no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        cflags = subprocess.CREATE_NEW_PROCESS_GROUP | no_win
         self.proc = subprocess.Popen(
             ["cmd.exe", "/c", "codex", *args],
             cwd=str(self.cwd), stdin=f_in,
             stdout=f_out, stderr=f_err,
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+            creationflags=cflags,
         )
 
     def _common(self) -> List[str]:
@@ -95,6 +97,16 @@ class CodexDriver:
     def resume(self, prompt_path: Path):
         if not self.session_id:
             raise RuntimeError("resume 前必须先发现 session_id")
+        from afk_supervisor.platform.process import verify_codex_writer_released
+        from afk_supervisor.sessions.discovery import get_codex_locks_dir
+        lock_path = get_codex_locks_dir() / f"{self.session_id}.lock"
+        if lock_path.exists():
+            for _ in range(15):
+                try:
+                    verify_codex_writer_released(lock_path)
+                    break
+                except (OSError, RuntimeError):
+                    time.sleep(0.2)
         self._spawn_once([
             "exec", "-C", str(self.cwd), "resume", self.session_id,
             "-c", "sandbox_mode=workspace-write",
@@ -207,7 +219,8 @@ class CodexDriver:
                     return
             except Exception:
                 pass
-            subprocess.run(["taskkill", "/PID", str(self.proc.pid), "/T", "/F"], capture_output=True)
+            no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            subprocess.run(["taskkill", "/PID", str(self.proc.pid), "/T", "/F"], capture_output=True, creationflags=no_win)
             try:
                 self.proc.wait(timeout=3)
             except Exception:

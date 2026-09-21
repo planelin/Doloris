@@ -134,7 +134,8 @@ class VerificationRunner:
                         record["timed_out"] = True
                         # Only the process tree this verifier just launched is owned.
                         if os.name == "nt":
-                            subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True, timeout=10)
+                            no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                            subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True, timeout=10, creationflags=no_win)
                         else:
                             os.killpg(process.pid, signal.SIGKILL)
                         process.kill()

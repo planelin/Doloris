@@ -50,11 +50,13 @@ def get_skill_metadata(project_root: Optional[Path] = None) -> Tuple[str, str]:
 def probe_ls_grpc_port(port: str) -> bool:
     """探测端口是否为可正常接收明文 HTTP/gRPC 请求的语言服务端口。
     Antigravity 的 HTTPS Web 窗口端口遇到明文 HTTP 会报 400 或握手异常，而 gRPC 端口会返回 200。
+    使用空 ProxyHandler 绕过本地系统代理。
     """
     try:
         import urllib.request
         req = urllib.request.Request(f"http://127.0.0.1:{port}/", headers={"User-Agent": "AntigravityProbe"})
-        with urllib.request.urlopen(req, timeout=0.8) as resp:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(req, timeout=0.8) as resp:
             return resp.status == 200
     except Exception:
         return False
@@ -62,46 +64,103 @@ def probe_ls_grpc_port(port: str) -> bool:
 
 def discover_antigravity_bridge() -> Tuple[Optional[str], List[str], Path]:
     """动态发现 Antigravity 桥: csrf + LS 网关端口。"""
+    no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     csrf = None
-    logf = Path(os.environ.get("APPDATA", "")) / "Antigravity" / "logs" / "main.log"
+    appdata_str = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+    localappdata_str = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    logf = Path(appdata_str) / "Antigravity" / "logs" / "main.log"
     https_ports = set()
     if logf.exists():
         try:
             log_text = logf.read_text(encoding="utf-8", errors="replace")
-            toks = re.findall(r"--csrf_token ([0-9a-f-]{36})", log_text)
+            toks = re.findall(r"--csrf_token[=\s]+([0-9a-f-]{36})", log_text)
             csrf = toks[-1] if toks else None
             hp_matches = re.findall(r"https://127\.0\.0\.1:(\d+)", log_text)
             if hp_matches:
                 https_ports.update(hp_matches[-3:])
         except Exception:
             pass
-    r = subprocess.run(
-        ["powershell", "-NoProfile", "-Command", "(Get-Process language_server -ErrorAction SilentlyContinue).Id"],
-        capture_output=True, text=True, timeout=25
-    )
-    pids = [int(x) for x in (r.stdout or "").split() if x.isdigit()]
+
+    # 1. 查找 language_server.exe 的 PID 列表 (优先使用 tasklist，50ms 内完成且不依赖庞大 PowerShell 运行时)
+    pids = []
+    try:
+        r = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq language_server.exe", "/FO", "CSV", "/NH"],
+            capture_output=True, text=True, errors="replace", timeout=5, creationflags=no_win
+        )
+        for line in (r.stdout or "").splitlines():
+            line = line.strip()
+            if not line or "language_server.exe" not in line.lower():
+                continue
+            parts = [p.strip(' "') for p in line.split(",")]
+            if len(parts) >= 2 and parts[1].isdigit():
+                pids.append(int(parts[1]))
+    except Exception:
+        pass
+
+    # 兜底：若 tasklist 未检出，尝试 powershell
+    if not pids:
+        try:
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", "(Get-Process language_server -ErrorAction SilentlyContinue).Id"],
+                capture_output=True, text=True, errors="replace", timeout=10, creationflags=no_win
+            )
+            pids = [int(x) for x in (r.stdout or "").split() if x.isdigit()]
+        except Exception:
+            pass
+
+    # 若 main.log 未能提取到 csrf，但发现了 language_server 进程，尝试直接从进程命令行提取 --csrf_token
+    if not csrf and pids:
+        try:
+            r_cmd = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 f"(Get-CimInstance Win32_Process -Filter \"ProcessId = {pids[0]}\").CommandLine"],
+                capture_output=True, text=True, errors="replace", timeout=5, creationflags=no_win
+            )
+            m_csrf = re.search(r"--csrf_token[=\s]+([0-9a-f-]{36})", r_cmd.stdout or "")
+            if m_csrf:
+                csrf = m_csrf.group(1)
+        except Exception:
+            pass
+
     ports = []
     if pids:
-        r2 = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, timeout=25)
-        for line in (r2.stdout or "").splitlines():
-            if "LISTENING" in line and "127.0.0.1" in line and any(line.rstrip().endswith(str(pid)) for pid in pids):
-                port = line.split()[1].rsplit(":", 1)[-1]
-                if port not in ports:
-                    ports.append(port)
-    if len(ports) > 1:
-        def _port_priority(p: str) -> int:
+        try:
+            r2 = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, errors="replace", timeout=10, creationflags=no_win)
+            for line in (r2.stdout or "").splitlines():
+                parts = line.split()
+                if len(parts) >= 5 and parts[0].upper() == "TCP" and any(h in parts[1] for h in ("127.0.0.1", "0.0.0.0", "[::1]")) and parts[3].upper() == "LISTENING":
+                    try:
+                        pid_val = int(parts[-1])
+                        if pid_val in pids:
+                            port = parts[1].rsplit(":", 1)[-1]
+                            if port not in ports:
+                                ports.append(port)
+                    except ValueError:
+                        continue
+        except Exception:
+            pass
+
+    if ports:
+        valid_grpc_ports = []
+        other_ports = []
+        for p in ports:
             if probe_ls_grpc_port(p):
-                return 0
-            if p in https_ports:
-                return 2
-            return 1
-        ports.sort(key=_port_priority)
-    agexe = (Path(os.environ.get("LOCALAPPDATA", "")) / "Programs/antigravity/resources/bin/language_server.exe")
+                valid_grpc_ports.append(p)
+            elif p in https_ports:
+                other_ports.append(p)
+        # 有效响应的 gRPC 端口绝对优先，其余备选
+        ports = valid_grpc_ports + [p for p in other_ports if p not in valid_grpc_ports]
+
+    agexe = Path(localappdata_str) / "Programs" / "Antigravity" / "resources" / "bin" / "language_server.exe"
+    if not agexe.exists():
+        agexe = Path(localappdata_str) / "Programs" / "antigravity" / "resources" / "bin" / "language_server.exe"
     return csrf, ports, agexe
 
 
 def discover_antigravity_project_id(agexe: Path, csrf: str, ports: List[str]) -> Optional[str]:
     """取最近一个会话元数据里的 projectId。"""
+    no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     conv_dir = Path.home() / ".gemini" / "antigravity" / "conversations"
     if not conv_dir.exists():
         return None
@@ -115,7 +174,8 @@ def discover_antigravity_project_id(agexe: Path, csrf: str, ports: List[str]) ->
             try:
                 r = subprocess.run(
                     [str(agexe), "agentapi", "get-conversation-metadata", db.stem],
-                    capture_output=True, timeout=60, env=env, cwd=str(ws)
+                    capture_output=True, timeout=5, env=env, cwd=str(ws),
+                    creationflags=no_win
                 )
                 m = re.search(r'"projectId"\s*:\s*"([0-9a-f-]{36})"', (r.stdout or b"").decode("utf-8", errors="replace"))
                 if m:
@@ -324,14 +384,20 @@ class AntigravityManager:
             log(f"WARN      持久化AGY会话ID失败: {e}")
 
     def _find_ports_for_pid(self, pid: int) -> List[str]:
+        no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         ports = []
         try:
-            r = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, timeout=10)
+            r = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, errors="replace", timeout=10, creationflags=no_win)
             for line in (r.stdout or "").splitlines():
-                if "LISTENING" in line and "127.0.0.1" in line and line.rstrip().endswith(str(pid)):
-                    port = line.split()[1].rsplit(":", 1)[-1]
-                    if port not in ports:
-                        ports.append(port)
+                parts = line.split()
+                if len(parts) >= 5 and parts[0].upper() == "TCP" and "127.0.0.1" in parts[1] and parts[3].upper() == "LISTENING":
+                    try:
+                        if int(parts[-1]) == pid:
+                            port = parts[1].rsplit(":", 1)[-1]
+                            if port not in ports:
+                                ports.append(port)
+                    except ValueError:
+                        continue
         except Exception:
             pass
         if len(ports) > 1:
@@ -347,6 +413,7 @@ class AntigravityManager:
             return None, [], agexe
 
         ws = Path(__file__).resolve().parent.parent.parent
+        no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         if self.spawned_proc is None or self.spawned_proc.poll() is not None:
             log("L2        未检测到运行中的Antigravity，启动专用独立后台服务(language_server.exe)...")
             self.custom_csrf = str(uuid.uuid4())
@@ -356,14 +423,14 @@ class AntigravityManager:
                 "--app_data_dir=antigravity",
                 "--subclient_type=hub",
                 "--override_ide_name=antigravity",
-                "--override_ide_version=2.12.2",
+                "--override_ide_version=2.15.1",
                 "--override_user_agent_name=antigravity",
                 f"--csrf_token={self.custom_csrf}",
                 "--https_server_port=0",
                 "--api_server_url=https://generativelanguage.googleapis.com",
                 "--cloud_code_endpoint=https://daily-cloudcode-pa.googleapis.com",
             ]
-            cflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+            cflags = (subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0) | no_win
             try:
                 self.spawned_proc = subprocess.Popen(
                     cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -402,7 +469,8 @@ class AntigravityManager:
                         log("L2        后台Antigravity进程已优雅退出")
                     except subprocess.TimeoutExpired:
                         log("L2        优雅退出超时，执行强杀兜底...")
-                        subprocess.run(["taskkill", "/PID", str(self.spawned_proc.pid), "/T", "/F"], capture_output=True)
+                        no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                        subprocess.run(["taskkill", "/PID", str(self.spawned_proc.pid), "/T", "/F"], capture_output=True, creationflags=no_win)
             except Exception as e:
                 log(f"WARN      回收后台进程异常: {e}")
             finally:

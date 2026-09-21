@@ -12,6 +12,7 @@ from afk_supervisor.coordinator import SupervisorCoordinator
 from afk_supervisor.evidence import collect_evidence, calculate_reviewed_revision
 from afk_supervisor.l2.protocol import build_protocol_prompt, validate_protocol_payload
 from afk_supervisor.models import EvidenceItem, L2Result
+from afk_supervisor.observations import command_accepted, normalize_command_text
 from afk_supervisor.state import SupervisorState
 
 
@@ -165,6 +166,13 @@ class BaselineAndStateRegressions(DebugFixture):
             self.assertEqual(loaded.pending_command, state.pending_command)
             self.assertEqual(target.read_bytes(), original)
             self.assertEqual(target.stat().st_mtime_ns, original_mtime)
+
+    def test_normalize_command_handles_nested_markdown_escapes(self):
+        cmd = r"确认按该主视觉方向继续实施：使用原生 HTML/CSS/JS 在 C:\Agents\codex\double\_re 下构建"
+        escaped_ui_msg = r"确认按该主视觉方向继续实施：使用原生 HTML/CSS/JS 在 C:\Agents\codex\double\\\_re 下构建"
+        self.assertEqual(normalize_command_text(cmd), normalize_command_text(escaped_ui_msg))
+        events = [{"payload": {"role": "user", "content": [{"text": escaped_ui_msg}]}}]
+        self.assertTrue(command_accepted(events, cmd))
 
 
 class CoordinatorAndPromptRegressions(DebugFixture):

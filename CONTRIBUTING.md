@@ -16,8 +16,9 @@ The system follows a decoupled design:
 - **L2 Delegated Intelligence** (`afk_supervisor/l2/`):
   - Resolves questions/decisions posed by workers without requiring human presence.
   - Automatically diagnoses and repairs common local/environment errors.
-- **Desktop Companion & BYOP (Phase 2 Roadmap)**:
-  - Bring Your Own Pet (BYOP) sprite mapping protocol and desktop mascot overlay engine.
+- **Desktop Companion & BYOP (Phase 2)**:
+  - Bring Your Own Pet (BYOP) sprite mapping protocol and desktop mascot overlay engine (`doloris_app/`).
+  - Procedural vector rendering and dynamic multi-state animation support.
 
 ## Development Setup
 
@@ -27,7 +28,7 @@ The system follows a decoupled design:
    - PowerShell 5.1+
 
 2. **Zero External Dependencies**:
-   Doloris core is built entirely using Python's standard library. No `pip install` of third-party runtime libraries is required!
+   Doloris core is built entirely using Python's standard library. No `pip install` of third-party runtime libraries is required! (Optional: `pip install Pillow` for Desktop Mascot GUI).
 
 3. **Editable Installation**:
    ```bash
@@ -40,12 +41,16 @@ All unit and regression tests are located in `tests/`.
 We provide a hermetic isolated test runner that runs without touching real apps or acquiring real workspace locks:
 
 ```bash
+# Run isolated regression harness
 python -B -X utf8 tests/run_isolated.py
+
+# Run full unittest suite
+python -m unittest
 ```
 
 Before submitting a Pull Request, make sure all tests pass:
 ```text
-Ran 197 tests in ~8s
+Ran 200 tests in ~10s
 OK (failures=0, errors=0)
 ```
 

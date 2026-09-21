@@ -21,7 +21,7 @@ from doloris_app.pet_loader import (
 class TestPetLoader(unittest.TestCase):
     def test_default_pet_skin_generation(self):
         skin = create_default_pet_skin()
-        self.assertEqual(skin.name, "default-golden")
+        self.assertEqual(skin.name, "default-doloris")
         self.assertIn("idle", skin.frames)
         self.assertIn("running", skin.frames)
         self.assertIn("waiting", skin.frames)
@@ -83,7 +83,7 @@ class TestPetLoader(unittest.TestCase):
     def test_discover_available_pets_always_contains_default(self):
         pets = discover_available_pets()
         self.assertGreaterEqual(len(pets), 1)
-        self.assertEqual(pets[0].name, "default-golden")
+        self.assertEqual(pets[0].name, "default-doloris")
 
 
 if __name__ == "__main__":

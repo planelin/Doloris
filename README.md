@@ -2,7 +2,7 @@
   <img src="https://img.shields.io/badge/Python-3.10%2B-blue.svg" alt="Python Version" />
   <img src="https://img.shields.io/badge/License-MIT-emerald.svg" alt="License" />
   <img src="https://img.shields.io/badge/Dependencies-Zero%20External-orange.svg" alt="Zero Dependencies" />
-  <img src="https://img.shields.io/badge/Tests-197%20Passed%20(100%25)-indigo.svg" alt="197 Tests Passed" />
+  <img src="https://img.shields.io/badge/Tests-200%20Passed%20(100%25)-indigo.svg" alt="200 Tests Passed" />
   <img src="https://img.shields.io/badge/BYOP-Custom%20Pet%20Ready-pink.svg" alt="BYOP Ready" />
   <img src="https://img.shields.io/badge/Platform-Windows-lightgrey.svg" alt="Platform Windows" />
 </p>
@@ -70,25 +70,30 @@ Doloris 提供了三种开箱即用的交接形态，随时根据需要灵活切
 
 ---
 
-## 🐾 BYOP (Bring Your Own Pet) 自备桌宠生态规划
+## 🐾 BYOP (Bring Your Own Pet) 自备桌宠生态
 
 **桌宠不应被千篇一律的固定形象束缚！**
 
-Doloris 采用**“大脑 + 身体”完全解耦**的架构：
+Doloris 采用**“底层大脑 + 表现层身体”完全解耦**的架构：
 - **底层大脑（Python 3.10+ 标准库）**：负责严格的生命周期判定、写锁释放、L2 委托决策与自愈；
-- **表现层桌宠（Desktop Mascot Engine）**：支持用户**直接导入自己喜爱的桌宠图片包**（包括 Codex 原生桌宠、Shimeji 动漫包、像素图、自家宠物表情包）。
+- **表现层桌宠（Desktop Mascot Engine）**：
+  - **内置免素材矢量皮肤**：首发搭载 **Doloris 摇滚柴柴**（纯代码矢量动态绘制，带鸭舌帽、吉他与萌系表情）与经典 **金毛小代班**；
+  - **BYOP 自定义导入**：支持用户直接将任意素材包放入 `./pets/` 或 `~/.codex/pets/`，引擎自动加载：
+    1. **Codex V2 官方 Atlas 大图**：将 1536x2288 的 `spritesheet.png` 放入文件夹，引擎自动按 8x11 矩阵切片为各状态动画；
+    2. **分状态帧动画目录**：支持直接按动作建立子文件夹（`idle/`, `running/`, `waiting/`, `failed/`, `review/`）放入 PNG 序列图。
 
 ```text
-my-custom-pet/
-├── pet.json             # （可选）配置动画帧率、气泡偏移、提示音
-├── idle/                # 空闲发呆帧（01.png, 02.png...）
-├── working/             # 托管打工中（敲键盘、戴安全帽动画）
-├── thinking/            # L2 决策拍板中（托腮、转圈圈思考）
-├── fixing/              # 报错与自愈中（掏扳手、排查网络）
-└── success/             # 任务完成（撒花、立正敬礼、递交报告）
+pets/
+└── my-custom-pet/
+    ├── pet.json             # （可选）配置显示名称与元数据
+    ├── spritesheet.png      # 方式 1：标准 1536x2288 Codex V2 Atlas 大图
+    └── states/              # 方式 2：分状态散图序列
+        ├── idle/            # 空闲发呆帧（01.png, 02.png...）
+        ├── running/         # 托管打工中（敲键盘、戴安全帽动画）
+        ├── waiting/         # L2 决策思考中（托腮、转圈圈思考）
+        ├── failed/          # 报错与自愈中（掏扳手、排查网络）
+        └── review/          # 任务完成（撒花、立正敬礼、递交报告）
 ```
-
-> 💡 **Codex 桌宠一键提取**：Doloris 将内置一键提取工具，自动读取你当前 Codex App 中正在使用的桌宠动作序列，无缝转换为 Doloris 的代班皮肤！
 
 ---
 
@@ -129,29 +134,54 @@ flowchart TD
 ## 🚀 快速上手
 
 ### 1. 环境需求
-- Windows 10 / 11
-- Python 3.10+
-- 可选安装为全局命令：
-  ```bash
-  pip install -e .
-  ```
+- **操作系统**：Windows 10 / 11
+- **Python 版本**：Python 3.10+
+- **第三方依赖**：
+  - 核心 CLI 监管引擎：**零外部依赖**（纯 Python 标准库）
+  - 桌宠伴侣 GUI：需 `Pillow` 图形库（`pip install Pillow`）
 
-### 2. 命令行一键启动
+---
+
+### 2. 双重交互形态（任选其一）
+
+#### 方式 A：桌面伴侣桌宠形态 (推荐，沉浸陪伴)
+
+无需记忆任何复杂命令行参数，让可爱的代班桌宠常驻桌面角落：
+
+```powershell
+# 启动桌宠应用（控制台模式）
+.\doloris-app.cmd
+
+# 或双击根目录下的 doloris-app.vbs 静默启动（无黑框弹出）
+```
+
+**桌宠交互指南**：
+* 🐾 **一键托管**：鼠标**右键点击桌宠** -> 在弹出菜单中选择「🚀 开始托管」-> 展开最近活跃的 Codex 会话列表，点击即开！
+* 🖱️ **自由移动**：按住**鼠标左键**即可将桌宠拖拽至屏幕任意位置。
+* 🔍 **无级缩放**：按住 `Ctrl + 鼠标滚轮` 即可在 **5% ~ 500%** 之间平滑无级缩放；亦可在右键菜单中直接输入精确百分比。
+* 💬 **状态感知气泡**：桌宠头顶带有动态漫画气泡，实时展示任务心跳（打工中、决策思考中、故障自愈中、已完工）；完工后点击气泡可直接打开交付报告！
+* 🎨 **皮肤切换**：右键菜单支持在默认皮肤（Doloris 摇滚柴柴）与经典皮肤（金毛小代班）及自定义 BYOP 皮肤之间无缝热插拔。
+
+---
+
+#### 方式 B：终端命令行 CLI 形态 (极客 & 自动化集成)
+
+适合喜欢纯终端操作、远程脚本调用或无桌面环境的使用场景：
 
 ```powershell
 # 推荐：一键启动 Fork 托管（默认模式，不杀 App）
 .\doloris.cmd
 
-# 明确指定模式
-.\doloris.cmd fork      # Fork 无头续跑
-.\doloris.cmd resume    # 原地接管恢复
-.\doloris.cmd gui       # 原生双有头 GUI 注入
+# 明确指定三大托管模式
+.\doloris.cmd fork      # Mode 1: Fork 无头续跑 (保留 App，不争抢Token)
+.\doloris.cmd resume    # Mode 2: 经典安全接管 (安全退出 App，原会话静默续跑)
+.\doloris.cmd gui       # Mode 3: 原生双有头 GUI 注入 (App 保持前台可见，UIA直写)
 
 # 亦可使用全局注册命令（需 pip install -e .）
 doloris --adopt last --quick --fork
 ```
 
-*(原 `afk.cmd` / `afk2.cmd` / `afk3.cmd` 脚本均完整保留兼容)*
+*(原 `afk.cmd` / `afk2.cmd` / `afk3.cmd` 脚本均完整保留向后兼容)*
 
 ---
 
@@ -160,19 +190,23 @@ doloris --adopt last --quick --fork
 项目自带 100% 隔离的自测沙箱，不抢占真实工作区锁、不影响运行中的桌面应用：
 
 ```powershell
+# 运行完全隔离的沙箱回归测试
 python -B -X utf8 tests/run_isolated.py
+
+# 或运行全量单元测试套件
+python -m unittest
 ```
 
-当前包含 **197 项自动化测试全部通过**，涵盖安全退出边界、状态机迁移、GUI 机器身份校验与协议解析。
+当前包含 **200 项自动化测试全部通过 (100% PASS)**，涵盖安全退出边界、状态机迁移、GUI 机器身份校验、桌宠切片解析与协议序列化。
 
 ---
 
 ## 📄 文档导航
 
-- [使用手册与参数详解 (USAGE.md)](USAGE.md)
-- [系统设计准则与技术规范 (docs/SPECIFICATION.md)](docs/SPECIFICATION.md)
-- [开源贡献指南 (CONTRIBUTING.md)](CONTRIBUTING.md)
-- [许可证 (LICENSE)](LICENSE)
+- [使用手册与参数详解 (USAGE.md)](USAGE.md) — 适合新用户的全流程上手指南与常见场景
+- [系统设计准则与技术规范 (docs/SPECIFICATION.md)](docs/SPECIFICATION.md) — 核心设计哲学、安全红线与状态机规范
+- [开源贡献指南 (CONTRIBUTING.md)](CONTRIBUTING.md) — 架构解析与 PR 提交流程
+- [许可证 (LICENSE)](LICENSE) — MIT 开源授权协议
 
 ---
 

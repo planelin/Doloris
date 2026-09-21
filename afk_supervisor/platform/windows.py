@@ -11,6 +11,8 @@ import sys
 import urllib.request
 from typing import Optional, Tuple
 
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if sys.platform == "win32" else 0
+
 
 def keep_awake():
     """阻止 Windows 系统进入休眠（允许关闭显示器）。
@@ -32,7 +34,11 @@ def keep_awake():
 
     # 验证 powercfg 权限
     try:
-        r = subprocess.run(["powercfg", "/requests"], capture_output=True, text=True, timeout=5)
+        r = subprocess.run(
+            ["powercfg", "/requests"],
+            capture_output=True, text=True, errors="replace", timeout=5,
+            creationflags=NO_WINDOW
+        )
         if r.returncode == 0:
             print("[INFO] powercfg /requests 可读(管理员), 系统请求清单已可核查")
     except Exception:
@@ -74,7 +80,8 @@ def find_connected_adapter() -> Tuple[Optional[str], Optional[str]]:
     cmd = "Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1 -Property Name, InterfaceDescription | ConvertTo-Json"
     try:
         r = subprocess.run(["powershell", "-NoProfile", "-Command", cmd],
-                           capture_output=True, text=True, timeout=10)
+                           capture_output=True, text=True, errors="replace", timeout=10,
+                           creationflags=NO_WINDOW)
         import json
         obj = json.loads(r.stdout.strip())
         return obj.get("Name"), obj.get("InterfaceDescription")
@@ -87,7 +94,8 @@ def net_disable(adapter_name: str) -> bool:
     cmd = f"Disable-NetAdapter -Name '{adapter_name}' -Confirm:$false"
     try:
         r = subprocess.run(["powershell", "-NoProfile", "-Command", cmd],
-                           capture_output=True, text=True, timeout=15)
+                           capture_output=True, text=True, errors="replace", timeout=15,
+                           creationflags=NO_WINDOW)
         return r.returncode == 0
     except Exception:
         return False
@@ -98,7 +106,8 @@ def net_enable(adapter_name: str) -> bool:
     cmd = f"Enable-NetAdapter -Name '{adapter_name}' -Confirm:$false"
     try:
         r = subprocess.run(["powershell", "-NoProfile", "-Command", cmd],
-                           capture_output=True, text=True, timeout=15)
+                           capture_output=True, text=True, errors="replace", timeout=15,
+                           creationflags=NO_WINDOW)
         return r.returncode == 0
     except Exception:
         return False

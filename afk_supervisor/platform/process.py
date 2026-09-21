@@ -213,14 +213,15 @@ def close_codex_app(rollout_path=None, max_wait=40, wait_boundary=True, on_event
 
     pid_fn = get_sym("pid_is_running", pid_is_running)
     log(f"CLOSE    自动关闭已识别的桌面进程: {target_pids}")
+    no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     for pid in target_pids:
-        subprocess.run(["taskkill", "/PID", str(pid)], capture_output=True, timeout=10)
+        subprocess.run(["taskkill", "/PID", str(pid)], capture_output=True, timeout=10, creationflags=no_win)
     deadline = time.monotonic() + 8
     while any(pid_fn(pid) for pid in target_pids) and time.monotonic() < deadline:
         time.sleep(0.2)
     for pid in target_pids:
         if pid_fn(pid):
-            subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, timeout=10)
+            subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, timeout=10, creationflags=no_win)
     deadline = time.monotonic() + 3
     while any(pid_fn(pid) for pid in target_pids) and time.monotonic() < deadline:
         time.sleep(0.2)

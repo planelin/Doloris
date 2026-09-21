@@ -39,3 +39,37 @@ Desktop.ini
 # Database artifacts
 *.sqlite-shm
 *.sqlite-wal
+
+# Test caches & coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Temporary dumps, prompts, and test artifacts
+tests/ui_dump.*
+tests/step*.json
+tests/prompt*.txt
+tests/inspect_*.ps1
+tests/inspect_*.py
+tests/dump_*.ps1
+tests/launch_*.ps1
+tests/check_user_events.py
+tmp_*.*
+*.tmp
+
+# Temporary debug & probe PowerShell scripts
+scan*.ps1
+snap*.ps1
+scroll_test*.ps1
+switch_thread*.ps1
+test_*.ps1
+!tests/check_gui_identity.ps1
+!gui_inject.ps1
+
+# Screenshots & temporary image dumps
+*.png
+*.jpg
+*.jpeg
+*.bmp
+# Whitelist app assets
+!doloris_app/assets/*
