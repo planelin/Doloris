@@ -4,6 +4,7 @@
   <img src="https://img.shields.io/badge/Dependencies-Zero%20External-orange.svg" alt="Zero Dependencies" />
   <img src="https://img.shields.io/badge/BYOP-Custom%20Pet%20Ready-pink.svg" alt="BYOP Ready" />
   <img src="https://img.shields.io/badge/Platform-Windows-lightgrey.svg" alt="Platform Windows" />
+  <a href="https://linux.do"><img src="https://img.shields.io/badge/Community-LINUX%20DO-2563eb.svg?logo=linux&logoColor=white" alt="LINUX DO Community" /></a>
 </p>
 
 <h1 align="center">Doloris (ドロリス)</h1>
@@ -17,10 +18,11 @@
   <a href="#-为什么是-doloris">项目理念</a> •
   <a href="#-三大托管模式">三大模式</a> •
   <a href="#-终端实况模拟">实况演示</a> •
-  <a href="#-byop-自备桌宠生态规划">自备桌宠</a> •
+  <a href="#-byop-自备桌宠生态">自备桌宠</a> •
   <a href="#-快速上手">快速上手</a> •
   <a href="#-测试与验证">自测验证</a> •
-  <a href="USAGE.md">使用手册</a>
+  <a href="USAGE.md">使用手册</a> •
+  <a href="#-社区与友链">社区友链</a>
 </p>
 
 ---
@@ -206,6 +208,15 @@ python -m unittest
 - [系统设计准则与技术规范 (docs/SPECIFICATION.md)](docs/SPECIFICATION.md) — 核心设计哲学、安全红线与状态机规范
 - [开源贡献指南 (CONTRIBUTING.md)](CONTRIBUTING.md) — 架构解析与 PR 提交流程
 - [许可证 (LICENSE)](LICENSE) — MIT 开源授权协议
+
+---
+
+## 🤝 社区与友链
+
+本项目首发并活跃于 **[LINUX DO](https://linux.do)** 技术社区：
+- **论坛交流**：[LINUX DO (https://linux.do)](https://linux.do)
+- **社区探讨**：欢迎前往 LINUX DO 社区参与 Doloris 的长任务无人值守经验交流、架构探讨与 BYOP 自定义桌宠皮肤分享！
+- **社区精神**：*真诚、友善、团结、专业*，共建高品质技术社区。
 
 ---
 
