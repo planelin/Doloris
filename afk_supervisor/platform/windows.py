@@ -14,23 +14,49 @@ from typing import Optional, Tuple
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if sys.platform == "win32" else 0
 
 
-def keep_awake():
-    """阻止 Windows 系统进入休眠（允许关闭显示器）。
-    通过 SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED) 实现进程级防睡眠。
+# Windows 电源执行状态标志位
+ES_CONTINUOUS = 0x80000000
+ES_SYSTEM_REQUIRED = 0x00000001
+ES_DISPLAY_REQUIRED = 0x00000002
+
+
+def set_keep_awake(enable: bool = True, keep_display: bool = True) -> bool:
+    """设置 Windows 系统及显示器防休眠/防熄屏状态。
+
+    :param enable: True 为保持活跃，False 为恢复系统默认电源设置
+    :param keep_display: True 时同时阻止显示器熄屏 (ES_DISPLAY_REQUIRED)，False 允许熄屏
+    :return: 是否设置成功
     """
     if sys.platform != "win32":
-        return
+        return False
     try:
         import ctypes
-        ES_CONTINUOUS = 0x80000000
-        ES_SYSTEM_REQUIRED = 0x00000001
-        res = ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
-        if res == 0:
-            print("[WARN] SetThreadExecutionState 返回 0，睡眠抑制可能未生效", file=sys.stderr)
+        if enable:
+            flags = ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+            if keep_display:
+                flags |= ES_DISPLAY_REQUIRED
+            tag = "系统+显示器不熄屏" if keep_display else "仅系统不休眠(允许熄屏)"
         else:
-            print("[INFO] KEEP-AWAKE 睡眠抑制已生效(进程级, 允许熄屏)")
+            flags = ES_CONTINUOUS
+            tag = "恢复系统默认电源策略"
+
+        res = ctypes.windll.kernel32.SetThreadExecutionState(flags)
+        if res == 0:
+            print(f"[WARN] SetThreadExecutionState 返回 0，{tag} 可能未生效", file=sys.stderr)
+            return False
+        else:
+            print(f"[INFO] KEEP-AWAKE 电源状态更新: {tag}")
+            return True
     except Exception as e:
         print(f"[WARN] 睡眠抑制设置失败: {e}", file=sys.stderr)
+        return False
+
+
+def keep_awake(keep_display: bool = True):
+    """阻止 Windows 系统进入休眠，默认同时阻止显示器熄屏。
+    通过 set_keep_awake 实现向后兼容。
+    """
+    set_keep_awake(enable=True, keep_display=keep_display)
 
     # 验证 powercfg 权限
     try:

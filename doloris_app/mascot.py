@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
 import tkinter as tk
+from pathlib import Path
 from typing import List, Optional
 
 from PIL import Image, ImageTk
@@ -150,7 +152,7 @@ class DesktopMascot:
         self.start_menu = tk.Menu(self.menu, tearoff=0, font=("Segoe UI", 9))
         self._rebuild_start_menu()
 
-        self.menu.add_cascade(label="🚀 开始托管", menu=self.start_menu)
+        self.menu.add_cascade(label="🚀 托管模式", menu=self.start_menu)
         self.menu.add_command(label="⏹️ 停止托管", command=self.stop_mode)
         self.menu.add_separator()
 
@@ -165,7 +167,7 @@ class DesktopMascot:
 
         # Scale command (direct prompt dialog 5% ~ 500%)
         self.menu.add_command(
-            label=f"🔍 调整显示大小 (输入 5%~500%)...",
+            label="🔍 调整显示大小...",
             command=self.prompt_custom_scale,
         )
         self.menu.add_separator()
@@ -182,9 +184,10 @@ class DesktopMascot:
             sessions = []
 
         modes = [
-            ("fork", "🔱 Fork 无头续跑 (推荐，不杀App)"),
-            ("resume", "⚡ 经典安全接管 (Kill & Resume)"),
-            ("gui", "🖥️ 双有头原生 GUI 注入"),
+            ("goal", "🎯 Goal 目标模式"),
+            ("fork", "🔱 Fork 无头并发"),
+            ("resume", "⚡ Kill 快速接管"),
+            ("gui", "🖥 Gui  有头注入"),
         ]
 
         for mode_key, mode_label in modes:
@@ -202,7 +205,7 @@ class DesktopMascot:
                     label_text = f"[{i}] {age} [{sid[:8]}] {clean_title}"
                     sub.add_command(
                         label=label_text,
-                        command=lambda m=mode_key, idx=str(i): self.start_mode(m, idx)
+                        command=lambda m=mode_key, s=sid: self.start_mode(m, s)
                     )
             sub.add_separator()
             sub.add_command(
@@ -213,6 +216,264 @@ class DesktopMascot:
 
         self.start_menu.add_separator()
         self.start_menu.add_command(label="📋 完整会话选择器...", command=self._show_session_picker_dialog)
+
+    def prompt_goal_mode(self, session_target: str = "last"):
+        """Pops up Goal Mode definition dialog or automatically resumes existing goal."""
+        from afk_supervisor.sessions.discovery import clean_session_id
+        clean_target = clean_session_id(session_target) if session_target else "last"
+        rollout_path = None
+        actual_sid = None
+        target_title = ""
+        try:
+            if clean_target == "last":
+                from afk_supervisor.sessions.discovery import find_last_codex_session, read_session_title
+                last_got = find_last_codex_session()
+                if last_got:
+                    actual_sid, rollout_path, _ = last_got
+                    if rollout_path:
+                        target_title = read_session_title(Path(rollout_path))
+            elif clean_target.isdigit():
+                idx = int(clean_target)
+                from afk_supervisor.sessions.discovery import list_recent_codex_sessions
+                recent = list_recent_codex_sessions(max(idx, 8))
+                if 1 <= idx <= len(recent):
+                    actual_sid, rollout_path, _, target_title, _ = recent[idx - 1]
+            else:
+                from afk_supervisor.sessions.discovery import find_codex_session_by_id, read_session_title
+                got = find_codex_session_by_id(clean_target)
+                if got:
+                    actual_sid, rollout_path, _ = got
+                    if rollout_path:
+                        target_title = read_session_title(Path(rollout_path))
+        except Exception:
+            pass
+
+        target_for_mode = actual_sid or clean_target or session_target
+
+        # 核心逻辑 1：先严格检测是否已设立真实目标。若已有真实活跃目标且处于阶段2/3，直接进入自主推进，绝不重复弹窗！
+        if rollout_path and Path(rollout_path).exists():
+            from afk_supervisor.goal_engine import get_existing_thread_goal, check_plan_status, DUMMY_GOAL_MARKERS
+            existing_goal = get_existing_thread_goal(Path(rollout_path))
+            phase = check_plan_status(Path(rollout_path))
+            if existing_goal and existing_goal not in DUMMY_GOAL_MARKERS and phase in ("planning", "executing"):
+                goal_disp = existing_goal
+                phase_name = "长程执行中" if phase == "executing" else "计划制定中"
+                disp = goal_disp[:26] + "..." if len(goal_disp) > 26 else goal_disp
+                self.show_bubble(f"🎯 会话已设立目标 [{phase_name}]：\n「{disp}」\n已跳过设定，直接开启自主推进！🐾", duration_ms=6000)
+                self.start_mode("goal", target_for_mode, goal_target="__ALREADY_SET__")
+                return
+
+        # 核心逻辑 2：若确认需要设立目标，弹窗留给用户的时间不设限制！
+        win = tk.Toplevel(self.root)
+        win.title("Doloris — 开启 Goal 目标模式")
+        win.attributes("-topmost", True)
+        win.geometry("520x280")
+        win.resizable(False, False)
+
+        # 居中显示
+        try:
+            sw = int(win.winfo_screenwidth())
+            sh = int(win.winfo_screenheight())
+            wx = max(0, (sw - 520) // 2)
+            wy = max(0, (sh - 280) // 2)
+            win.geometry(f"520x280+{wx}+{wy}")
+        except Exception:
+            win.geometry("520x280")
+
+        frame = tk.Frame(win, padx=16, pady=14)
+        frame.pack(fill="both", expand=True)
+
+        target_hint = f"会话 [{session_target[:8]}]" if session_target != "last" else "最新活跃会话"
+        lbl_title = tk.Label(frame, text=f"🎯 为当前任务开启 Goal 自主模式 ({target_hint})", font=("Segoe UI", 11, "bold"), fg="#1e293b")
+        lbl_title.pack(anchor="w", pady=(0, 4))
+
+        lbl_desc = tk.Label(
+            frame,
+            text="请输入离席无人值守要达成的具体目标，或点击【懒人模式 (AGY提炼)】由 AGY 根据上下文提炼目标：\n（手动输入不设时间限制；AGY 提炼完成后将开启 30s 确认倒计时）",
+            font=("Segoe UI", 9),
+            justify="left",
+            fg="#475569",
+            wraplength=480,
+        )
+        lbl_desc.pack(anchor="w", pady=(0, 8))
+
+        entry = tk.Entry(frame, font=("Segoe UI", 10))
+        entry.pack(fill="x", pady=(0, 12))
+        entry.focus_set()
+
+        btn_frame = tk.Frame(frame)
+        btn_frame.pack(fill="x", side="bottom")
+
+        import queue
+        result_q: queue.Queue = queue.Queue()
+        user_manually_edited = [False]
+
+        remaining = [30]
+        timer_id = [None]
+        timer_paused = [False]
+        is_countdown_active = [False]
+        is_lazy_working = [False]
+
+        def on_entry_key(event):
+            if event.keysym not in ("Control_L", "Control_R", "Shift_L", "Shift_R", "Alt_L", "Alt_R", "Return", "Escape"):
+                user_manually_edited[0] = True
+
+        entry.bind("<Key>", on_entry_key)
+
+        def cancel_timer():
+            if timer_id[0] is not None:
+                try:
+                    win.after_cancel(timer_id[0])
+                except Exception:
+                    pass
+                timer_id[0] = None
+            is_countdown_active[0] = False
+
+        def on_confirm_goal():
+            val = entry.get().strip()
+            if not val:
+                # 目标为空时，直接触发 AGY 智能提炼，绝不盲目硬编码注入
+                on_lazy_goal()
+                return
+            cancel_timer()
+            win.destroy()
+            self.show_bubble(f"🎯 已确立 Goal 目标：{val[:20]}... 开始冲刺！", duration_ms=5000)
+            self.start_mode("goal", target_for_mode, goal_target=val)
+
+        def on_cancel():
+            cancel_timer()
+            win.destroy()
+
+        def toggle_pause():
+            if not is_countdown_active[0]:
+                return
+            timer_paused[0] = not timer_paused[0]
+            if timer_paused[0]:
+                pause_btn.config(text="▶️ 继续倒计时", bg="#e2e8f0")
+                lbl_desc.config(text="⏸️ 倒计时已暂停，您可以仔细修改润色目标。完成后点击【继续倒计时】或【立即启动】：", fg="#475569")
+            else:
+                pause_btn.config(text="⏸️ 暂停计时", bg="#f1f5f9")
+                lbl_desc.config(text=f"▶️ 倒计时已恢复，剩余 {remaining[0]}s 后自动启动：", fg="#16a34a")
+
+        def tick():
+            if not is_countdown_active[0]:
+                return
+            if not timer_paused[0]:
+                remaining[0] -= 1
+                if remaining[0] <= 0:
+                    cancel_timer()
+                    on_confirm_goal()
+                    return
+                else:
+                    confirm_btn.config(text=f"🚀 立即启动 ({remaining[0]}s)")
+            timer_id[0] = win.after(1000, tick)
+
+        def start_30s_countdown():
+            cancel_timer()
+            remaining[0] = 30
+            timer_paused[0] = False
+            is_countdown_active[0] = True
+            confirm_btn.config(text=f"🚀 立即启动 (30s)")
+            pause_btn.pack(side="right", padx=4)
+            timer_id[0] = win.after(1000, tick)
+
+        def poll_lazy_result():
+            if not win.winfo_exists():
+                return
+            try:
+                status, agy_res = result_q.get_nowait()
+            except queue.Empty:
+                if is_lazy_working[0]:
+                    win.after(100, poll_lazy_result)
+                return
+
+            is_lazy_working[0] = False
+            if status == "ok" and agy_res:
+                if not user_manually_edited[0] or not entry.get().strip():
+                    entry.delete(0, "end")
+                    entry.insert(0, agy_res)
+                lazy_btn.config(text="✅ AGY 提炼完成", state="normal")
+                lbl_desc.config(text="✅ AGY 已为您提炼交付目标！您可以直接润色修改，30s 后将自动启动：", fg="#16a34a")
+                start_30s_countdown()
+            else:
+                lazy_btn.config(text="🤖 懒人模式 (AGY提炼)", state="normal")
+                lbl_desc.config(text="⚠️ AGY 提炼未完成，您可以手动输入目标：", fg="#dc2626")
+
+        def on_lazy_goal():
+            if is_lazy_working[0]:
+                return
+            cancel_timer()
+            is_lazy_working[0] = True
+            lazy_btn.config(text="⏳ 正在呼叫 AGY 提炼...", state="disabled")
+            lbl_desc.config(text="🤖 Antigravity AGY 正在阅读上下文提炼干净目标，请稍候...", fg="#2563eb")
+
+            def worker():
+                try:
+                    agy_res = extract_goal_via_agy_agent(
+                        Path(rollout_path) if rollout_path else None,
+                        title=target_title,
+                        timeout_sec=25.0,
+                        codex_session_id=target_for_mode,
+                    )
+                    if not agy_res:
+                        agy_res = extract_clean_goal(
+                            Path(rollout_path) if rollout_path else None,
+                            title=target_title,
+                            codex_session_id=target_for_mode,
+                        )
+                    if not agy_res:
+                        agy_res = "完成当前任务所有未尽要求与测试"
+                    result_q.put(("ok", agy_res))
+                except Exception as exc:
+                    result_q.put(("error", str(exc)))
+
+            threading.Thread(target=worker, daemon=True).start()
+            win.after(100, poll_lazy_result)
+
+        entry.bind("<Return>", lambda e: on_confirm_goal())
+
+        confirm_btn = tk.Button(
+            btn_frame,
+            text="🚀 启动 Goal 模式",
+            font=("Segoe UI", 9, "bold"),
+            bg="#2563eb",
+            fg="white",
+            padx=14,
+            pady=4,
+            command=on_confirm_goal,
+        )
+        confirm_btn.pack(side="right", padx=4)
+
+        pause_btn = tk.Button(
+            btn_frame,
+            text="⏸️ 暂停计时",
+            font=("Segoe UI", 9),
+            bg="#f1f5f9",
+            fg="#0f172a",
+            padx=10,
+            pady=4,
+            command=toggle_pause,
+        )
+
+        lazy_btn = tk.Button(
+            btn_frame,
+            text="🤖 懒人模式 (AGY提炼)",
+            font=("Segoe UI", 9),
+            bg="#f1f5f9",
+            fg="#0f172a",
+            padx=10,
+            pady=4,
+            command=on_lazy_goal,
+        )
+        lazy_btn.pack(side="right", padx=4)
+
+        cancel_btn = tk.Button(btn_frame, text="取消", font=("Segoe UI", 9), padx=10, pady=4, command=on_cancel)
+        cancel_btn.pack(side="right")
+
+        win.protocol("WM_DELETE_WINDOW", on_cancel)
+
+        # 弹窗打开后，自动后台启动 AGY 目标提炼！
+        win.after(150, on_lazy_goal)
 
     def _prompt_custom_session(self, mode: str):
         from tkinter import simpledialog
@@ -264,13 +525,14 @@ class DesktopMascot:
         custom_entry.pack(side="left", fill="x", expand=True, padx=6)
 
         # Mode selection radio buttons
-        mode_var = tk.StringVar(value="fork")
+        mode_var = tk.StringVar(value="goal")
         mode_frame = tk.Frame(frame)
         mode_frame.pack(fill="x", pady=6)
         tk.Label(mode_frame, text="托管模式:", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0, 8))
-        tk.Radiobutton(mode_frame, text="Fork 无损续跑 (推荐)", variable=mode_var, value="fork").pack(side="left", padx=4)
-        tk.Radiobutton(mode_frame, text="Resume 原地接管", variable=mode_var, value="resume").pack(side="left", padx=4)
-        tk.Radiobutton(mode_frame, text="GUI 注入", variable=mode_var, value="gui").pack(side="left", padx=4)
+        tk.Radiobutton(mode_frame, text="🎯 Goal 目标模式", variable=mode_var, value="goal").pack(side="left", padx=4)
+        tk.Radiobutton(mode_frame, text="🔱 Fork 无头并发", variable=mode_var, value="fork").pack(side="left", padx=4)
+        tk.Radiobutton(mode_frame, text="⚡ Kill 快速接管", variable=mode_var, value="resume").pack(side="left", padx=4)
+        tk.Radiobutton(mode_frame, text="🖥 Gui  有头注入", variable=mode_var, value="gui").pack(side="left", padx=4)
 
         # Buttons
         btn_frame = tk.Frame(frame)
@@ -285,14 +547,17 @@ class DesktopMascot:
                 sel = lb.curselection()
                 if sel and sel[0] == 0:
                     target = "last"
-                elif sel and sel[0] > 0:
-                    target = str(sel[0])  # 1-indexed for sessions
+                elif sel and sel[0] > 0 and (sel[0] - 1) < len(sessions):
+                    target = sessions[sel[0] - 1][0]  # 真实会话 UUID
                 else:
                     target = "last"
             win.destroy()
-            self.start_mode(chosen_mode, target)
+            if chosen_mode == "goal":
+                self.prompt_goal_mode(target)
+            else:
+                self.start_mode(chosen_mode, target)
 
-        confirm_btn = tk.Button(btn_frame, text="🚀 开始托管", font=("Segoe UI", 9, "bold"), bg="#4CAF50", fg="white", padx=16, pady=4, command=on_confirm)
+        confirm_btn = tk.Button(btn_frame, text="🚀 下一步", font=("Segoe UI", 9, "bold"), bg="#4CAF50", fg="white", padx=16, pady=4, command=on_confirm)
         confirm_btn.pack(side="right", padx=4)
         cancel_btn = tk.Button(btn_frame, text="取消", font=("Segoe UI", 9), padx=12, pady=4, command=win.destroy)
         cancel_btn.pack(side="right")
@@ -354,8 +619,11 @@ class DesktopMascot:
 
         self.root.after(0, update)
 
-    def start_mode(self, mode: str = "fork", session_target: str = "last"):
-        self.controller.start_supervision(mode, session_target)
+    def start_mode(self, mode: str = "fork", session_target: str = "last", goal_target: str = ""):
+        if mode == "goal" and not goal_target:
+            self.prompt_goal_mode(session_target)
+            return
+        self.controller.start_supervision(mode, session_target, goal_target)
 
     def stop_mode(self):
         self.controller.stop_supervision()
@@ -375,6 +643,11 @@ class DesktopMascot:
             subprocess.Popen(["notepad.exe", path], creationflags=no_win)
 
     def exit_app(self):
+        try:
+            from afk_supervisor.platform.windows import set_keep_awake
+            set_keep_awake(enable=False)
+        except Exception:
+            pass
         self.controller.stop_supervision()
         self.bubble.hide()
         self.root.destroy()

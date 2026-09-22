@@ -4,6 +4,7 @@ rem (ASCII only - cmd.exe misreads UTF-8 Chinese comments under GBK codepage)
 cd /d %~dp0
 
 if "%1"=="app" goto do_app
+if "%1"=="goal" goto do_goal
 if "%1"=="fork" goto do_fork
 if "%1"=="resume" goto do_resume
 if "%1"=="gui" goto do_gui
@@ -27,6 +28,20 @@ goto end
 :do_app
 shift
 start "" pythonw -m doloris_app.main %*
+goto end
+
+:do_goal
+set "TARGET=last"
+if not "%2"=="" (
+    set "SECOND=%2"
+    setlocal enabledelayedexpansion
+    if not "!SECOND:~0,1!"=="-" (
+        set "TARGET=%2"
+        shift
+    )
+)
+shift
+python supervise.py --adopt %TARGET% --quick --goal %*
 goto end
 
 :do_fork

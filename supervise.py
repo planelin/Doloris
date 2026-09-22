@@ -92,6 +92,7 @@ from afk_supervisor.l2.transport import (
 from afk_supervisor.state import SupervisorState
 from afk_supervisor.platform.windows import (
     keep_awake,
+    set_keep_awake,
     detect_system_proxy,
     find_connected_adapter,
     net_disable,
@@ -147,6 +148,7 @@ from afk_supervisor.coordinator import SupervisorCoordinator
 from afk_supervisor.reporting import generate_final_report, send_terminal_notification
 from afk_supervisor.engine import run_headless_supervisor
 from afk_supervisor.gui_engine import run_gui_supervisor
+from afk_supervisor.goal_engine import run_goal_supervisor
 from afk_supervisor.cli import (
     build_arg_parser,
     wait_session_quiet,

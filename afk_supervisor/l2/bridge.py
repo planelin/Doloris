@@ -343,6 +343,112 @@ def wait_for_agy_idle(cid: str, timeout_sec: float = 60.0) -> bool:
     return False
 
 
+def _normalize_codex_session_id(raw: Optional[str]) -> str:
+    if not raw:
+        return ""
+    s = str(raw).strip()
+    if s.startswith("codex://"):
+        s = s[len("codex://"):]
+    s = s.strip("/\\")
+    if s.startswith("threads/"):
+        s = s[len("threads/"):]
+    return s.strip()
+
+
+def get_codex_agy_registry_file() -> Path:
+    import sys
+    if "supervise" in sys.modules and hasattr(sys.modules["supervise"], "HOME"):
+        home = sys.modules["supervise"].HOME
+    else:
+        home = Path.home()
+    base = home / ".gemini" / "antigravity"
+    base.mkdir(parents=True, exist_ok=True)
+    return base / "codex_agy_registry.json"
+
+
+def get_agy_conversation_for_codex(codex_session_id: Optional[str], run_dir: Optional[Path] = None) -> Optional[str]:
+    """根据 Codex 任务 ID 检索已绑定的唯一 AGY 会话 ID。
+    保持 1 Codex Task <-> 1 AGY Conversation 单一映射。
+    """
+    sid = _normalize_codex_session_id(codex_session_id)
+    if not sid or sid == "unknown":
+        return None
+
+    # 1. 优先检查当前 run_dir / agy_session.json
+    if run_dir:
+        sf = Path(run_dir) / "agy_session.json"
+        if sf.exists():
+            try:
+                data = json.loads(sf.read_text(encoding="utf-8"))
+                saved_sid = _normalize_codex_session_id(data.get("codex_session_id", ""))
+                saved_cid = data.get("agy_conversation_id")
+                if saved_cid and (not saved_sid or saved_sid == sid):
+                    brain_dir = get_agy_brain_dir()
+                    if (brain_dir / saved_cid).exists():
+                        return saved_cid
+            except Exception:
+                pass
+
+    # 2. 检查全局注册表 ~/.gemini/antigravity/codex_agy_registry.json
+    reg_file = get_codex_agy_registry_file()
+    if reg_file.exists():
+        try:
+            data = json.loads(reg_file.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                cid = data.get(sid)
+                if cid and isinstance(cid, str):
+                    brain_dir = get_agy_brain_dir()
+                    if (brain_dir / cid).exists():
+                        return cid
+        except Exception:
+            pass
+
+    return None
+
+
+def bind_agy_conversation_for_codex(codex_session_id: Optional[str], agy_cid: str, run_dir: Optional[Path] = None) -> None:
+    """持久化记录 1 Codex Task <-> 1 AGY Conversation 映射绑定。"""
+    sid = _normalize_codex_session_id(codex_session_id)
+    cid = (agy_cid or "").strip()
+    if not sid or not cid or sid == "unknown":
+        return
+
+    # 1. 写入全局注册表
+    reg_file = get_codex_agy_registry_file()
+    try:
+        reg = {}
+        if reg_file.exists():
+            try:
+                reg = json.loads(reg_file.read_text(encoding="utf-8"))
+                if not isinstance(reg, dict):
+                    reg = {}
+            except Exception:
+                reg = {}
+        reg[sid] = cid
+        tmp_file = reg_file.with_suffix(".tmp")
+        tmp_file.write_text(json.dumps(reg, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp_file.replace(reg_file)
+    except Exception as e:
+        log(f"WARN      写入全局 Codex-AGY 会话注册表失败: {e}")
+
+    # 2. 同步到当前 run_dir
+    if run_dir:
+        try:
+            rd = Path(run_dir)
+            rd.mkdir(parents=True, exist_ok=True)
+            sf = rd / "agy_session.json"
+            data = {
+                "codex_session_id": sid,
+                "agy_conversation_id": cid,
+                "updated_at": datetime.now().isoformat(timespec="seconds")
+            }
+            tmp_sf = sf.with_suffix(".tmp")
+            tmp_sf.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+            tmp_sf.replace(sf)
+        except Exception as e:
+            log(f"WARN      写入 run_dir/agy_session.json 失败: {e}")
+
+
 class AntigravityManager:
     """管理 Antigravity L2 桥接生命周期与单一会话强绑定。"""
 
@@ -368,20 +474,19 @@ class AntigravityManager:
                 if saved_cid:
                     self.cid = saved_cid
                     log(f"L2        从历史文件恢复单一AGY会话: {self.cid}")
+                    return
         except Exception:
             pass
 
+        if self.codex_session_id and self.codex_session_id != "unknown":
+            reg_cid = get_agy_conversation_for_codex(self.codex_session_id, self.run_dir)
+            if reg_cid:
+                self.cid = reg_cid
+                log(f"L2        从全局映射表绑定单一AGY会话: {self.cid} (Codex: {self.codex_session_id[:8]})")
+
     def persist_cid(self, cid: str):
         self.cid = cid
-        try:
-            data = {
-                "codex_session_id": self.codex_session_id,
-                "agy_conversation_id": cid,
-                "updated_at": datetime.now().isoformat(timespec="seconds")
-            }
-            self.session_file.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-        except Exception as e:
-            log(f"WARN      持久化AGY会话ID失败: {e}")
+        bind_agy_conversation_for_codex(self.codex_session_id, cid, self.run_dir)
 
     def _find_ports_for_pid(self, pid: int) -> List[str]:
         no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)

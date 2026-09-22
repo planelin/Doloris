@@ -143,7 +143,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--quick", action="store_true", help="快速挂机: 无感接管当前会话, 基于自然完工语义与项目清单自动验收")
     ap.add_argument("--fork", action="store_true", help="Fork无损接管: 基于目标会话派生新Thread并后台续跑，保留桌面端App存活且不触发单写锁冲突")
     ap.add_argument("--gui", action="store_true", help="双有头GUI监管: 保持桌面端App前台活跃，监听事件并通过Windows原生UI自动化注入指令")
-    ap.add_argument("--adopt-mode", choices=["resume", "fork", "gui"], default=None, help="接管模式: resume(默认/杀App原地续写), fork(派生新会话且不杀App), gui(双有头原生UI自动化)")
+    ap.add_argument("--goal", action="store_true", help="Goal自主目标模式: 中途切入，下发 /goal [目标] 并独立守护")
+    ap.add_argument("--goal-target", default="", help="Goal模式目标描述文本 (留空或__LAZY__则由AGY自动提炼)")
+    ap.add_argument("--adopt-mode", choices=["resume", "fork", "gui", "goal"], default=None, help="接管模式: resume(默认/杀App原地续写), fork(派生新会话且不杀App), gui(双有头原生UI自动化), goal(独立Goal目标模式)")
     ap.add_argument("--yes", action="store_true", help="跳过会话选择，自动选最新会话；resume 模式始终自动关闭 App")
     ap.add_argument("--handoff-timeout-sec", type=float, default=90, help="kill 模式确认安全退出的最长等待秒数；超时记录失败，不盲杀/不并发 resume")
     ap.add_argument("--l2-cmd", default="antigravity", help="L2升级agent: antigravity(默认, Google官方通道) / claude(中转, 不推荐) / off")
@@ -169,6 +171,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     adopt_mode = "resume"
     if args.adopt_mode:
         adopt_mode = args.adopt_mode
+    elif args.goal:
+        adopt_mode = "goal"
     elif args.fork:
         adopt_mode = "fork"
     elif args.gui:
@@ -325,7 +329,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 session_cwd=scwd or "?")
             if rollout:
                 log(f"ADOPT   任务标题: {title or '(未提取到)'}")
-                if adopt_mode == "fork":
+                if adopt_mode == "goal":
+                    log("ADOPT    模式: [GOAL自主目标] 独立目标接管模式，仅下发 /goal 并由看门狗守护")
+                elif adopt_mode == "fork":
                     log("ADOPT    模式: [FORK无头续跑] 保持桌面端App存活，先暂停原任务，再派生独立子会话")
                 elif adopt_mode == "gui":
                     log("ADOPT    模式: [双有头GUI监管] 保持桌面端App存活并前台运行")
@@ -439,6 +445,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         if not min_mtime and getattr(driver, "jsonl", None) and driver.jsonl.exists():
             min_mtime = driver.jsonl.stat().st_ctime - 120
         return check_acceptance_natural(ws_path, last_msg, min_mtime=min_mtime, title=title_str or title)
+
+    if adopt_mode == "goal":
+        from afk_supervisor.goal_engine import run_goal_supervisor
+        return run_goal_supervisor(
+            sid=sid,
+            rollout=rollout,
+            scwd=scwd or session_cwd,
+            title=title,
+            args=args,
+            run_dir=run_dir,
+            goal_target=getattr(args, "goal_target", "") or "",
+            agy_mgr=agy_mgr,
+            proxy=proxy,
+            ws_lock=ws_lock,
+            state_mgr=state_mgr,
+        )
 
     if adopt_mode == "gui":
         return run_gui_supervisor(

@@ -9,6 +9,8 @@ import threading
 from pathlib import Path
 from typing import Callable, Optional
 
+from afk_supervisor.platform.windows import set_keep_awake
+
 
 def _get_python_exe() -> str:
     """Inherit standard python.exe from afk2.cmd / cmd.exe instead of pythonw.exe."""
@@ -40,17 +42,20 @@ class SupervisionController:
     def is_running(self) -> bool:
         return self.process is not None and self.process.poll() is None
 
-    def start_supervision(self, mode: str = "fork", session_target: str = "last"):
-        """Starts supervision in a background thread."""
+    def start_supervision(self, mode: str = "fork", session_target: str = "last", goal_target: str = ""):
+        """Starts supervision in a background thread and ensures display stays awake."""
         if self.is_running():
             return
 
+        # 确保打工期间屏幕常亮不熄屏
+        set_keep_awake(enable=True, keep_display=True)
+
         self._stop_requested = False
-        self._thread = threading.Thread(target=self._run_worker, args=(mode, session_target), daemon=True)
+        self._thread = threading.Thread(target=self._run_worker, args=(mode, session_target, goal_target), daemon=True)
         self._thread.start()
 
     def stop_supervision(self):
-        """Stops the current supervision process and all child processes."""
+        """Stops the current supervision process and all child processes, restoring sleep settings."""
         self._stop_requested = True
         if self.process and self.process.poll() is None:
             pid = self.process.pid
@@ -62,9 +67,11 @@ class SupervisionController:
                     self.process.terminate()
                 except Exception:
                     pass
+        # 恢复系统默认电源与熄屏策略
+        set_keep_awake(enable=False)
         self.on_state_change("idle", "已停止托管，桌宠休息中~", None)
 
-    def _run_worker(self, mode: str, session_target: str = "last"):
+    def _run_worker(self, mode: str, session_target: str = "last", goal_target: str = ""):
         workspace = Path(__file__).resolve().parent.parent
         script = workspace / "supervise.py"
         py_exe = _get_python_exe()
@@ -76,7 +83,11 @@ class SupervisionController:
             "--quick",
             "--yes",
         ]
-        if mode == "fork":
+        if mode == "goal":
+            args.append("--goal")
+            if goal_target:
+                args.extend(["--goal-target", str(goal_target)])
+        elif mode == "fork":
             args.append("--fork")
         elif mode == "gui":
             args.append("--gui")
@@ -119,7 +130,21 @@ class SupervisionController:
                         continue
 
                     # Parse key events to drive pet states and dialogue
-                    if "HANDOFF_START" in line_str or "APP_CLOSED" in line_str or "WRITER_RELEASED" in line_str:
+                    if "GOAL_LAZY_EXTRACT" in line_str:
+                        self.on_state_change("thinking", "正在委托 AGY 智能提炼当前任务目标...", None)
+                    elif "GOAL_INJECT" in line_str or "GOAL_STARTED" in line_str:
+                        self.on_state_change("working", "🎯 Goal 目标已确立并下发，自主冲刺中！", None)
+                    elif "GOAL_PROGRESS" in line_str:
+                        self.on_state_change("working", "🎯 Goal 目标执行推进中...", None)
+                    elif "GOAL_STALLED" in line_str:
+                        self.on_state_change("thinking", "⚠️ 目标停滞/遇到阻碍，正在呼叫 AGY 破局推进...", None)
+                    elif "GOAL_AUTOPILOT" in line_str:
+                        self.on_state_change("working", "💡 决策已生成，正在向桌面端自动注入以破局推进...", None)
+                    elif "GOAL_COMPLETED" in line_str:
+                        report = self._find_latest_report()
+                        self.latest_report_path = report
+                        self.on_state_change("success", "🎉 Goal 目标已顺利达成！无需二次审查，任务完成 📄", report)
+                    elif "HANDOFF_START" in line_str or "APP_CLOSED" in line_str or "WRITER_RELEASED" in line_str:
                         self.on_state_change("thinking", "正在安全关闭桌面端 App 并确认写锁释放...", None)
                     elif "LAUNCH_GUI" in line_str or "GUI_INJECT" in line_str:
                         self.on_state_change("working", "双有头模式：正在向桌面端窗口自动注入决策指令...", None)
@@ -151,6 +176,8 @@ class SupervisionController:
             self.on_state_change("failed", f"启动异常: {e}", None)
         finally:
             self.process = None
+            # 进程结束后恢复系统默认电源策略
+            set_keep_awake(enable=False)
 
     def _find_latest_report(self) -> Optional[str]:
         """Finds the latest report.md in runs/."""

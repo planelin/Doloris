@@ -383,8 +383,12 @@ public class GuiInjector {
         }
 
         Console.Error.WriteLine("VTR_DEBUG: hwnd=" + hwnd + " targetSid=" + targetSid + " targetTitle=" + targetTitle);
-        AutomationElement candidate = matchedDoc != null ? matchedDoc : ((activeDocCount == 1) ? fallbackDoc : null);
-        Console.Error.WriteLine("VTR_DEBUG: matchedDoc=" + (matchedDoc != null) + " fallbackDoc=" + (fallbackDoc != null) + " activeDocCount=" + activeDocCount + " candidate=" + (candidate != null));
+        bool hasTargetRequirement = !String.IsNullOrWhiteSpace(cleanSid) || !String.IsNullOrWhiteSpace(targetTitle);
+        AutomationElement candidate = matchedDoc;
+        if (candidate == null && !hasTargetRequirement && activeDocCount == 1) {
+            candidate = fallbackDoc;
+        }
+        Console.Error.WriteLine("VTR_DEBUG: matchedDoc=" + (matchedDoc != null) + " hasTargetReq=" + hasTargetRequirement + " fallbackDoc=" + (fallbackDoc != null) + " activeDocCount=" + activeDocCount + " candidate=" + (candidate != null));
         if (candidate != null) {
             int editCountInAll = 0;
             foreach (AutomationElement n in all) {
@@ -546,9 +550,8 @@ public class GuiInjector {
                     ((InvokePattern)invoke).Invoke();
                     result = "{\"ok\":true,\"delivery_status\":\"SENT\",\"method\":\"verified_task_uia\"}";
                 } else {
+                    try { edit.SetFocus(); } catch {}
                     attempted = true;
-                    edit.SetFocus();
-                    Thread.Sleep(50);
                     keybd_event(VK_RETURN, 0, 0, UIntPtr.Zero);
                     Thread.Sleep(50);
                     keybd_event(VK_RETURN, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);

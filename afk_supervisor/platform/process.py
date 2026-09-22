@@ -20,7 +20,12 @@ from afk_supervisor.compat import get_sym
 
 
 def log(msg: str):
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+    try:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+    except (UnicodeEncodeError, OSError):
+        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+        safe = msg.encode(enc, errors="replace").decode(enc, errors="replace")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] {safe}", flush=True)
 
 
 def munged_cwd(cwd: Path) -> str:

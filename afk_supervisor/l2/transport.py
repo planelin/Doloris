@@ -24,9 +24,11 @@ from afk_supervisor.baseline import TaskBaseline
 from afk_supervisor.drivers.claude import get_relay_pool
 from afk_supervisor.l2.bridge import (
     AntigravityManager,
+    bind_agy_conversation_for_codex,
     check_agy_transcript_error,
     discover_antigravity_bridge,
     discover_antigravity_project_id,
+    get_agy_conversation_for_codex,
     get_skill_metadata,
     is_agy_working,
     parse_verdict_from_text,
@@ -280,6 +282,16 @@ def run_l2_antigravity(
         if cid and conv_holder is not None:
             conv_holder._agy_cid = cid
 
+    codex_sid = (agy_mgr.codex_session_id if agy_mgr and agy_mgr.codex_session_id != "unknown" else "") or getattr(conv_holder, "session_id", "") or (task_baseline.task_id if task_baseline else "")
+    if not cid and codex_sid and codex_sid != "unknown":
+        reg_cid = get_agy_conversation_for_codex(codex_sid, run_dir=run_dir)
+        if reg_cid:
+            cid = reg_cid
+            if conv_holder is not None:
+                conv_holder._agy_cid = cid
+            if agy_mgr is not None:
+                agy_mgr.cid = cid
+
     if pending.get("cid"):
         cid = pending["cid"]
     polling_pending = bool(pending and pending.get("request_id") == req_id and cid)
@@ -398,6 +410,8 @@ def run_l2_antigravity(
             if agy_mgr is not None:
                 agy_mgr.persist_cid(active_cid)
                 agy_mgr.port = port
+            if codex_sid and codex_sid != "unknown":
+                bind_agy_conversation_for_codex(codex_sid, active_cid, run_dir=run_dir)
 
         if active_cid:
             atomic_json(pending_file, {"request_id": req_id, "cid": active_cid, "initial_line_count": initial_line_count, "phase": "SENT"})

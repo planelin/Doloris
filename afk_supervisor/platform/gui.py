@@ -184,11 +184,10 @@ def inject_into_codex_gui(
             target_title = read_session_title(Path(rollout_path))
         if not target_title and target_sid:
             target_title = load_codex_thread_titles().get(target_sid, "")
-    target_hwnd = target_hwnd or find_best_codex_window()
-    if not target_hwnd and target_sid:
+    if target_sid:
         _navigate_target(target_sid)
-        time.sleep(0.5)
-        target_hwnd = find_best_codex_window()
+        time.sleep(0.8)
+    target_hwnd = target_hwnd or find_best_codex_window()
     if not target_hwnd:
         return DeliveryResult("NOT_SENT", "未找到桌面主窗口，未发送")
     tmp_path = Path(tempfile.gettempdir()) / f"afk_payload_{uuid.uuid4().hex}.txt"
@@ -208,7 +207,26 @@ def inject_into_codex_gui(
                 status = data.get("delivery_status")
                 if status not in {"NOT_SENT", "SENT", "UNCERTAIN"}:
                     status = "SENT" if data.get("ok") else "UNCERTAIN"
-                return DeliveryResult(status, data.get("error") or data.get("method", "gui"))
+                err_detail = data.get("error") or data.get("method", "gui")
+                # 若未送达且提示身份未对齐，尝试深链导航至该任务窗口后单次重试
+                if status == "NOT_SENT" and "could not be verified" in str(err_detail).lower() and target_sid:
+                    log(f"GUI NAV  尝试深链聚焦目标会话 codex://threads/{target_sid[:8]}...")
+                    _navigate_target(target_sid)
+                    time.sleep(1.0)
+                    new_hwnd = find_best_codex_window() or target_hwnd
+                    command[7] = str(new_hwnd)
+                    retry_res = subprocess.run(command, capture_output=True, text=True, errors="replace", timeout=18, cwd=str(ws), creationflags=no_win)
+                    for r_line in (retry_res.stdout or "").splitlines():
+                        try:
+                            r_data = json.loads(r_line)
+                            if isinstance(r_data, dict):
+                                r_status = r_data.get("delivery_status")
+                                if r_status not in {"NOT_SENT", "SENT", "UNCERTAIN"}:
+                                    r_status = "SENT" if r_data.get("ok") else "UNCERTAIN"
+                                return DeliveryResult(r_status, r_data.get("error") or r_data.get("method", "gui"))
+                        except ValueError:
+                            continue
+                return DeliveryResult(status, err_detail)
         return DeliveryResult("UNCERTAIN", "注入脚本未返回有效送达回执；观察目标事件，禁止盲目重发")
     except FileNotFoundError as error:
         return DeliveryResult("NOT_SENT", str(error))
