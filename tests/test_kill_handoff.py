@@ -6,12 +6,13 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import supervise
 from afk_supervisor import cli
 from afk_supervisor.platform import process
-from afk_supervisor.sessions.rollout import codex_handoff_state
+from afk_supervisor.sessions.rollout import codex_handoff_state, codex_session_state
 from tests.test_supervisor_loops import FakeClock
 
 
@@ -80,6 +81,44 @@ class TestHandoffEvents(KillFixture):
                 self.rollout.write_text(text, encoding="utf-8")
                 self.assertEqual(codex_handoff_state(self.rollout)["state"], "unknown")
         self.assertEqual(codex_handoff_state(self.root / "missing")["state"], "unknown")
+
+    def test_new_fork_metadata_is_a_safe_stopped_boundary(self):
+        self.write(
+            {
+                "type": "session_meta",
+                "payload": {
+                    "session_id": "01a0cc3a-2f4f-7791-be89-f5f59e005336",
+                    "forked_from_id": "01a0cc11-580a-7ca0-97bf-8d44b2ae978f",
+                },
+            },
+            {
+                "type": "event_msg",
+                "payload": {"type": "thread_settings_applied"},
+            },
+        )
+        snapshot = codex_session_state(self.rollout)
+        self.assertEqual(snapshot["state"], "safe")
+        self.assertEqual(snapshot["status"], "stopped")
+        self.assertTrue(snapshot["turn_ended"])
+        self.assertTrue(snapshot["never_started"])
+        self.assertIn("新建 fork", snapshot["reason"])
+
+    def test_incomplete_fork_metadata_remains_unknown(self):
+        cases = (
+            [{"type": "session_meta", "payload": {"session_id": "child"}}],
+            [{"type": "session_meta", "payload": {"forked_from_id": "parent"}}],
+            [{"type": "event_msg", "payload": {"type": "thread_settings_applied"}}],
+            [
+                {"type": "session_meta", "payload": {"session_id": "child", "forked_from_id": "parent"}},
+                {"type": "event_msg", "payload": {"type": "token_count"}},
+            ],
+        )
+        for events in cases:
+            with self.subTest(events=events):
+                self.write(*events)
+                snapshot = codex_handoff_state(self.rollout)
+                self.assertEqual(snapshot["state"], "unknown")
+                self.assertFalse(snapshot["never_started"])
 
     def test_aborted_turn_does_not_hide_unreturned_tool(self):
         self.write(self.event("function_call", call_id="a"), self.event("turn_aborted"))
@@ -259,3 +298,104 @@ class TestDiscoveryAndLock(KillFixture):
             finally:
                 msvcrt.locking(owner.fileno(), msvcrt.LK_UNLCK, 1)
         self.assertTrue(lock.exists())
+
+
+class FakeProc:
+    """最小 Popen 替身: 只回答 poll/wait, 绝不真实触碰系统进程。"""
+
+    def __init__(self, pid=4321, reaped=False, dies_on_wait=False):
+        self.pid = pid
+        self._alive = not reaped
+        self.dies_on_wait = dies_on_wait
+        self.waits = []
+
+    def poll(self):
+        return None if self._alive else 0
+
+    def wait(self, timeout=None):
+        self.waits.append(timeout)
+        if self._alive and not self.dies_on_wait:
+            raise subprocess.TimeoutExpired("worker", timeout)
+        self._alive = False
+        return 0
+
+
+class ProcReapedByForcedKill(FakeProc):
+    """优雅中断超时, 只有 taskkill 之后的回查才真正回收: 强制终止的正常路径。"""
+
+    def wait(self, timeout=None):
+        self.waits.append(timeout)
+        if len(self.waits) < 2:
+            raise subprocess.TimeoutExpired("worker", timeout)
+        self._alive = False
+        return 0
+
+
+class KillTruthfulnessRegressions(KillFixture):
+    """击杀必须回报真实结果: taskkill 的退出码说明不了进程已死。"""
+
+    def codex_driver(self):
+        from afk_supervisor.drivers.codex import CodexDriver
+        run_dir = self.root / "run"
+        run_dir.mkdir(exist_ok=True)
+        return CodexDriver(self.root, run_dir)
+
+    def driver(self, proc):
+        return SimpleNamespace(
+            proc=proc, jsonl=self.rollout,
+            interrupt=Mock(return_value=True), wait_exit=Mock(return_value=True),
+            kill_tree=Mock(return_value=True),
+        )
+
+    def test_safe_kill_marks_failure_while_process_survives(self):
+        driver = self.driver(FakeProc())
+        self.assertEqual(process.safe_kill(driver), "boundary_failed")
+        self.assertTrue(driver.kill_tree.called)
+
+    def test_safe_kill_reports_plain_method_once_process_is_gone(self):
+        driver = self.driver(FakeProc(reaped=True))
+        self.assertEqual(process.safe_kill(driver), "boundary")
+
+    def test_driver_alive_check_never_trusts_a_missing_handle(self):
+        self.assertFalse(process.driver_process_alive(SimpleNamespace(proc=None)))
+        self.assertTrue(process.driver_process_alive(SimpleNamespace(proc=FakeProc())))
+        self.assertFalse(process.driver_process_alive(SimpleNamespace(proc=FakeProc(reaped=True))))
+        broken = SimpleNamespace(proc=SimpleNamespace(poll=Mock(side_effect=OSError("gone"))))
+        self.assertFalse(process.driver_process_alive(broken))
+
+    def test_codex_kill_tree_reports_access_denied_instead_of_forcing_a_receipt(self):
+        driver = self.codex_driver()
+        proc = FakeProc()
+        driver.proc = proc
+        driver.interrupt = Mock(return_value=False)
+        shutdown = subprocess.CompletedProcess(
+            ["taskkill"], 1, stdout="", stderr="ERROR: The process could not be terminated. Access is denied.")
+        with patch("afk_supervisor.drivers.codex.subprocess.run", return_value=shutdown), \
+             patch("afk_supervisor.drivers.codex.log") as logged:
+            self.assertFalse(driver.kill_tree(), "进程仍在时不得回报已终止")
+        messages = " ".join(str(call.args[0]) for call in logged.call_args_list)
+        self.assertIn("未能终止", messages)
+        self.assertIn("权限不足", messages)
+        self.assertNotIn("已强制终止", messages)
+
+    def test_codex_kill_tree_confirms_receipt_only_after_process_dies(self):
+        driver = self.codex_driver()
+        driver.proc = ProcReapedByForcedKill()
+        driver.interrupt = Mock(return_value=False)
+        with patch("afk_supervisor.drivers.codex.subprocess.run",
+                   return_value=subprocess.CompletedProcess(["taskkill"], 0, stdout="", stderr="")), \
+             patch("afk_supervisor.drivers.codex.log") as logged:
+            self.assertTrue(driver.kill_tree())
+        messages = " ".join(str(call.args[0]) for call in logged.call_args_list)
+        self.assertIn("已强制终止", messages)
+
+    def test_codex_kill_tree_closes_handles_even_when_kill_fails(self):
+        driver = self.codex_driver()
+        handle = Mock()
+        driver._open_handles = [handle]
+        driver.proc = FakeProc()
+        driver.interrupt = Mock(return_value=False)
+        with patch("afk_supervisor.drivers.codex.subprocess.run",
+                   return_value=subprocess.CompletedProcess(["taskkill"], 1, stdout="", stderr="denied")):
+            self.assertFalse(driver.kill_tree())
+        handle.close.assert_called_once()

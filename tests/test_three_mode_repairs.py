@@ -121,6 +121,34 @@ class ThreeModeRepairs(LoopFixture):
         self.assertEqual(self.state.dispatch_status, "SENT")
         self.assertFalse(any(e == "GUI_INJECT_ACK" for e, _ in self.events))
 
+    def test_injection_latency_does_not_consume_confirmation_window(self):
+        """注入脚本自身耗时(最长约18s)不得挤占事件确认窗口，否则慢速注入必然误判失败。"""
+        sent, appended = [], []
+        def send(text, **kwargs):
+            sent.append(text)
+            self.clock.sleep(25)                       # 模拟 UI Automation 注入耗时
+            return DeliveryResult("SENT", "simulated slow UI")
+        start = self.clock.now
+        original_sleep = self.clock.sleep
+        def scheduled_sleep(seconds):
+            original_sleep(seconds)
+            if sent and not appended and self.clock.now >= start + 36:
+                self.append(event("user_message", message=sent[0]) + event("task_started") +
+                            event("task_complete", last_agent_message="Updated result"))
+                appended.append(True)
+        self.clock.sleep = scheduled_sleep
+        self.addCleanup(lambda: setattr(self.clock, "sleep", original_sleep))
+        reviews = []
+        def dispatch(*args, **kwargs):
+            reviews.append(kwargs["mode"])
+            return self.instruction(*args, **kwargs) if len(reviews) == 1 else self.pass_dispatch(*args, **kwargs)
+
+        rc, inject = self.run_observed_gui(dispatch=dispatch, inject_fn=send)
+
+        self.assertEqual(rc, 0, "慢速注入后仍须等待新事件确认，不得按发送前计时提前判失败")
+        self.assertEqual(inject.call_count, 1)
+        self.assertEqual(sum(e == "GUI_INJECT_ACK" for e, _ in self.events), 1)
+
     def test_matching_historical_command_cannot_ack_new_send(self):
         self.rollout.write_text(event("user_message", message="修复交付物并运行测试") +
                                 event("task_complete", last_agent_message="Neutral report"), encoding="utf-8")
@@ -149,6 +177,21 @@ class ThreeModeRepairs(LoopFixture):
         self.assertEqual(inject.call_count, 3)
         self.assertEqual(self.state.dispatch_status, "NOT_SENT")
         self.assertEqual(self.state.dispatch_attempts, 3)
+
+    def test_blocked_delivery_reason_reaches_heartbeat_and_terminal_detail(self):
+        """身份探针的环境性失败必须落在心跳与终局结论里，否则用户只会看到"接管后无反应"。"""
+        reason = "GUI 身份探针判定不可送达 [UIA_ACCESS_DENIED]: 目标桌面端以更高权限运行"
+        rc, inject = self.run_observed_gui(inject_fn=lambda *a, **kw: DeliveryResult("NOT_SENT", reason))
+
+        self.assertEqual(rc, 1)
+        deliveries = [detail for event_name, detail in self.events if event_name == "GUI_DELIVERY"]
+        self.assertTrue(deliveries, "每次注入尝试都必须留下回执事件")
+        self.assertTrue(all(item["detail"] == reason for item in deliveries))
+        heartbeats = [detail for event_name, detail in self.events if event_name == "GUI_WAIT"]
+        self.assertTrue(heartbeats, "长等待期间必须持续输出可观测心跳")
+        self.assertTrue(all(item["delivery_status"] == "NOT_SENT" for item in heartbeats))
+        self.assertTrue(all(item["delivery_detail"] == reason for item in heartbeats))
+        self.assertIn("UIA_ACCESS_DENIED", self.state.detail, "终局结论必须带上基础设施失败原因")
 
     def test_not_sent_then_accepted_executes_only_once(self):
         attempts, reviews = [], []

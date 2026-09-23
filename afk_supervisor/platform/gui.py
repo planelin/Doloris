@@ -13,14 +13,43 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 from afk_supervisor.platform.process import log
-from afk_supervisor.sessions.rollout import is_codex_working, codex_handoff_state
+from afk_supervisor.sessions.rollout import codex_handoff_state
+
+# 同一会话的标题候选分隔符 (Unit Separator)，与 gui_inject.ps1 中 SplitTitles 一致。
+GUI_TITLE_SEP = "\x1f"
+
+# 身份探针 (gui_inject.ps1 -ProbeOnly) 的稳定机读码 -> 处置建议。
+# 这些理由都是环境性失败 (权限或可访问性树不可用)：无论重试多少次都不会成功，
+# 因此必须立刻给出可读结论，而不是把有界重试预算耗在盲重试上。
+GUI_PROBE_HARD_BLOCKERS = {
+    "UIA_ACCESS_DENIED": "目标桌面端以更高权限运行 (Win32 错误 5=拒绝访问)；请以相同或更高权限启动本守护进程，或让桌面端以普通权限重启",
+    "UIA_TREE_UNAVAILABLE": "桌面端渲染进程未暴露 UI Automation 可访问性树；请确认桌面端窗口已正常渲染后重试",
+    "PROBE_ERROR": "身份探针内部错误",
+    "PROBE_TIMEOUT": "身份探针超时",
+    "SCRIPT_MISSING": "GUI 注入脚本未找到",
+}
 
 
 def get_workspace_root() -> Path:
     return Path(__file__).resolve().parent.parent.parent
+
+
+def find_gui_inject_script() -> Optional[Path]:
+    """定位 gui_inject.ps1: 优先仓库/工作区根 (源码态与显式覆盖)，其次包内 (安装态)。"""
+    candidates = (
+        get_workspace_root() / "gui_inject.ps1",
+        Path(__file__).resolve().parent / "gui_inject.ps1",
+    )
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            continue
+    return None
 
 
 def find_best_codex_window() -> int:
@@ -166,6 +195,118 @@ def _navigate_target(target_sid):
         return False
 
 
+def resolve_target_titles(target_sid: str, target_title: str = "", rollout_path=None) -> str:
+    """把同一 SID 下所有可用标题候选拼成一个串交给 UI 身份校验。
+
+    标题只是同一机读 SID 下的辅助判据：桌面端侧栏显示名 (state_5.sqlite.name)、
+    同表短标题 (title)、session_index.jsonl 旧索引名与 rollout 首条用户输入经常
+    互不相同 (例如 fork 线程侧栏名带 "[Fork] " 前缀)。任何单一来源都会让分步
+    身份校验退化成必然失败，因此这里做并集后逐个精确比较。
+    """
+    from afk_supervisor.sessions.discovery import (
+        clean_session_id,
+        load_codex_thread_title_candidates,
+        read_session_title,
+    )
+
+    candidates = []
+
+    def add(value) -> None:
+        text = (value or "").strip()
+        if text and text not in candidates:
+            candidates.append(text)
+
+    add(target_title)
+    sid = clean_session_id(target_sid) if target_sid else ""
+    if sid:
+        for item in load_codex_thread_title_candidates(sid):
+            add(item)
+    if rollout_path and Path(rollout_path).exists():
+        add(read_session_title(Path(rollout_path)))
+    return GUI_TITLE_SEP.join(candidates)
+
+
+def parse_codex_gui_probe(stdout: str) -> dict:
+    """从探针 stdout 中取出最后一条 JSON 回执 (优先带 reason 的那条)。"""
+    found = {}
+    for line in (stdout or "").splitlines():
+        try:
+            data = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(data, dict):
+            found = data
+            if data.get("reason"):
+                break
+    return found
+
+
+def decode_powershell_output(raw) -> str:
+    """解码 PowerShell 回执字节流，避免中文结论变成乱码。
+
+    gui_inject.ps1 已尽量把控制台输出统一成 UTF-8，但被重定向 stdout 的
+    Windows PowerShell 5.1 仍可能按系统 OEM 代码页 (本机 CP936) 写字节。
+    这里两种编码都试一遍，取乱码更少的那份：机读字段都是 ASCII，人工结论
+    才需要中文，所以宁可退化成可读的旧编码，也不要把乱码塞进心跳与终局。
+    """
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    try:
+        utf8_text = raw.decode("utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        return str(raw)
+    if "\ufffd" not in utf8_text:
+        return utf8_text
+    try:
+        legacy_text = raw.decode("cp936", errors="replace")
+    except (AttributeError, LookupError, ValueError):
+        return utf8_text
+    return legacy_text if legacy_text.count("\ufffd") < utf8_text.count("\ufffd") else utf8_text
+
+
+def _probe_codex_gui_once(target_hwnd: int, target_sid: str, target_title: str, timeout_ms: int) -> dict:
+    """调用 gui_inject.ps1 -ProbeOnly: 只读身份自检，不敲键、不点按、不写剪贴板。"""
+    ps_script = find_gui_inject_script()
+    if ps_script is None:
+        return {"ok": False, "reason": "SCRIPT_MISSING", "error": "GUI注入脚本未找到"}
+    ws = get_workspace_root()
+    command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps_script),
+               "-ProbeOnly", "-TargetHwnd", str(int(target_hwnd or 0)),
+               "-TargetSid", target_sid or "", "-TargetTitle", target_title or "",
+               "-TimeoutMs", str(int(timeout_ms))]
+    no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    result = subprocess.run(
+        command, capture_output=True,
+        timeout=max(8.0, int(timeout_ms) / 1000.0 + 8.0), cwd=str(ws), creationflags=no_win,
+    )
+    return parse_codex_gui_probe(decode_powershell_output(result.stdout))
+
+
+def probe_codex_gui(target_hwnd: int = 0, target_sid: str = "", target_title: str = "",
+                    timeout_ms: int = 12000) -> dict:
+    """运行一次只读身份探针；任何异常都折叠成可判定的 reason，绝不向上抛。"""
+    try:
+        return _probe_codex_gui_once(target_hwnd, target_sid, target_title, timeout_ms) or {}
+    except Exception as error:
+        return {"ok": False, "reason": "PROBE_ERROR", "error": f"{type(error).__name__}: {error}"}
+
+
+def gui_probe_blocker(probe: dict) -> str:
+    """把探针结果翻译成阻断结论；无法识别的结果一律放行，交由注入脚本本身把关。"""
+    if not isinstance(probe, dict):
+        return ""
+    reason = str(probe.get("reason") or "").strip().upper()
+    hint = GUI_PROBE_HARD_BLOCKERS.get(reason)
+    if hint is None:
+        return ""
+    detail = str(probe.get("error") or "").strip()
+    if hint not in detail:
+        detail = f"{detail} {hint}".strip()
+    return f"GUI 身份探针判定不可送达 [{reason}]: {detail or reason}"
+
+
 def inject_into_codex_gui(
     text: str, target_hwnd: int = 0, target_sid: str = "", target_title: str = "",
     rollout_path: Optional[Path] = None,
@@ -175,9 +316,9 @@ def inject_into_codex_gui(
     from afk_supervisor.sessions.discovery import clean_session_id, load_codex_thread_titles, read_session_title
     import tempfile
     ws = get_workspace_root()
-    ps_script = ws / "gui_inject.ps1"
-    if not ps_script.exists():
-        return DeliveryResult("NOT_SENT", f"GUI注入脚本未找到: {ps_script}")
+    ps_script = find_gui_inject_script()
+    if ps_script is None:
+        return DeliveryResult("NOT_SENT", f"GUI注入脚本未找到: {ws / 'gui_inject.ps1'}")
     target_sid = clean_session_id(target_sid) if target_sid else ""
     if not target_title:
         if rollout_path and Path(rollout_path).exists():
@@ -185,11 +326,20 @@ def inject_into_codex_gui(
         if not target_title and target_sid:
             target_title = load_codex_thread_titles().get(target_sid, "")
     if target_sid:
+        target_title = resolve_target_titles(target_sid, target_title, rollout_path)
+    if target_sid:
         _navigate_target(target_sid)
         time.sleep(0.8)
     target_hwnd = target_hwnd or find_best_codex_window()
     if not target_hwnd:
         return DeliveryResult("NOT_SENT", "未找到桌面主窗口，未发送")
+    # 注入前先做只读身份探针：权限/可访问性树这类环境性失败在这里就被判死，
+    # 不再浪费有界重试预算；探针无法识别时放行，由注入脚本自身继续把关。
+    probe_block = gui_probe_blocker(probe_codex_gui(
+        target_hwnd=target_hwnd, target_sid=target_sid, target_title=target_title))
+    if probe_block:
+        log(f"GUI PROBE {probe_block}")
+        return DeliveryResult("NOT_SENT", probe_block)
     tmp_path = Path(tempfile.gettempdir()) / f"afk_payload_{uuid.uuid4().hex}.txt"
     try:
         tmp_path.write_text(text, encoding="utf-8")
@@ -197,8 +347,8 @@ def inject_into_codex_gui(
                    "-PayloadFile", str(tmp_path), "-TargetHwnd", str(target_hwnd),
                    "-TargetSid", target_sid, "-TargetTitle", target_title, "-TimeoutMs", "10000"]
         no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        result = subprocess.run(command, capture_output=True, text=True, errors="replace", timeout=18, cwd=str(ws), creationflags=no_win)
-        for line in (result.stdout or "").splitlines():
+        result = subprocess.run(command, capture_output=True, timeout=18, cwd=str(ws), creationflags=no_win)
+        for line in decode_powershell_output(result.stdout).splitlines():
             try:
                 data = json.loads(line)
             except ValueError:
@@ -214,9 +364,9 @@ def inject_into_codex_gui(
                     _navigate_target(target_sid)
                     time.sleep(1.0)
                     new_hwnd = find_best_codex_window() or target_hwnd
-                    command[7] = str(new_hwnd)
-                    retry_res = subprocess.run(command, capture_output=True, text=True, errors="replace", timeout=18, cwd=str(ws), creationflags=no_win)
-                    for r_line in (retry_res.stdout or "").splitlines():
+                    command[9] = str(new_hwnd)
+                    retry_res = subprocess.run(command, capture_output=True, timeout=18, cwd=str(ws), creationflags=no_win)
+                    for r_line in decode_powershell_output(retry_res.stdout).splitlines():
                         try:
                             r_data = json.loads(r_line)
                             if isinstance(r_data, dict):
@@ -266,17 +416,19 @@ def pause_codex_gui_session(rollout_path=None, max_wait: Optional[float] = 30.0,
         if not target_title and target_sid:
             target_title = load_codex_thread_titles().get(target_sid, "")
     if target_sid:
+        target_title = resolve_target_titles(target_sid, target_title, p_roll)
+    if target_sid:
         _navigate_target(target_sid)
     hwnd = find_best_codex_window()
-    ps_script = get_workspace_root() / "gui_inject.ps1"
-    if hwnd and ps_script.is_file():
+    ps_script = find_gui_inject_script()
+    if hwnd and ps_script is not None:
         command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps_script),
                    "-PauseOnly", "-TargetHwnd", str(hwnd), "-TargetSid", target_sid,
                    "-TargetTitle", target_title, "-TimeoutMs", "6000"]
         try:
             no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            response = subprocess.run(command, capture_output=True, text=True, errors="replace", timeout=10, cwd=str(get_workspace_root()), creationflags=no_win)
-            log(f"PAUSE 目标 {target_sid[:8]} 暂停回执: {response.stdout.strip()[:160]}")
+            response = subprocess.run(command, capture_output=True, timeout=10, cwd=str(get_workspace_root()), creationflags=no_win)
+            log(f"PAUSE 目标 {target_sid[:8]} 暂停回执: {decode_powershell_output(response.stdout).strip()[:160]}")
         except Exception as error:
             log(f"PAUSE 暂停回执不确定，继续等待轨迹确认: {error}")
     else:
@@ -322,4 +474,4 @@ def ensure_codex_window_restored() -> int:
 
 
 # 兼容导出
-from afk_supervisor.drivers.dummy import DummyDriver
+from afk_supervisor.drivers.dummy import DummyDriver  # noqa: E402,F401

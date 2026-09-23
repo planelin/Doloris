@@ -3,7 +3,6 @@
 import json
 import os
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -134,7 +133,8 @@ class LoopFixture(DebugFixture):
             rollout = self.root / "rollout.jsonl"
             rollout.write_text("{}\n", encoding="utf-8")
         if working is None:
-            working = lambda path: (False, "idle", "Neutral report")
+            def working(path):
+                return False, "idle", "Neutral report"
         with patch("supervise.l2_dispatch", side_effect=dispatch or self.pass_dispatch), \
              patch("supervise.ensure_codex_window_restored"), \
              patch("supervise.inject_into_codex_gui", side_effect=inject_fn) as inject, \
@@ -152,6 +152,45 @@ class LoopFixture(DebugFixture):
         return rc, inject
 
 class SupervisorLoopRegressions(LoopFixture):
+    class AliveDriver(FakeDriver):
+        """永不退出的 Worker: 用来证明击杀失败时上层不会假装它已死。"""
+
+        def __init__(self, run, age=9999.0):
+            super().__init__(run)
+            self.age = age
+            self.kill_tree = Mock()
+
+        def _start(self, mode, prompt):
+            super()._start(mode, prompt)
+            self.proc = SimpleNamespace(pid=4321, poll=lambda: None)
+
+        def heartbeat_age(self, launched_at):
+            return self.age
+
+    def test_hang_kill_failure_stops_instead_of_resuming_beside_a_live_writer(self):
+        driver = self.AliveDriver(self.run)
+        with patch("afk_supervisor.engine.safe_kill", return_value="hard_failed"):
+            rc, driver = self.run_headless(driver=driver)
+
+        self.assertEqual(rc, 1)
+        failures = [detail for event, detail in self.events if event == "KILL_FAILED"]
+        self.assertTrue(failures, "击杀未成功必须留下 KILL_FAILED 事件")
+        self.assertEqual(failures[0]["method"], "hard_failed")
+        self.assertEqual(self.state.state, "FAILED")
+        self.assertIn("旧写者仍存活", self.state.detail)
+        self.assertNotIn("RESUMED_WITH_DECISION", [event for event, _ in self.events])
+
+    def test_chaos_kill_missed_is_not_counted_as_a_successful_kill(self):
+        driver = self.AliveDriver(self.run, age=1.0)
+        with patch("afk_supervisor.engine.safe_kill", return_value="hard_failed"):
+            rc, _driver = self.run_headless(driver=driver, chaos=("kill", 0, 60))
+
+        self.assertEqual(rc, 1)
+        missed = [detail for event, detail in self.events if event == "CHAOS_KILL_MISSED"]
+        self.assertTrue(missed, "进程仍在时必须记录 CHAOS_KILL_MISSED")
+        self.assertEqual(missed[0]["method"], "hard_failed")
+        self.assertNotIn("EXIT_OK", [event for event, _ in self.events])
+
     def test_cli_pauses_active_parent_then_forks_continue_through_real_loop(self):
         self.check_cli_pause_then_fork(0)
 
@@ -427,6 +466,19 @@ class SupervisorLoopRegressions(LoopFixture):
         self.assertEqual(self.state.reviews, 1)
         self.assertEqual(self.state.interactions, 0)
         self.lock.release.assert_called_once()
+
+    def test_gui_loop_emits_heartbeat_while_worker_is_busy(self):
+        """GUI 模式等待期间必须持续输出心跳，否则用户只会看到"接管后无反应"。"""
+        def busy(path):
+            return True, "working", ""
+
+        rc, _inject = self.run_gui(working=busy)
+
+        self.assertEqual(rc, 1)  # 总时长上限耗尽 → TIMEOUT
+        heartbeats = [details for event, details in self.events if event == "GUI_WAIT"]
+        self.assertTrue(heartbeats, "守护循环必须在长等待期间输出心跳")
+        self.assertTrue(all(item["phase"] == "worker_active" for item in heartbeats))
+        self.assertTrue(all(item["elapsed_sec"] >= 30 for item in heartbeats))
 
     def test_explicit_acceptance_context_survives_pre_exit_collection(self):
         task_dir = self.root / "task"

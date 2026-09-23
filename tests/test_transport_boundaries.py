@@ -7,6 +7,7 @@ import subprocess
 import sys
 import unittest
 from contextlib import ExitStack
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -226,6 +227,173 @@ class TransportRegressions(DebugFixture):
 
         self.assertEqual(result.verdict, "NO-VERDICT")
         self.assertFalse((self.run / "agy_pending_request.json").exists(), "新建会话失败后必须清理 pending 文件")
+
+
+class GuiDeliveryRegressions(DebugFixture):
+    """GUI 送达重试只允许改写目标窗口参数，且注入脚本必须在安装态可定位。"""
+
+    def setUp(self):
+        super().setUp()
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        self.stack.enter_context(patch("afk_supervisor.platform.gui._navigate_target"))
+        self.stack.enter_context(patch("afk_supervisor.platform.gui.time.sleep"))
+        self.probe = self.stack.enter_context(patch(
+            "afk_supervisor.platform.gui.probe_codex_gui",
+            return_value={"ok": True, "reason": "IDENTITY_OK", "identity_found": True}))
+
+    def test_retry_rewrites_only_target_hwnd(self):
+        from afk_supervisor.platform.gui import inject_into_codex_gui
+        self.stack.enter_context(patch("afk_supervisor.platform.gui.find_best_codex_window", return_value=4242))
+        not_sent = SimpleNamespace(returncode=0, stderr="", stdout=json.dumps(
+            {"ok": False, "delivery_status": "NOT_SENT", "error": "Selected task identity could not be verified; no input sent"}))
+        sent = SimpleNamespace(returncode=0, stderr="", stdout=json.dumps(
+            {"ok": True, "delivery_status": "SENT", "method": "verified_task_enter"}))
+        seen = []
+
+        def fake_run(command, **kwargs):
+            seen.append(list(command))
+            return not_sent if len(seen) == 1 else sent
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = inject_into_codex_gui(
+                "payload text", target_hwnd=1111,
+                target_sid="01a0c793-01bc-7c92-a3b6-0e735df4da1d", target_title="Test Title")
+
+        self.assertEqual(result.status, "SENT")
+        self.assertEqual(len(seen), 2, "身份未对齐时必须且只能重试一次")
+        first, retry = seen
+        hwnd_index = first.index("-TargetHwnd") + 1
+        self.assertEqual(first[hwnd_index], "1111")
+        self.assertEqual(retry[hwnd_index], "4242")
+        self.assertEqual(
+            [(index, a, b) for index, (a, b) in enumerate(zip(first, retry)) if a != b],
+            [(hwnd_index, "1111", "4242")],
+            "重试只能改写 -TargetHwnd 的值，不得错位覆盖 payload 或其他参数",
+        )
+        self.assertTrue(retry[retry.index("-PayloadFile") + 1].endswith(".txt"))
+        self.assertEqual(retry[retry.index("-TimeoutMs") + 1], "10000")
+
+    def test_packaged_script_is_found_without_workspace_root_copy(self):
+        from afk_supervisor.platform import gui
+        with patch.object(gui, "get_workspace_root", return_value=self.root):
+            found = gui.find_gui_inject_script()
+        self.assertEqual(found, Path(gui.__file__).resolve().parent / "gui_inject.ps1")
+        self.assertTrue(found.is_file(), "安装态必须能从包内定位注入脚本")
+
+    def test_missing_script_reports_not_sent_without_spawning(self):
+        from afk_supervisor.platform import gui
+        with patch.object(gui, "find_gui_inject_script", return_value=None), \
+             patch("subprocess.run") as run:
+            result = gui.inject_into_codex_gui(
+                "payload text", target_hwnd=1111,
+                target_sid="01a0c793-01bc-7c92-a3b6-0e735df4da1d", target_title="Test Title")
+        self.assertEqual(result.status, "NOT_SENT")
+        run.assert_not_called()
+
+    def test_identity_probe_runs_before_injection(self):
+        from afk_supervisor.platform.gui import inject_into_codex_gui
+        sent = SimpleNamespace(returncode=0, stderr="", stdout=json.dumps(
+            {"ok": True, "delivery_status": "SENT", "method": "verified_task_enter"}))
+        with patch("subprocess.run", return_value=sent) as run:
+            result = inject_into_codex_gui(
+                "payload text", target_hwnd=1111,
+                target_sid="01a0c793-01bc-7c92-a3b6-0e735df4da1d", target_title="Test Title")
+        self.assertEqual(result.status, "SENT")
+        self.assertEqual(self.probe.call_count, 1, "每次注入前都必须先做只读身份探针")
+        self.assertEqual(self.probe.call_args.kwargs.get("target_hwnd"), 1111)
+        self.assertEqual(run.call_count, 1, "探针结论可用时注入脚本只跑一次")
+
+    def test_permission_denied_probe_blocks_send_with_readable_reason(self):
+        from afk_supervisor.platform.gui import inject_into_codex_gui
+        self.probe.return_value = {
+            "ok": False, "reason": "UIA_ACCESS_DENIED", "proc_open_error": 5,
+            "error": "无法读取桌面端进程(错误 5=拒绝访问)",
+        }
+        with patch("subprocess.run") as run:
+            result = inject_into_codex_gui(
+                "payload text", target_hwnd=1111,
+                target_sid="01a0c793-01bc-7c92-a3b6-0e735df4da1d", target_title="Test Title")
+        self.assertEqual(result.status, "NOT_SENT", "权限不足属于环境性失败，不得伪造在途指令")
+        self.assertIn("UIA_ACCESS_DENIED", result.detail)
+        self.assertIn("更高权限", result.detail, "回执必须给出可执行的处置建议")
+        run.assert_not_called()
+
+    def test_not_focused_probe_keeps_navigation_retry_path(self):
+        from afk_supervisor.platform.gui import inject_into_codex_gui
+        self.probe.return_value = {"ok": False, "reason": "TARGET_NOT_FOCUSED"}
+        not_sent = SimpleNamespace(returncode=0, stderr="", stdout=json.dumps(
+            {"ok": False, "delivery_status": "NOT_SENT", "error": "Selected task identity could not be verified; no input sent"}))
+        sent = SimpleNamespace(returncode=0, stderr="", stdout=json.dumps(
+            {"ok": True, "delivery_status": "SENT", "method": "verified_task_enter"}))
+        with patch("subprocess.run", side_effect=[not_sent, sent]):
+            result = inject_into_codex_gui(
+                "payload text", target_hwnd=1111,
+                target_sid="01a0c793-01bc-7c92-a3b6-0e735df4da1d", target_title="Test Title")
+        self.assertEqual(result.status, "SENT", "未聚焦属于可纠正状态，必须保留导航重试")
+
+
+class GuiProbeRegressions(DebugFixture):
+    """只读身份探针：命令形状、机读码解析与阻断策略。"""
+
+    def test_probe_command_is_read_only(self):
+        from afk_supervisor.platform import gui
+        payload = json.dumps({"ok": True, "identity_found": True, "reason": "IDENTITY_OK"})
+        with patch.object(gui, "get_workspace_root", return_value=self.root), \
+             patch("subprocess.run", return_value=SimpleNamespace(
+                 returncode=0, stderr="", stdout=payload)) as run:
+            probe = gui._probe_codex_gui_once(4242, "01a0c793-01bc-7c92-a3b6-0e735df4da1d", "Test Title", 12000)
+        self.assertEqual(probe.get("reason"), "IDENTITY_OK")
+        command = run.call_args.args[0]
+        self.assertIn("-ProbeOnly", command)
+        self.assertNotIn("-PayloadFile", command, "探针不得携带指令载荷，必须是只读自检")
+        self.assertEqual(command[command.index("-TargetHwnd") + 1], "4242")
+
+    def test_probe_stdout_noise_is_tolerated(self):
+        from afk_supervisor.platform.gui import parse_codex_gui_probe
+        stdout = "WARNING: legacy banner\n" + json.dumps({"ok": True, "reason": "IDENTITY_OK"}) + "\n"
+        self.assertEqual(parse_codex_gui_probe(stdout).get("reason"), "IDENTITY_OK")
+        self.assertEqual(parse_codex_gui_probe(""), {})
+        self.assertEqual(parse_codex_gui_probe("not json at all"), {})
+
+    def test_probe_blocker_only_stops_on_environmental_failures(self):
+        from afk_supervisor.platform.gui import gui_probe_blocker
+        self.assertEqual(gui_probe_blocker({}), "", "缺少 reason 的旧脚本回执必须放行")
+        self.assertEqual(gui_probe_blocker({"reason": "IDENTITY_OK"}), "")
+        self.assertEqual(gui_probe_blocker({"reason": "TARGET_NOT_FOCUSED"}), "")
+        denied = gui_probe_blocker({"reason": "UIA_ACCESS_DENIED", "proc_open_error": 5})
+        self.assertIn("UIA_ACCESS_DENIED", denied)
+        self.assertIn("更高权限", denied)
+        self.assertIn("UIA_TREE_UNAVAILABLE", gui_probe_blocker({"reason": "UIA_TREE_UNAVAILABLE"}))
+
+    def test_probe_wrapper_folds_exceptions_into_probable_reason(self):
+        from afk_supervisor.platform import gui
+        with patch.object(gui, "_probe_codex_gui_once", side_effect=OSError("powershell missing")):
+            probe = gui.probe_codex_gui(target_hwnd=1, target_sid="s", target_title="t")
+        self.assertEqual(probe.get("reason"), "PROBE_ERROR")
+        self.assertIn("powershell missing", probe.get("error", ""))
+
+    def test_probe_receipt_is_decoded_from_bytes_under_any_console_codepage(self):
+        """实测故障: PS 5.1 被重定向时按控制台代码页写字节, 中文结论整段变成乱码。"""
+        from afk_supervisor.platform import gui
+        detail = "无法获取进程句柄(错误 5=拒绝访问)"
+        payload = json.dumps({"ok": False, "identity_found": False, "reason": "UIA_ACCESS_DENIED",
+                              "proc_open_error": 5, "error": detail}, ensure_ascii=False)
+        for codec in ("utf-8", "cp936"):
+            with self.subTest(codec=codec):
+                with patch.object(gui, "get_workspace_root", return_value=self.root), \
+                     patch("subprocess.run", return_value=SimpleNamespace(
+                         returncode=0, stderr=b"", stdout=payload.encode(codec))):
+                    probe = gui._probe_codex_gui_once(4242, "01a0c793-01bc-7c92-a3b6-0e735df4da1d", "Test Title", 12000)
+                self.assertEqual(probe.get("reason"), "UIA_ACCESS_DENIED")
+                self.assertEqual(probe.get("error"), detail, f"{codec} 回执不得变成乱码")
+                self.assertNotIn("\ufffd", probe.get("error", ""))
+
+    def test_decode_helper_tolerates_str_and_empty_stdout(self):
+        from afk_supervisor.platform.gui import decode_powershell_output
+        self.assertEqual(decode_powershell_output(None), "")
+        self.assertEqual(decode_powershell_output("plain"), "plain", "已解码文本必须原样透传")
+        self.assertEqual(decode_powershell_output("身份".encode("utf-8")), "身份")
 
 
 class FunctionalEvidenceRegressions(DebugFixture):

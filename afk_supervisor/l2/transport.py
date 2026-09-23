@@ -15,10 +15,10 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from afk_supervisor.storage import atomic_json
-from afk_supervisor.models import AgyResponseResult, DeadlineBudget, EvidencePacket, L2Result
+from afk_supervisor.models import DeadlineBudget, EvidencePacket, L2Result
 from afk_supervisor.platform.process import log
 from afk_supervisor.baseline import TaskBaseline
 from afk_supervisor.drivers.claude import get_relay_pool
@@ -74,8 +74,8 @@ def clean_l2_decision_text(raw_text: str) -> str:
         lines.pop()
 
     lines = [
-        l for l in lines
-        if not re.search(r'\[REQUEST_ID:[^\]]+\]', l, re.IGNORECASE) and not re.search(r'【本次请求ID:[^】]+】', l)
+        line for line in lines
+        if not re.search(r'\[REQUEST_ID:[^\]]+\]', line, re.IGNORECASE) and not re.search(r'【本次请求ID:[^】]+】', line)
     ]
 
     instruction_markers = [
@@ -106,7 +106,7 @@ def clean_l2_decision_text(raw_text: str) -> str:
     else:
         cleaned = "\n".join(lines).strip()
 
-    cleaned_lines = [l for l in cleaned.splitlines() if not l.strip().startswith("```")]
+    cleaned_lines = [line for line in cleaned.splitlines() if not line.strip().startswith("```")]
     res = "\n".join(cleaned_lines).strip()
     return (res + "\n") if res else ""
 

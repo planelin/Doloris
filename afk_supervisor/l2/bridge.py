@@ -17,7 +17,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 from afk_supervisor.models import AgyResponseResult
 from afk_supervisor.platform.process import log
@@ -259,8 +259,8 @@ def read_agy_latest_response(cid: str, min_line_idx: int = 0, request_id: Option
         has_req_input = True
         if request_id:
             has_req_input = any(
-                request_id in l for l in new_lines
-                if ('"USER_INPUT"' in l or '"USER_EXPLICIT"' in l)
+                request_id in line for line in new_lines
+                if ('"USER_INPUT"' in line or '"USER_EXPLICIT"' in line)
             )
 
         for line in reversed(new_lines):
@@ -303,8 +303,8 @@ def is_agy_working(cid: str) -> Tuple[bool, str]:
         stale_sec = time.time() - st.st_mtime
         if stale_sec < 2.0:
             return True, f"AGY 正在活跃写盘 (静默仅 {stale_sec:.1f}s < 2.0s)"
-        lines = [l.strip() for l in t_path.read_text(encoding="utf-8", errors="replace").splitlines()
-                 if l.strip().startswith("{")]
+        lines = [line.strip() for line in t_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                 if line.strip().startswith("{")]
         if not lines:
             return False, "转录日志为空"
 

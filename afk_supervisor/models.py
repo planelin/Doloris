@@ -8,7 +8,7 @@ import json
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Protocol
+from typing import Any, Dict, List, Optional, Protocol
 
 
 class Clock(Protocol):

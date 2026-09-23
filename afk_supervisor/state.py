@@ -7,7 +7,6 @@ afk_supervisor.state — 状态持久化与可恢复检查点管理器
 """
 
 import json
-import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -194,13 +193,27 @@ class SupervisorState:
         atomic_json(self.run_dir / "supervisor_state.json", self.to_dict())
 
     @classmethod
-    def load(cls, run_dir: Path) -> Optional["SupervisorState"]:
-        """从检查点文件安全加载状态。"""
+    def load(cls, run_dir: Path, *, strict: bool = False) -> Optional["SupervisorState"]:
+        """从检查点文件安全加载状态。
+
+        默认容忍缺失/损坏并返回 None (只读工具 fail-closed)；
+        strict=True 时明确区分缺失与损坏，供恢复/诊断入口使用。
+        """
         target = Path(run_dir) / "supervisor_state.json"
         if not target.exists():
+            if strict:
+                raise FileNotFoundError(f"检查点不存在: {target}")
             return None
         try:
             data = json.loads(target.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("检查点顶层必须是 JSON 对象")
+            version = data.get("schema_version", 0)
+            if not isinstance(version, int) or isinstance(version, bool):
+                raise ValueError(f"schema_version 非法: {version!r}")
+            current_version = cls(run_dir=run_dir, persist_initial=False).schema_version
+            if version > current_version:
+                raise ValueError(f"检查点 schema_version={version} 高于当前支持的 {current_version}")
             inst = cls(
                 run_dir=run_dir,
                 sid=data.get("sid", ""),
@@ -232,5 +245,7 @@ class SupervisorState:
             if "dispatch_status" not in data and inst.pending_command:
                 inst.dispatch_status = "UNCERTAIN"
             return inst
-        except Exception:
+        except Exception as exc:
+            if strict:
+                raise ValueError(f"检查点无效: {target}: {exc}") from exc
             return None

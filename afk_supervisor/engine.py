@@ -10,28 +10,23 @@ afk_supervisor.engine — 无头监管主循环与动作分派引擎 (afk / afk2
 精准同步 SupervisorState 会话 ID 与计数器，原子记录已分派动作。
 """
 
-import json
-import os
 import time
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 
-from afk_supervisor.models import ActionType, DeadlineBudget, L2Result
-from afk_supervisor.platform.process import log, safe_kill
+from afk_supervisor.models import ActionType, DeadlineBudget
+from afk_supervisor.platform.process import driver_process_alive, log, safe_kill
 from afk_supervisor.platform.windows import net_enable, net_disable, find_connected_adapter
 from afk_supervisor.baseline import TaskBaseline
 from afk_supervisor.coordinator import SupervisorCoordinator
-from afk_supervisor.evidence import collect_evidence
 from afk_supervisor.l2.bridge import AntigravityManager
 from afk_supervisor.sessions.rollout import is_codex_working
-from afk_supervisor.l2.protocol import extract_protocol_json, normalize_next_action
-from afk_supervisor.l2.transport import clean_l2_decision_text, l2_dispatch
-from afk_supervisor.reporting import generate_final_report, send_terminal_notification
+from afk_supervisor.l2.transport import clean_l2_decision_text
+from afk_supervisor.reporting import generate_final_report
 from afk_supervisor.sessions.discovery import register_thread_for_codex_ui
 from afk_supervisor.state import SupervisorState
 from afk_supervisor.compat import get_sym
-from afk_supervisor.actions import repair_action, WORKER_ACTIONS, UnattendedL2, DecisionStopped
+from afk_supervisor.actions import repair_action, UnattendedL2, DecisionStopped
 from afk_supervisor.observations import file_size, observe_worker
 
 BACKOFFS = [15, 45, 90, 120, 120, 120, 120, 120]
@@ -80,7 +75,6 @@ def run_headless_supervisor(
     last_runtime_tick = time.monotonic()
     chaos_fired = False
     resumes = 0
-    busy_waits = 0
     l2_calls = 0
     interactions = 0
     early_exits = 0
@@ -89,7 +83,6 @@ def run_headless_supervisor(
     fails_on_provider = 0
     providers_tried = [driver.provider_name]
     last_hb_log = 0.0
-    last_error_note = ""
     last_activity = ""
     outcome, outcome_detail = None, ""
     headless_l2_retries = 0
@@ -210,8 +203,13 @@ def run_headless_supervisor(
                     chaos_fired = True
                     method = safe_kill(driver)
                     ivl("CHAOS_KILL", at_sec=worker_runtime, method=method)
-                    total_kills += 1
-                    alive = False
+                    # 只有确认进程已退出才算击杀成功: 假回执会让上层在旧写者
+                    # 存活时续跑, 出现父子同时写同一轨迹。
+                    alive = driver_process_alive(driver)
+                    if alive:
+                        ivl("CHAOS_KILL_MISSED", at_sec=worker_runtime, method=method)
+                    else:
+                        total_kills += 1
                 elif chaos[0] == "net" and worker_runtime >= chaos[1]:
                     chaos_fired = True
                     adapter = find_connected_adapter()
@@ -243,7 +241,14 @@ def run_headless_supervisor(
                 if age > threshold:
                     ivl("DETECT_HANG", stale_sec=round(age), threshold_sec=round(threshold))
                     log(f"HANG     {age:.0f}s 无心跳 (阈值={threshold:.0f}s), 击杀并续跑")
-                    safe_kill(driver)
+                    kill_method = safe_kill(driver)
+                    if kill_method.endswith("_failed"):
+                        ivl("KILL_FAILED", method=kill_method, stale_sec=round(age))
+                        outcome, outcome_detail = "failed", (
+                            f"无法终止无心跳 Worker 进程 ({kill_method})；"
+                            "旧写者仍存活, 禁止续跑以免父子并发写同一轨迹"
+                        )
+                        break
                     total_kills += 1
                     fails_on_provider += 1
                     outcome, outcome_detail = "hang", f"{age:.0f}s 无心跳"

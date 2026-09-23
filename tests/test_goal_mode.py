@@ -11,7 +11,6 @@ tests.test_goal_mode — Goal 目标模式与防熄屏电源管理单元测试
 """
 
 import json
-import os
 import sys
 import tempfile
 import unittest
@@ -20,15 +19,17 @@ from unittest.mock import MagicMock, patch
 
 from afk_supervisor.cli import build_arg_parser
 from afk_supervisor.goal_engine import (
+    GOAL_GUARDRAIL_FALLBACK,
     analyze_goal_pause,
     check_plan_status,
     extract_clean_goal,
-    extract_goal_via_agy,
+    extract_clean_goal_with_reason,
     extract_goal_via_agy_agent,
     extract_recent_dialogue_summary,
     get_existing_thread_goal,
     resolve_stalled_goal_via_agy,
     run_goal_supervisor,
+    sanitize_goal,
 )
 from afk_supervisor.platform.windows import (
     ES_CONTINUOUS,
@@ -108,6 +109,211 @@ class TestGoalEngine(unittest.TestCase):
         summary = extract_recent_dialogue_summary(rollout_file, max_turns=3)
         self.assertIn("请帮我重构订单服务", summary)
         self.assertIn("请接着编写单元测试并确保100%通过", summary)
+
+    def test_review_and_followup_context_keeps_more_than_120_chars(self):
+        rollout_file = self.run_dir / "test_long_context.jsonl"
+        tail_marker = "关键改进建议完整保留标记"
+        long_conclusion = "审查结论：" + ("A" * 180) + tail_marker
+        events = [
+            {"type": "response_item", "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": long_conclusion + "\n后续建议：落实验收闭环"}],
+            }},
+        ]
+        rollout_file.write_text(
+            "".join(json.dumps(event) + "\n" for event in events),
+            encoding="utf-8",
+        )
+
+        summary = extract_recent_dialogue_summary(rollout_file, max_turns=3)
+        self.assertIn(tail_marker, summary)
+        self.assertIn("后续建议：落实验收闭环", summary)
+
+    def test_followup_survives_recent_turn_window(self):
+        rollout_file = self.run_dir / "older_followup.jsonl"
+        events = [{"type": "response_item", "payload": {
+            "type": "message", "role": "assistant",
+            "content": [{"text": "后续建议：补齐异常恢复回归测试并验收"}],
+        }}]
+        events.extend({"type": "event_msg", "payload": {
+            "type": "user_message", "message": "继续",
+        }} for _ in range(8))
+        rollout_file.write_text("".join(json.dumps(event) + "\n" for event in events), encoding="utf-8")
+        summary = extract_recent_dialogue_summary(rollout_file, max_turns=3)
+        self.assertIn("补齐异常恢复回归测试并验收", summary)
+
+    def test_goal_guardrail_blocks_micro_and_workspace_state_targets(self):
+        candidates = (
+            "提交 Git",
+            "将当前改动提交 GitHub",
+            "查看日志",
+            "运行 pytest",
+            "当前工作区状态：改动尚未提交 Git",
+            "这个改动还没有提交 Git",
+        )
+        for candidate in candidates:
+            with self.subTest(candidate=candidate):
+                goal, reason = sanitize_goal(candidate)
+                self.assertEqual(goal, GOAL_GUARDRAIL_FALLBACK)
+                self.assertTrue(reason)
+
+    def test_agy_micro_result_is_guarded(self):
+        rollout_file = self.run_dir / "rollout_agy_micro.jsonl"
+        rollout_file.write_text(json.dumps({
+            "type": "event_msg",
+            "payload": {"type": "user_message", "message": "全面改进 Doloris 并完成验收"},
+        }) + "\n", encoding="utf-8")
+        with patch("afk_supervisor.goal_engine.extract_goal_via_agy_agent", return_value="提交 Git"):
+            goal, reason = extract_clean_goal_with_reason(rollout_file, title="Doloris 改进")
+        self.assertIn("全面改进 Doloris", goal)
+        self.assertIn("测试和验收闭环", goal)
+        self.assertIn("Git", reason)
+
+    def test_fork_continue_recovers_parent_business_requirement(self):
+        parent_id = "parent-session"
+        child_id = "child-session"
+        parent = self.run_dir / f"rollout-2026-09-23T10-00-00-{parent_id}.jsonl"
+        child = self.run_dir / f"rollout-2026-09-23T11-00-00-{child_id}.jsonl"
+        # 同名后代 fork 文件会继承父会话 ID，且修改时间更新，绝不能被误当父会话。
+        descendant = self.run_dir / f"rollout-2026-09-23T12-00-00-{parent_id}_later-child.jsonl"
+        parent.write_text(json.dumps({
+            "type": "session_meta",
+            "payload": {"id": parent_id, "cwd": str(self.run_dir)},
+        }) + "\n" + json.dumps({
+            "type": "event_msg",
+            "payload": {"type": "user_message", "message": "继续"},
+        }) + "\n" + json.dumps({
+            "type": "event_msg",
+            "payload": {"type": "user_message", "message": "全面审查并改进 Doloris，完成测试与验收闭环"},
+        }) + "\n", encoding="utf-8")
+        child.write_text(json.dumps({
+            "type": "session_meta",
+            "payload": {
+                "session_id": child_id,
+                "forked_from_id": parent_id,
+            },
+        }) + "\n" + json.dumps({
+            "type": "event_msg",
+            "payload": {"type": "user_message", "message": "继续"},
+        }) + "\n", encoding="utf-8")
+        descendant.write_text(json.dumps({
+            "type": "session_meta",
+            "payload": {"id": parent_id, "forked_from_id": parent_id, "cwd": str(self.run_dir)},
+        }) + "\n" + json.dumps({
+            "type": "event_msg",
+            "payload": {"type": "user_message", "message": "继续"},
+        }) + "\n", encoding="utf-8")
+
+        with patch("afk_supervisor.goal_engine.extract_goal_via_agy_agent", return_value=None), \
+             patch("afk_supervisor.sessions.discovery.get_codex_sessions_dir",
+                   return_value=self.run_dir):
+            goal = extract_clean_goal(child, title="继续线程工作")
+        self.assertEqual(goal, "全面审查并改进 Doloris，完成测试与验收闭环")
+
+    def test_fork_without_any_user_turn_traces_parent_business_requirement(self):
+        """新建 fork 尚无任何用户回合时，也必须沿父会话回溯业务主线。"""
+        parent_id = "parent-empty-child"
+        child_id = "child-empty-child"
+        parent = self.run_dir / f"rollout-2026-09-23T10-00-00-{parent_id}.jsonl"
+        child = self.run_dir / f"rollout-2026-09-23T11-00-00-{child_id}.jsonl"
+        parent.write_text(json.dumps({
+            "type": "session_meta",
+            "payload": {"id": parent_id, "cwd": str(self.run_dir)},
+        }) + "\n" + json.dumps({
+            "type": "event_msg",
+            "payload": {"type": "user_message", "message": "重构目标提炼策略并补齐回归测试与验收"},
+        }) + "\n", encoding="utf-8")
+        child.write_text(json.dumps({
+            "type": "session_meta",
+            "payload": {"session_id": child_id, "forked_from_id": parent_id},
+        }) + "\n" + json.dumps({
+            "type": "event_msg",
+            "payload": {"type": "thread_settings_applied", "thread_id": child_id},
+        }) + "\n", encoding="utf-8")
+
+        with patch("afk_supervisor.goal_engine.extract_goal_via_agy_agent", return_value=None), \
+             patch("afk_supervisor.sessions.discovery.get_codex_sessions_dir",
+                   return_value=self.run_dir):
+            goal = extract_clean_goal(child, title="继续线程工作")
+            summary = extract_recent_dialogue_summary(child, max_turns=3)
+        self.assertEqual(goal, "重构目标提炼策略并补齐回归测试与验收")
+        self.assertIn("Business: 重构目标提炼策略并补齐回归测试与验收", summary)
+
+    def test_fork_chain_walks_up_to_nearest_business_request(self):
+        """父会话本身也是 fork 且只有“继续”时，继续向上回溯到最近的真实需求。"""
+        root_id = "root-chain"
+        mid_id = "mid-chain"
+        child_id = "leaf-chain"
+        root = self.run_dir / f"rollout-2026-09-23T08-00-00-{root_id}.jsonl"
+        mid = self.run_dir / f"rollout-2026-09-23T09-00-00-{mid_id}.jsonl"
+        leaf = self.run_dir / f"rollout-2026-09-23T10-00-00-{child_id}.jsonl"
+        root.write_text(json.dumps({
+            "type": "session_meta",
+            "payload": {"id": root_id, "cwd": str(self.run_dir)},
+        }) + "\n" + json.dumps({
+            "type": "event_msg",
+            "payload": {"type": "user_message", "message": "完成 Doloris 全量审查与健壮性改进"},
+        }) + "\n", encoding="utf-8")
+        mid.write_text(json.dumps({
+            "type": "session_meta",
+            "payload": {"id": mid_id, "forked_from_id": root_id, "cwd": str(self.run_dir)},
+        }) + "\n" + json.dumps({
+            "type": "event_msg",
+            "payload": {"type": "user_message", "message": "继续"},
+        }) + "\n", encoding="utf-8")
+        leaf.write_text(json.dumps({
+            "type": "session_meta",
+            "payload": {"id": child_id, "forked_from_id": mid_id, "cwd": str(self.run_dir)},
+        }) + "\n" + json.dumps({
+            "type": "event_msg",
+            "payload": {"type": "user_message", "message": "继续"},
+        }) + "\n", encoding="utf-8")
+
+        with patch("afk_supervisor.goal_engine.extract_goal_via_agy_agent", return_value=None), \
+             patch("afk_supervisor.sessions.discovery.get_codex_sessions_dir",
+                   return_value=self.run_dir):
+            goal = extract_clean_goal(leaf, title="继续线程工作")
+        self.assertEqual(goal, "完成 Doloris 全量审查与健壮性改进")
+
+    def test_continuation_phrase_alone_is_never_a_goal(self):
+        for candidate in ("继续", "继续线程工作", "请继续", "Continue"):
+            with self.subTest(candidate=candidate):
+                goal, reason = sanitize_goal(candidate)
+                self.assertEqual(goal, GOAL_GUARDRAIL_FALLBACK)
+                self.assertIn("继续", reason)
+
+    def test_continue_after_stage_review_uses_long_horizon_followup_goal(self):
+        child = self.run_dir / "child_followup.jsonl"
+        child.write_text(json.dumps({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "## 后续建议\n补充回归测试并完成深度健壮性验收。"}],
+            },
+        }) + "\n" + json.dumps({
+            "type": "event_msg",
+            "payload": {"type": "user_message", "message": "继续"},
+        }) + "\n", encoding="utf-8")
+        with patch("afk_supervisor.goal_engine.extract_goal_via_agy_agent", return_value=None):
+            goal = extract_clean_goal(child, title="继续线程工作")
+        self.assertIn("补充回归测试", goal)
+        self.assertIn("验收闭环", goal)
+
+    def test_completed_stage_fallback_prioritizes_unfinished_recommendations(self):
+        rollout = self.run_dir / "completed_stage.jsonl"
+        events = [
+            {"type": "event_msg", "payload": {"type": "user_message", "message": "全面审查并改进 Doloris"}},
+            {"type": "response_item", "payload": {"type": "message", "role": "assistant",
+                "content": [{"text": "审查结论：阶段工作完成。\n后续建议：修复异常恢复路径并补齐回归测试。"}]}},
+        ]
+        rollout.write_text("".join(json.dumps(event) + "\n" for event in events), encoding="utf-8")
+        with patch("afk_supervisor.goal_engine.extract_goal_via_agy_agent", return_value=None):
+            goal = extract_clean_goal(rollout, title="Doloris 审查")
+        self.assertIn("全面审查并改进 Doloris", goal)
+        self.assertIn("修复异常恢复路径", goal)
+        self.assertIn("验收闭环", goal)
 
     def test_extract_clean_goal_no_unwanted_prefixes(self):
         """测试纯净目标提取绝不添加“推进并完成：”等噪音前缀。"""
@@ -254,6 +460,95 @@ class TestGoalEngine(unittest.TestCase):
             self.assertTrue(report_file.exists())
             report_content = report_file.read_text(encoding="utf-8")
             self.assertIn("SUCCESS", report_content)
+
+    def test_explicit_micro_goal_is_guarded_and_audited(self):
+        rollout_file = self.run_dir / "rollout_guardrail.jsonl"
+        rollout_file.write_text("", encoding="utf-8")
+
+        args = MagicMock()
+        args.max_run_sec = 0
+
+        def append_turn_complete(*a, **kw):
+            with open(rollout_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "type": "event_msg",
+                    "payload": {"type": "task_complete", "last_agent_message": "所有任务已完成"},
+                }) + "\n")
+
+        clock_values = iter([0, 0, 0, 0, 100])
+        clock_now = 0.0
+
+        def fake_monotonic():
+            nonlocal clock_now
+            try:
+                clock_now = next(clock_values)
+            except StopIteration:
+                pass
+            return clock_now
+
+        with patch("afk_supervisor.goal_engine.find_best_codex_window", return_value=0), \
+             patch("afk_supervisor.goal_engine.set_keep_awake"), \
+             patch("time.monotonic", side_effect=fake_monotonic), \
+             patch("time.sleep", side_effect=append_turn_complete):
+            res = run_goal_supervisor(
+                sid="sess-guardrail",
+                rollout=rollout_file,
+                scwd=str(self.run_dir),
+                title="守护测试",
+                args=args,
+                run_dir=self.run_dir,
+                goal_target="提交 Git",
+            )
+
+        self.assertEqual(res, 0)
+        prompt = (self.run_dir / "goal_prompt.txt").read_text(encoding="utf-8").strip()
+        self.assertTrue(prompt.startswith("/goal "))
+        self.assertIn("守护测试", prompt)
+        self.assertIn("验收闭环", prompt)
+        records = [
+            json.loads(line)
+            for line in (self.run_dir / "interventions.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        guarded = [record for record in records if record.get("event") == "GOAL_GUARDRAIL"]
+        self.assertEqual(len(guarded), 1)
+        self.assertIn("守护测试", guarded[0]["fallback"])
+
+    def test_empty_goal_never_starts_agy_or_injects_a_goal(self):
+        rollout_file = self.run_dir / "rollout_empty_target.jsonl"
+        rollout_file.write_text("", encoding="utf-8")
+        args = MagicMock()
+        with patch("afk_supervisor.goal_engine.set_keep_awake"), \
+             patch("afk_supervisor.goal_engine.extract_clean_goal_with_reason") as extract, \
+             patch("afk_supervisor.goal_engine.find_best_codex_window") as window, \
+             patch("afk_supervisor.goal_engine.generate_final_report", return_value=self.run_dir / "report.md"), \
+             patch("afk_supervisor.goal_engine.send_terminal_notification"):
+            result = run_goal_supervisor(
+                sid="sess-empty", rollout=rollout_file, scwd=str(self.run_dir),
+                title="空目标", args=args, run_dir=self.run_dir, goal_target="",
+            )
+        self.assertNotEqual(result, 0)
+        extract.assert_not_called()
+        window.assert_not_called()
+        self.assertFalse((self.run_dir / "goal_prompt.txt").exists())
+
+    def test_explicit_lazy_goal_does_not_inject_title_when_agy_fails(self):
+        rollout_file = self.run_dir / "rollout_agy_unavailable.jsonl"
+        rollout_file.write_text("", encoding="utf-8")
+        args = MagicMock()
+        with patch("afk_supervisor.goal_engine.set_keep_awake"), \
+             patch("afk_supervisor.goal_engine.extract_goal_via_agy_agent", return_value=None), \
+             patch("afk_supervisor.goal_engine.find_best_codex_window") as window, \
+             patch("afk_supervisor.goal_engine.generate_final_report", return_value=self.run_dir / "report.md"), \
+             patch("afk_supervisor.goal_engine.send_terminal_notification"):
+            result = run_goal_supervisor(
+                sid="sess-agy-failed", rollout=rollout_file, scwd=str(self.run_dir),
+                title="简单了解本项目doloris作为一个长任务托管系统，目前我们暂时只改进goal模式，首先启动goal模式托管时，若未设定",
+                args=args, run_dir=self.run_dir, goal_target="__LAZY__",
+            )
+        self.assertNotEqual(result, 0)
+        window.assert_not_called()
+        self.assertFalse((self.run_dir / "goal_prompt.txt").exists())
 
     def test_autopilot_approves_plan_and_continues_to_completion(self):
         """测试看门狗遇到计划草案时不早退，自主下发批准后持续守护直至终态。"""
@@ -403,8 +698,13 @@ class TestGoalEngine(unittest.TestCase):
             f.write(json.dumps({"type": "response_item", "payload": {"type": "function_call", "name": "exec_command", "arguments": "{}"}}) + "\n")
         self.assertEqual(check_plan_status(rollout_file), "executing")
 
-    def test_already_set_goal_skips_injection(self):
-        """测试当目标已设立时，Goal 模式跳过指令注入直接进入守护。"""
+    def test_already_set_goal_injects_long_horizon_directive(self):
+        """目标已设立时不再跳过注入：必须下发长程托管续跑指令。
+
+        旧行为 (直接 skip) 会让重构后的长程托管认知永远到不了 LLM，
+        模型只看到自己上一轮的结论，把"提交 Git / 查看日志 / 跑单项测试"
+        当成阶段目标，一条命令执行完就自动退出。
+        """
         rollout_file = self.run_dir / "rollout_skip_inject.jsonl"
         with open(rollout_file, "w", encoding="utf-8") as f:
             f.write(json.dumps({"type": "event_msg", "payload": {"type": "thread_goal_updated", "goal": {"status": "active", "objective": "已有任务"}}}) + "\n")
@@ -417,6 +717,7 @@ class TestGoalEngine(unittest.TestCase):
                 f.write(json.dumps({"type": "event_msg", "payload": {"type": "task_complete", "last_agent_message": "所有任务已完成"}}) + "\n")
 
         with patch("afk_supervisor.goal_engine.find_best_codex_window", return_value=0), \
+             patch("afk_supervisor.goal_engine.inject_into_codex_gui") as inject_mock, \
              patch("afk_supervisor.goal_engine.set_keep_awake"), \
              patch("time.sleep", side_effect=append_done):
             res = run_goal_supervisor(
@@ -429,16 +730,31 @@ class TestGoalEngine(unittest.TestCase):
                 goal_target="__ALREADY_SET__",
             )
             self.assertEqual(res, 0)
+            # 没有前台窗口时不应尝试注入，但指令内容必须已落盘。
+            inject_mock.assert_not_called()
 
             prompt_file = self.run_dir / "goal_prompt.txt"
             self.assertTrue(prompt_file.exists())
-            self.assertIn("Existing goal: 已有任务", prompt_file.read_text(encoding="utf-8"))
+            prompt_text = prompt_file.read_text(encoding="utf-8")
+            self.assertIn("长程托管续跑指令", prompt_text)
+            self.assertIn("已有任务", prompt_text)
+            # 已设立目标不得被 /goal 覆盖。
+            self.assertFalse(prompt_text.lstrip().startswith("/goal"))
+            # 反模式红线必须随指令一起下发。
+            self.assertIn("提交", prompt_text)
+            self.assertIn("单项测试", prompt_text)
 
             ivl_file = self.run_dir / "interventions.jsonl"
-            records = [json.loads(l) for l in ivl_file.read_text(encoding="utf-8").splitlines() if l.strip()]
+            records = [
+                json.loads(line)
+                for line in ivl_file.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
             phase1_ev = [r for r in records if r.get("event") == "GOAL_PHASE" and r.get("phase") == 1]
             self.assertTrue(len(phase1_ev) >= 1)
             self.assertEqual(phase1_ev[0]["status"], "ALREADY_SET")
+            started = [r for r in records if r.get("event") == "GOAL_STARTED"]
+            self.assertEqual(started[0]["strategy"], "long_horizon_resume")
 
     def test_extract_clean_goal_via_agy_success(self):
         """测试懒人模式下成功调用 AGY 提炼纯净目标并去除噪音前缀。"""
@@ -472,7 +788,7 @@ class TestGoalEngine(unittest.TestCase):
              patch("afk_supervisor.platform.gui.find_best_codex_window", return_value=12345), \
              patch("subprocess.run") as mock_sub:
             mock_sub.return_value.stdout = json.dumps({"ok": True, "delivery_status": "SENT", "method": "verified_task_enter"})
-            res = inject_into_codex_gui("test text", target_hwnd=12345, target_sid="01a0c793-01bc-7c92-a3b6-0e735df4da1d", target_title="Test Title")
+            inject_into_codex_gui("test text", target_hwnd=12345, target_sid="01a0c793-01bc-7c92-a3b6-0e735df4da1d", target_title="Test Title")
             mock_nav.assert_called_once_with("01a0c793-01bc-7c92-a3b6-0e735df4da1d")
     def test_mascot_prompt_goal_mode_skips_when_goal_exists(self):
         """测试桌宠 prompt_goal_mode 检测到已有活跃目标时跳过弹窗直接启动。"""
@@ -519,13 +835,36 @@ class TestGoalEngine(unittest.TestCase):
              patch.object(DesktopMascot, "_animate"), \
              patch("doloris_app.mascot.SpeechBubble"), \
              patch("afk_supervisor.sessions.discovery.find_codex_session_by_id", return_value=("01a0c793-01bc-7c92-a3b6-0e735df4da1d", rollout_file, str(self.run_dir))), \
-             patch("tkinter.Toplevel") as mock_top:
+             patch("tkinter.Toplevel") as mock_top, \
+             patch("doloris_app.mascot.tk.Entry") as mock_entry, \
+             patch("doloris_app.mascot.tk.Button") as mock_button, \
+             patch("afk_supervisor.goal_engine.extract_goal_via_agy_agent") as mock_agy, \
+             patch("doloris_app.mascot.threading.Thread") as mock_thread:
             mascot = DesktopMascot(root_mock, test_mode=True)
             mascot.start_mode = MagicMock()
             mascot.prompt_goal_mode("01a0c793-01bc-7c92-a3b6-0e735df4da1d")
             # 确认弹出了 Toplevel 窗口
             mock_top.assert_called_once()
             # 确认未跳过设定
+            mascot.start_mode.assert_not_called()
+            mock_top.return_value.after.assert_not_called()
+            mock_agy.assert_not_called()
+
+            commands = {call.kwargs.get("text"): call.kwargs.get("command")
+                        for call in mock_button.call_args_list}
+            mock_entry.return_value.get.return_value = ""
+            commands["🚀 启动 Goal 模式"]()
+            mascot.start_mode.assert_not_called()
+            mock_thread.assert_not_called()
+            mock_agy.assert_not_called()
+
+            commands["🤖 懒人模式 (AGY提炼)"]()
+            mock_thread.assert_called_once()
+            mock_thread.return_value.start.assert_called_once()
+            mock_agy.return_value = None
+            mock_thread.call_args.kwargs["target"]()
+            mock_top.return_value.after.call_args.args[1]()
+            mock_entry.return_value.insert.assert_not_called()
             mascot.start_mode.assert_not_called()
 
     def test_analyze_goal_pause_goal_stalled(self):
@@ -706,6 +1045,45 @@ class TestGoalEngine(unittest.TestCase):
             self.assertIn("send-message", called_cmd)
             self.assertIn("agy-cid-reused", called_cmd)
             self.assertNotIn("new-conversation", called_cmd)
+            prompt = called_cmd[-1]
+            self.assertIn("数小时无人值守", prompt)
+            self.assertIn("提交 Git/commit", prompt)
+            self.assertIn("后续建议", prompt)
+            self.assertIn("fork 父会话", prompt)
+
+    def test_lazy_goal_waits_for_agy_done_without_short_deadline(self):
+        brain = self.run_dir / "slow_brain"
+        transcript = brain / "slow-cid" / ".system_generated" / "logs" / "transcript.jsonl"
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text(json.dumps({"type": "PLANNER_RESPONSE", "status": "DONE",
+                                          "content": "旧目标"}) + "\n", encoding="utf-8")
+
+        poll_count = [0]
+
+        def finish_after_poll(_seconds):
+            poll_count[0] += 1
+            response = ({"type": "PLANNER_RESPONSE", "status": "DONE",
+                         "content": "正在读取上下文", "tool_calls": [{"name": "read_file"}]}
+                        if poll_count[0] == 1 else
+                        {"type": "PLANNER_RESPONSE", "status": "DONE",
+                         "content": "落实后续建议并完成健壮性验收"})
+            with transcript.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(response) + "\n")
+
+        response = MagicMock(returncode=0, stdout=b'{"response":{}}')
+        with patch("afk_supervisor.goal_engine.get_agy_conversation_for_codex", return_value="slow-cid"), \
+             patch("afk_supervisor.goal_engine.get_agy_brain_dir", return_value=brain), \
+             patch("afk_supervisor.goal_engine.discover_antigravity_bridge",
+                   return_value=("csrf", ["5555"], Path(sys.executable))), \
+             patch("afk_supervisor.goal_engine.subprocess.run", return_value=response) as send, \
+             patch("afk_supervisor.goal_engine.time.sleep", side_effect=finish_after_poll):
+            goal = extract_clean_goal(
+                None, title="长任务审查", codex_session_id="codex-slow",
+                require_agy=True,
+            )
+        self.assertEqual(goal, "落实后续建议并完成健壮性验收")
+        self.assertEqual(poll_count[0], 2)
+        self.assertIsNone(send.call_args.kwargs["timeout"])
 
     def test_resolve_stalled_goal_reuses_existing_agy_conversation(self):
         """测试已绑定 AGY 会话时，目标破局调用 send-message 进行决断。"""

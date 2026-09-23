@@ -13,9 +13,22 @@ from PIL import Image, ImageTk
 
 from doloris_app.bubble import SpeechBubble
 from doloris_app.controller import SupervisionController
-from doloris_app.pet_loader import PetSkin, create_default_pet_skin, discover_available_pets
+from doloris_app.pet_loader import PetSkin, discover_available_pets
 
 CHROMA_KEY = "#000001"  # Pure near-black chroma key for Windows transparency
+
+
+def resolve_lazy_goal(rollout_path: Optional[Path], title: str = "", codex_session_id: str = "",
+                      cancel_event: Optional[threading.Event] = None) -> str:
+    """懒人模式只展示 AGY 已完成的目标；失败时保持输入框为空。"""
+    from afk_supervisor.goal_engine import GoalExtractionError, extract_clean_goal
+
+    rollout = Path(rollout_path) if rollout_path else None
+    goal = extract_clean_goal(rollout, title=title, codex_session_id=codex_session_id,
+                              require_agy=True, cancel_event=cancel_event)
+    if not goal:
+        raise GoalExtractionError("AGY 未返回有效目标")
+    return goal
 
 
 class DesktopMascot:
@@ -313,6 +326,7 @@ class DesktopMascot:
         timer_paused = [False]
         is_countdown_active = [False]
         is_lazy_working = [False]
+        lazy_cancel = threading.Event()
 
         def on_entry_key(event):
             if event.keysym not in ("Control_L", "Control_R", "Shift_L", "Shift_R", "Alt_L", "Alt_R", "Return", "Escape"):
@@ -332,16 +346,18 @@ class DesktopMascot:
         def on_confirm_goal():
             val = entry.get().strip()
             if not val:
-                # 目标为空时，直接触发 AGY 智能提炼，绝不盲目硬编码注入
-                on_lazy_goal()
+                lbl_desc.config(text="请先输入目标；需要 AGY 帮忙时请点击【懒人模式 (AGY提炼)】。", fg="#dc2626")
+                entry.focus_set()
                 return
             cancel_timer()
+            lazy_cancel.set()
             win.destroy()
             self.show_bubble(f"🎯 已确立 Goal 目标：{val[:20]}... 开始冲刺！", duration_ms=5000)
             self.start_mode("goal", target_for_mode, goal_target=val)
 
         def on_cancel():
             cancel_timer()
+            lazy_cancel.set()
             win.destroy()
 
         def toggle_pause():
@@ -373,7 +389,7 @@ class DesktopMascot:
             remaining[0] = 30
             timer_paused[0] = False
             is_countdown_active[0] = True
-            confirm_btn.config(text=f"🚀 立即启动 (30s)")
+            confirm_btn.config(text="🚀 立即启动 (30s)")
             pause_btn.pack(side="right", padx=4)
             timer_id[0] = win.after(1000, tick)
 
@@ -397,7 +413,7 @@ class DesktopMascot:
                 start_30s_countdown()
             else:
                 lazy_btn.config(text="🤖 懒人模式 (AGY提炼)", state="normal")
-                lbl_desc.config(text="⚠️ AGY 提炼未完成，您可以手动输入目标：", fg="#dc2626")
+                lbl_desc.config(text="⚠️ AGY 尚未返回目标，请重试或手动输入；输入框未被改动。", fg="#dc2626")
 
         def on_lazy_goal():
             if is_lazy_working[0]:
@@ -409,21 +425,13 @@ class DesktopMascot:
 
             def worker():
                 try:
-                    agy_res = extract_goal_via_agy_agent(
-                        Path(rollout_path) if rollout_path else None,
+                    goal = resolve_lazy_goal(
+                        rollout_path,
                         title=target_title,
-                        timeout_sec=25.0,
                         codex_session_id=target_for_mode,
+                        cancel_event=lazy_cancel,
                     )
-                    if not agy_res:
-                        agy_res = extract_clean_goal(
-                            Path(rollout_path) if rollout_path else None,
-                            title=target_title,
-                            codex_session_id=target_for_mode,
-                        )
-                    if not agy_res:
-                        agy_res = "完成当前任务所有未尽要求与测试"
-                    result_q.put(("ok", agy_res))
+                    result_q.put(("ok", goal))
                 except Exception as exc:
                     result_q.put(("error", str(exc)))
 
@@ -472,8 +480,7 @@ class DesktopMascot:
 
         win.protocol("WM_DELETE_WINDOW", on_cancel)
 
-        # 弹窗打开后，自动后台启动 AGY 目标提炼！
-        win.after(150, on_lazy_goal)
+        # 只有用户主动点击“懒人模式”才会启动 AGY。
 
     def _prompt_custom_session(self, mode: str):
         from tkinter import simpledialog

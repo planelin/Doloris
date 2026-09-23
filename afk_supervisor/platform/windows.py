@@ -5,7 +5,6 @@ afk_supervisor.platform.windows — Windows 系统级交互与防睡眠/网络�
 """
 
 import os
-import re
 import subprocess
 import sys
 import urllib.request
@@ -115,9 +114,14 @@ def find_connected_adapter() -> Tuple[Optional[str], Optional[str]]:
         return None, None
 
 
+def ps_single_quoted(value: str) -> str:
+    """把任意字符串安全地嵌入 PowerShell 单引号字面量 (单引号自身需翻倍)。"""
+    return "'" + str(value).replace("'", "''") + "'"
+
+
 def net_disable(adapter_name: str) -> bool:
     """禁用指定网络适配器 (用于 Chaos 实验)。"""
-    cmd = f"Disable-NetAdapter -Name '{adapter_name}' -Confirm:$false"
+    cmd = f"Disable-NetAdapter -Name {ps_single_quoted(adapter_name)} -Confirm:$false"
     try:
         r = subprocess.run(["powershell", "-NoProfile", "-Command", cmd],
                            capture_output=True, text=True, errors="replace", timeout=15,
@@ -129,7 +133,7 @@ def net_disable(adapter_name: str) -> bool:
 
 def net_enable(adapter_name: str) -> bool:
     """启用指定网络适配器。"""
-    cmd = f"Enable-NetAdapter -Name '{adapter_name}' -Confirm:$false"
+    cmd = f"Enable-NetAdapter -Name {ps_single_quoted(adapter_name)} -Confirm:$false"
     try:
         r = subprocess.run(["powershell", "-NoProfile", "-Command", cmd],
                            capture_output=True, text=True, errors="replace", timeout=15,

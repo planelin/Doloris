@@ -129,7 +129,7 @@ flowchart TD
 1. **严格单写者锁保护**：绝不以“文件 15 秒没动静”作为接管凭据；按 `call_id` 配对工具调用，验证操作系统真实写锁释放。
 2. **拒不空等人工（Zero Human-in-the-Loop）**：常规设计确认与选择题交由 L2 拍板，杜绝把 `WAITING_USER` 当作常规路径退出。
 3. **铁证验收（Evidence-Based Acceptance）**：不听信模型口头宣称的“我已完成”，严格核查实际文件产出、自建清单及执行测试。
-4. **零外部依赖（Zero Dependencies）**：纯 Python 3.10+ 标准库实现，开箱即用，免除繁杂的 pip 依赖地狱。
+4. **零第三方 Python 依赖（Zero Python Dependencies）**：核心监管引擎基于 Python 3.10+ 标准库实现，`pip install` 不拉取任何第三方包；仅在对交付的 JavaScript 做语法核验时可选调用系统 `node`。
 
 ---
 
@@ -139,8 +139,11 @@ flowchart TD
 - **操作系统**：Windows 10 / 11
 - **Python 版本**：Python 3.10+
 - **第三方依赖**：
-  - 核心 CLI 监管引擎：**零外部依赖**（纯 Python 标准库）
+  - 核心 CLI 监管引擎：**零第三方 Python 依赖**（纯 Python 标准库）
   - 桌宠伴侣 GUI：需 `Pillow` 图形库（`pip install Pillow`）
+- **可选外部工具**：
+  - `node`：对交付目录内的 `.js` 文件做语法核验；缺失时该项记为 `SKIPPED` 并阻止相应功能项判为通过，不会静默放行。
+  - `powershell`：GUI 双有头注入与网络适配器实验所需；Windows 10 / 11 自带。
 
 ---
 
@@ -199,7 +202,7 @@ python -B -X utf8 tests/run_isolated.py
 python -m unittest
 ```
 
-当前包含 **200 项自动化测试全部通过 (100% PASS)**，涵盖安全退出边界、状态机迁移、GUI 机器身份校验、桌宠切片解析与协议序列化。
+当前包含 **260 项自动化测试**（全量套件与完全隔离沙箱均为 260/260 通过），涵盖安全退出边界、状态机迁移、GUI 机器身份校验、桌宠切片解析、懒人模式目标回退与协议序列化；GitHub Actions 会在 Windows + Python 3.10/3.12 上执行 Ruff 静态检查和同一套测试。
 
 ---
 

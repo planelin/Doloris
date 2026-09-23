@@ -11,28 +11,19 @@ import json
 import os
 import re
 import subprocess
-import sys
+import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-from afk_supervisor.models import DeadlineBudget
 from afk_supervisor.platform.gui import _navigate_target, ensure_codex_window_restored, find_best_codex_window, inject_into_codex_gui
 from afk_supervisor.platform.process import WorkspaceSupervisorLock, log
 from afk_supervisor.platform.windows import set_keep_awake
 from afk_supervisor.reporting import generate_final_report, send_terminal_notification
-from afk_supervisor.sessions.discovery import (
-    clean_session_id,
-    find_codex_session_by_id,
-    list_recent_codex_sessions,
-    load_codex_thread_titles,
-    read_session_title,
-)
 from afk_supervisor.sessions.rollout import (
     codex_session_state,
     is_codex_working,
     peek_rollout_activity,
-    read_rollout_last_message,
 )
 from afk_supervisor.state import SupervisorState
 from afk_supervisor.l2.bridge import (
@@ -43,40 +34,362 @@ from afk_supervisor.l2.bridge import (
     get_agy_conversation_for_codex,
 )
 
+LONG_HORIZON_SYSTEM_PROMPT = (
+    "该目标用于数小时无人值守托管，必须具备持续执行价值与可实现、可测试、可验收的闭环。"
+    "只允许提炼业务主线级目标，必须覆盖实现、验证和验收；严禁把提交 Git/commit、"
+    "查看日志或状态、运行某项测试等秒级单步动作当作目标，"
+    "严禁把助手对当前工作区状态的陈述（例如“改动尚未提交 Git”）当作用户行动目标。\n"
+    "状态分支：若上一阶段刚完成并附有“后续建议/待办事项/实施计划”，目标应聚焦落实这些建议"
+    "并完成深度健壮性改进；若用户只输入“继续/请继续/继续线程工作”，必须回溯业务主线和已验证的"
+    "fork 父会话的原始业务需求，不得把“继续”本身当作目标。\n"
+)
+
+GOAL_GUARDRAIL_FALLBACK = "在业务主线上落实后续建议与深度健壮性改进，完成实现、测试与验收闭环"
+
+
+class GoalExtractionError(RuntimeError):
+    """AGY 未交付目标；界面不得把上下文摘录伪装成提炼结果。"""
+
+
+def build_long_horizon_directive(goal: str) -> str:
+    """构造"目标已设立"时可下发的长程托管续跑指令 (普通消息，不重设 /goal)。
+
+    该分支过去不下发任何提示词，导致重构后的长程托管认知根本到不了 LLM：
+    模型只看到自己上一轮的结论，于是把"提交 Git / 查看日志 / 跑单项测试"这类
+    秒级动作当成阶段目标，一条命令执行完自动退出，托管形同秒级早退。
+    """
+    clean = _strip_goal_prefixes(goal) or GOAL_GUARDRAIL_FALLBACK
+    return "\n".join([
+        "【长程托管续跑指令】本会话已被 Doloris 无人值守接管，将连续运行数小时，",
+        "期间没有人会回答问题或替你做选择，请自行推进到可验收的终态。",
+        f"当前已设立目标（保持不变，不要重新设定）：{clean}",
+        "执行要求：",
+        "1. 只做业务主线级工作：实现、重构、修复、验证、验收；每个动作都要推进目标并可核查。",
+        "2. 禁止把秒级过程动作当成阶段目标：提交/推送 Git、查看日志或状态、运行某一个单项测试，都不是目标。",
+        "3. 禁止把“当前工作区状态”的陈述（例如“改动尚未提交 Git”）当成待办目标。",
+        "4. 先复核上下文中已有的审查结论、后续建议、待办事项与实施计划，把尚未落实的部分排成计划逐项执行。",
+        "5. 每阶段收尾都要自测并给出验收证据；无法自动验证的事项显式标注为需人工确认，不要谎报完成。",
+        "6. 只有外部输入才能解除的阻塞不算完成：写明阻塞原因、已尝试方案与可选路径后停止回合。",
+        "现在直接开始执行，不要输出与推进目标无关的寒暄。",
+    ])
+
+KEY_CONTEXT_MARKERS = (
+    "审查结论",
+    "审查结果",
+    "改进建议",
+    "后续建议",
+    "待办事项",
+    "实施计划",
+    "验收标准",
+    "下一步",
+)
+
+_INTERNAL_CONTEXT_MARKERS = (
+    "<environment_context>",
+    "<codex_internal_context",
+    "<turn_context>",
+    "<collaboration_mode",
+    "<turn_aborted",
+    "<app-context>",
+    "<skills_instructions>",
+    "<permissions instructions>",
+)
+
+
+def _clean_user_text(raw_text: str) -> Optional[str]:
+    """过滤环境注入，并把结构化用户选择还原为可读文本。"""
+    txt = (raw_text or "").strip()
+    if not txt:
+        return None
+    if any((marker in txt or txt.startswith(marker)) for marker in _INTERNAL_CONTEXT_MARKERS):
+        return None
+    if "<send_user_message_question_reply>" in txt:
+        try:
+            match = re.search(
+                r"<send_user_message_question_reply>\s*(\[.*?\])\s*</send_user_message_question_reply>",
+                txt,
+                re.DOTALL,
+            )
+            if match:
+                answers = []
+                for item in json.loads(match.group(1)):
+                    question = item.get("question", "")
+                    answer = item.get("answer", "")
+                    if answer:
+                        answers.append(f"{question}: {answer}" if question else str(answer))
+                if answers:
+                    return "; ".join(answers)
+        except Exception:
+            pass
+    return txt
+
+
+def _is_short_continuation(text: str) -> bool:
+    normalized = re.sub(r"[\s，。！？!?、,.：:；;]+", "", (text or "").lower())
+    return normalized in {
+        "继续",
+        "请继续",
+        "继续吧",
+        "继续工作",
+        "继续任务",
+        "继续线程工作",
+        "继续推进",
+        "接着继续",
+        "接着做",
+        "可以继续",
+        "continue",
+        "pleasecontinue",
+        "resume",
+        "goon",
+    }
+
+
+def _truncate_context_text(text: str) -> str:
+    """关键结论保留近千字符，普通上下文保留更宽裕的摘要窗口。"""
+    clean = (text or "").strip()
+    limit = 900 if any(marker in clean for marker in KEY_CONTEXT_MARKERS) else 400
+    if len(clean) <= limit:
+        return clean
+    head = clean[:limit]
+    cut = max(head.rfind("\n"), head.rfind("。"), head.rfind("；"))
+    if cut >= int(limit * 0.65):
+        head = head[: cut + 1]
+    return head.rstrip() + "..."
+
+
+def _strip_goal_prefixes(text: str) -> str:
+    clean = (text or "").strip().strip('`"\'“” \n\r\t')
+    prefixes = ("/goal ", "/goal", "目标：", "目标:", "推进并完成：", "推进并完成:", "完成：", "完成:")
+    for prefix in prefixes:
+        if clean.startswith(prefix):
+            clean = clean[len(prefix):].strip()
+    return clean.strip()
+
+
+def _read_rollout_events(path: Optional[Path]) -> List[Dict[str, Any]]:
+    events: List[Dict[str, Any]] = []
+    if not path or not Path(path).exists():
+        return events
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as stream:
+            for line in stream:
+                line = line.strip()
+                if not line.startswith("{"):
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(obj, dict):
+                    events.append(obj)
+    except Exception:
+        pass
+    return events
+
+
+def _rollout_user_texts(rollout_path: Optional[Path]) -> List[str]:
+    texts: List[str] = []
+    for obj in _read_rollout_events(rollout_path):
+        payload = obj.get("payload") or {}
+        if not isinstance(payload, dict):
+            continue
+        ptype = payload.get("type", "")
+        if ptype == "user_message":
+            content = payload.get("message") or payload.get("content") or ""
+            if isinstance(content, str):
+                cleaned = _clean_user_text(content)
+                if cleaned:
+                    texts.append(cleaned)
+        elif ptype == "message" and payload.get("role") == "user":
+            for item in payload.get("content") or []:
+                if isinstance(item, dict) and item.get("text"):
+                    cleaned = _clean_user_text(str(item["text"]))
+                    if cleaned:
+                        texts.append(cleaned)
+    return texts
+
+
+def _first_business_request(rollout_path: Optional[Path]) -> str:
+    for text in _rollout_user_texts(rollout_path):
+        if _is_short_continuation(text):
+            continue
+        compact = " ".join(text.split())
+        if compact:
+            return compact[:900]
+    return ""
+
+
+def _fork_parent_id(rollout_path: Optional[Path]) -> str:
+    """读取 fork 子会话的父会话 ID (session_meta.payload.forked_from_id)。"""
+    for obj in _read_rollout_events(rollout_path):
+        if obj.get("type") != "session_meta":
+            continue
+        payload = obj.get("payload") or {}
+        if isinstance(payload, dict) and payload.get("forked_from_id"):
+            return str(payload["forked_from_id"]).strip()
+    return ""
+
+
+def _origin_rollout_path(session_id: str) -> Optional[Path]:
+    """定位某个会话自身的原始 rollout。
+
+    优先选择文件名以该会话 ID 结尾的文件（root 会话原始文件），避免被同名的
+    后代 fork 文件按修改时间抢占。
+    """
+    try:
+        from afk_supervisor.sessions.discovery import find_codex_session_rollouts
+
+        matches = find_codex_session_rollouts(session_id)
+    except Exception:
+        return None
+    own = [item for item in matches if item[1].stem.endswith(session_id)]
+    pool = own or matches
+    return pool[0][1] if pool else None
+
+
+def _fork_parent_business_context(rollout_path: Optional[Path], max_depth: int = 4) -> str:
+    """沿 fork 链向上回溯，返回最近一个具备业务语义的祖先原始需求。"""
+    seen = set()
+    cursor = rollout_path
+    for _ in range(max(1, max_depth)):
+        parent_id = _fork_parent_id(cursor)
+        if not parent_id or parent_id in seen:
+            return ""
+        seen.add(parent_id)
+        parent_path = _origin_rollout_path(parent_id)
+        if not parent_path:
+            return ""
+        request = _first_business_request(parent_path)
+        if request:
+            return _truncate_context_text(request)
+        cursor = parent_path
+    return ""
+
+
+def _latest_followup_context(rollout_path: Optional[Path]) -> str:
+    """提取最近一次阶段汇报里的后续建议，供提炼和安全回退使用。"""
+    for event in reversed(_read_rollout_events(rollout_path)):
+        payload = event.get("payload") or {}
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("type") == "user_message":
+            user_text = _clean_user_text(str(payload.get("message") or payload.get("content") or ""))
+            if user_text and not _is_short_continuation(user_text):
+                return ""
+        if payload.get("type") == "message" and payload.get("role") == "user":
+            user_text = " ".join(str(item.get("text") or "") for item in payload.get("content") or []
+                                 if isinstance(item, dict))
+            if user_text and not _is_short_continuation(user_text):
+                return ""
+        texts = []
+        if payload.get("type") == "message" and payload.get("role") == "assistant":
+            texts = [str(item.get("text")) for item in payload.get("content") or []
+                     if isinstance(item, dict) and item.get("text")]
+        elif payload.get("last_agent_message"):
+            texts = [str(payload["last_agent_message"])]
+        for message in reversed(texts):
+            markers = ("后续建议", "待办事项", "实施计划", "改进建议", "下一步")
+            positions = [message.find(marker) for marker in markers if marker in message]
+            if positions:
+                section = message[min(positions):].strip()
+                return " ".join(_truncate_context_text(section)[:500].split())
+    return ""
+
+
+def _contextual_fallback(rollout_path: Optional[Path], title: str = "") -> str:
+    business = next(
+        (text for text in reversed(_rollout_user_texts(rollout_path))
+         if not _is_short_continuation(text) and not detect_goal_guardrail(text)),
+        "",
+    )
+    business = business or _fork_parent_business_context(rollout_path)
+    if business and detect_goal_guardrail(business):
+        business = ""
+    if not business:
+        candidate = _strip_goal_prefixes(title).rstrip("….").strip()
+        if candidate and candidate != "无标题任务" and not detect_goal_guardrail(candidate):
+            business = candidate
+    followup = _latest_followup_context(rollout_path)
+    if not business and not followup:
+        return GOAL_GUARDRAIL_FALLBACK
+    scope = f"围绕{business[:120]}，" if business else ""
+    detail = f"落实{followup[:260]}，" if followup else "落实后续建议与深度健壮性改进，"
+    return f"{scope}{detail}完成实现、测试和验收闭环"
+
+
+def detect_goal_guardrail(goal: str) -> str:
+    """Return a guardrail reason when a candidate is a micro step or a state statement."""
+    clean = _strip_goal_prefixes(goal)
+    if not clean:
+        return ""
+    lowered = clean.lower()
+    if _is_short_continuation(clean):
+        return "目标仅为“继续”类延续指令，未溯及业务主线"
+    macro_verbs = (
+        "实现",
+        "重构",
+        "修复",
+        "优化",
+        "完善",
+        "审查",
+        "设计",
+        "补充",
+        "验证",
+        "验收",
+        "推进",
+        "开发",
+        "改造",
+        "落实",
+        "完成",
+        "review",
+        "implement",
+        "refactor",
+        "fix",
+        "improve",
+    )
+    commit_pattern = re.compile(
+        r"^(?:请)?(?:把|将)?(?:当前)?(?:改动|代码|变更)?\s*(?:提交|commit|push|推送).{0,30}(?:git|github|远端|仓库)",
+        re.IGNORECASE,
+    )
+    git_command_pattern = re.compile(r"^(?:运行|执行|查看)?\s*git\s+(?:commit|push|status|log|diff)\b", re.IGNORECASE)
+    view_pattern = re.compile(
+        r"^(?:查看|检查|读取|打印|看一下|查看一下).{0,16}(?:日志|log|状态|status|工作区|改动|git)",
+        re.IGNORECASE,
+    )
+    run_pattern = re.compile(
+        r"^(?:运行|执行|跑|重跑|再跑)\s*(?:一下)?\s*(?:(?:python[0-9.]*|py)\s+-m\s+)?"
+        r"(?:pytest|测试|单元测试|单项测试|某个测试|指定测试|指定用例)",
+        re.IGNORECASE,
+    )
+    status_misread = re.search(
+        r"(?:尚未|还未|还没|未|没有)(?:提交|推送).{0,12}(?:git|github|远端|仓库)"
+        r"|当前(?:工作区|仓库|代码|改动).{0,16}(?:状态|未提交|尚未提交|已修改)",
+        clean,
+        re.IGNORECASE,
+    )
+    if status_misread and not any(verb in lowered for verb in macro_verbs):
+        return "将工作区现状陈述误判为行动目标"
+    if commit_pattern.search(clean) or git_command_pattern.search(clean):
+        return "目标仅为 Git 提交/推送等微观动作"
+    micro_match = view_pattern.search(clean) or run_pattern.search(clean)
+    if micro_match and len(clean) <= 60 and not any(verb in lowered for verb in macro_verbs):
+        return "目标仅为查看状态、日志或运行单项测试等微观动作"
+    return ""
+
+
+def sanitize_goal(goal: str, rollout_path: Optional[Path] = None, title: str = "") -> Tuple[str, str]:
+    clean = _strip_goal_prefixes(goal)
+    reason = detect_goal_guardrail(clean)
+    if reason:
+        return _contextual_fallback(rollout_path, title), reason
+    return clean, ""
+
 
 def extract_recent_dialogue_summary(rollout_path: Optional[Path], max_turns: int = 6) -> str:
     """从 rollout 中提取最近几轮真实对话内容用于目标归纳，过滤环境注入与内部提示。"""
     if not rollout_path or not Path(rollout_path).exists():
         return ""
     messages: List[str] = []
-
-    def clean_user_text(raw_text: str) -> Optional[str]:
-        txt = raw_text.strip()
-        if not txt:
-            return None
-        # 严格过滤系统及内部提示注入
-        if any((pfx in txt or txt.startswith(pfx)) for pfx in (
-            "<environment_context>", "<codex_internal_context", "<turn_context>", "<collaboration_mode",
-            "<turn_aborted", "<app-context>", "<skills_instructions>", "<permissions instructions>"
-        )):
-            return None
-        # 解析提问问答组件中的用户答案
-        if "<send_user_message_question_reply>" in txt:
-            try:
-                m = re.search(r"<send_user_message_question_reply>\s*(\[.*?\])\s*</send_user_message_question_reply>", txt, re.DOTALL)
-                if m:
-                    arr = json.loads(m.group(1))
-                    ans_parts = []
-                    for item in arr:
-                        q = item.get("question", "")
-                        a = item.get("answer", "")
-                        if a:
-                            ans_parts.append(f"{q}: {a}" if q else str(a))
-                    if ans_parts:
-                        return "; ".join(ans_parts)
-            except Exception:
-                pass
-        return txt
 
     try:
         with open(rollout_path, "r", encoding="utf-8", errors="replace") as f:
@@ -95,14 +408,14 @@ def extract_recent_dialogue_summary(rollout_path: Optional[Path], max_turns: int
                 if ptype == "user_message":
                     content = payload.get("message") or payload.get("content") or ""
                     if content and isinstance(content, str):
-                        clean_u = clean_user_text(content)
+                        clean_u = _clean_user_text(content)
                         if clean_u:
                             messages.append(f"User: {clean_u}")
                 elif ptype == "message" and payload.get("role") == "user":
                     content_list = payload.get("content") or []
                     for c in content_list:
                         if isinstance(c, dict) and c.get("text"):
-                            clean_u = clean_user_text(c["text"])
+                            clean_u = _clean_user_text(c["text"])
                             if clean_u:
                                 messages.append(f"User: {clean_u}")
                 elif ptype == "message" and payload.get("role") == "assistant":
@@ -112,13 +425,25 @@ def extract_recent_dialogue_summary(rollout_path: Optional[Path], max_turns: int
                             snip = c["text"].strip()
                             if snip.startswith("<") or "<codex_internal_context" in snip or "<environment_context" in snip:
                                 continue
-                            if len(snip) > 120:
-                                snip = snip[:117] + "..."
-                            messages.append(f"Assistant: {snip}")
+                            messages.append(f"Assistant: {_truncate_context_text(snip)}")
     except Exception:
         pass
 
+    user_texts = [message[6:] for message in messages if message.startswith("User:")]
+    has_business_text = any(not _is_short_continuation(text) for text in user_texts)
+    business_line = ""
+    if not has_business_text and (user_texts or _fork_parent_id(rollout_path)):
+        parent_context = _fork_parent_business_context(rollout_path)
+        if parent_context:
+            business_line = f"Business: {parent_context}"
+
     recent = messages[-max_turns:] if len(messages) >= max_turns else messages
+    followup = _latest_followup_context(rollout_path)
+    if followup and not any(followup in message for message in recent):
+        recent = [f"Follow-up: {followup}"] + list(recent)
+    if business_line:
+        # 业务主线必须位于截断之外，否则会被最近几轮对话挤出上下文窗口。
+        recent = [business_line] + list(recent)
     return "\n".join(recent)
 
 
@@ -308,8 +633,9 @@ def extract_goal_via_agy_agent(
     title: str = "",
     agy_mgr: Optional[Any] = None,
     run_dir: Optional[Path] = None,
-    timeout_sec: float = 15.0,
+    timeout_sec: Optional[float] = 15.0,
     codex_session_id: Optional[str] = None,
+    cancel_event: Optional[threading.Event] = None,
 ) -> Optional[str]:
     """尝试通过 Antigravity 语言服务提炼简洁目标。
     严格复用与 Codex 任务 1:1 绑定的专属 AGY 会话。
@@ -331,7 +657,10 @@ def extract_goal_via_agy_agent(
         return None
 
     prompt_text = (
-        "请根据以下 Codex 任务上下文，用一句话总结最终需要交付的纯净目标（30字以内，不要任何'推进并完成'等前缀，不要输出/goal，仅输出目标本身）：\n"
+        f"{LONG_HORIZON_SYSTEM_PROMPT}\n"
+        "请根据以下 Codex 任务上下文，用一句话总结最终需要交付的纯净目标。"
+        "目标应能在无人值守下持续推进，并包含实现、验证与验收闭环；不要任何“推进并完成”等前缀，"
+        "不要输出 /goal，仅输出目标本身：\n"
         f"任务标题：{clean_t}\n"
         f"最近对话：\n{summary}\n"
     )
@@ -374,7 +703,8 @@ def extract_goal_via_agy_agent(
             env["ANTIGRAVITY_LS_ADDRESS"] = f"127.0.0.1:{port}"
             if project_id:
                 env["ANTIGRAVITY_PROJECT_ID"] = project_id
-            res = subprocess.run(cmd, capture_output=True, timeout=min(timeout_sec, 12), env=env, creationflags=no_win)
+            res = subprocess.run(cmd, capture_output=True, timeout=min(timeout_sec, 12) if timeout_sec is not None else None,
+                                 env=env, creationflags=no_win)
             out = (res.stdout or b"").decode("utf-8", errors="replace")
             if not existing_cid:
                 m = re.search(r'"conversationId"\s*:\s*"([^"]+)"', out)
@@ -396,8 +726,10 @@ def extract_goal_via_agy_agent(
 
     try:
         t_path = brain_dir / cid / ".system_generated" / "logs" / "transcript.jsonl"
-        deadline = time.monotonic() + timeout_sec
-        while time.monotonic() < deadline:
+        deadline = time.monotonic() + timeout_sec if timeout_sec is not None else None
+        while deadline is None or time.monotonic() < deadline:
+            if cancel_event is not None and cancel_event.is_set():
+                raise GoalExtractionError("目标提炼已取消")
             if t_path.exists():
                 try:
                     all_lines = t_path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -405,7 +737,8 @@ def extract_goal_via_agy_agent(
                     for line in reversed(lines):
                         if '"PLANNER_RESPONSE"' in line and 'DONE' in line:
                             obj = json.loads(line)
-                            if obj.get("type") != "PLANNER_RESPONSE" or obj.get("status") != "DONE":
+                            if (obj.get("type") != "PLANNER_RESPONSE" or obj.get("status") != "DONE"
+                                    or obj.get("tool_calls")):
                                 continue
                             content = obj.get("content", "").strip()
                             if content:
@@ -413,7 +746,7 @@ def extract_goal_via_agy_agent(
                                     if content.startswith(pfx):
                                         content = content[len(pfx):].strip()
                                 content = content.strip('`"\'“” \n\r\t')
-                                lines_c = [l.strip() for l in content.splitlines() if l.strip()]
+                                lines_c = [line.strip() for line in content.splitlines() if line.strip()]
                                 if lines_c:
                                     cand = lines_c[0].strip('`"\'“” \n\r\t')
                                     for pfx in ("/goal ", "/goal", "目标：", "目标:", "推进并完成：", "推进并完成:", "完成：", "完成:"):
@@ -421,12 +754,17 @@ def extract_goal_via_agy_agent(
                                             cand = cand[len(pfx):].strip()
                                     if len(cand) > 3:
                                         log(f"GOAL_AGY  AGY 提炼目标成功: [{cand}]")
-                                        return cand[:60]
+                                        return cand[:300]
                 except Exception:
                     pass
-            time.sleep(0.5)
+            if cancel_event is not None:
+                cancel_event.wait(0.5)
+            else:
+                time.sleep(0.5)
+    except GoalExtractionError:
+        raise
     except Exception as exc:
-        log(f"GOAL_AGY  AGY 提炼异常，转入启发式回退: {exc}")
+        log(f"GOAL_AGY  AGY 提炼异常，未取得有效目标: {exc}")
     return None
 
 
@@ -534,7 +872,7 @@ def resolve_stalled_goal_via_agy(
                             content = obj.get("content", "").strip()
                             if content:
                                 content = content.strip('`"\'“” \n\r\t')
-                                lines_c = [l.strip() for l in content.splitlines() if l.strip()]
+                                lines_c = [line.strip() for line in content.splitlines() if line.strip()]
                                 if lines_c:
                                     cand = lines_c[0].strip('`"\'“” \n\r\t')
                                     if cand.startswith("回复"):
@@ -550,68 +888,108 @@ def resolve_stalled_goal_via_agy(
     return None
 
 
+def extract_clean_goal_with_reason(
+    rollout_path: Optional[Path],
+    title: str = "",
+    agy_mgr: Optional[Any] = None,
+    run_dir: Optional[Path] = None,
+    codex_session_id: Optional[str] = None,
+    require_agy: bool = False,
+    cancel_event: Optional[threading.Event] = None,
+) -> Tuple[str, str]:
+    """在懒人模式下，由 AGY 智能提炼纯净交付目标，或启发式优雅回退。
+
+    绝不添加“推进并完成：”等多余前缀，下发提示词严格约束为 /goal [目标]。
+    优先级：
+    1. rollout 中已有的 thread_goal_updated 目标；
+    2. fork 子会话仅输入“继续”或无用户回合时，回溯父会话原始业务需求；
+    3. 核心：通过 Antigravity AGY 深度阅读任务上下文并智能提炼纯净目标；
+    4. “继续”类输入无法回溯父任务时，回退到宏观长程目标；
+    5. 会话原生 title (若具备业务语义)；
+    6. 最近一轮用户输入的有效文本（去除环境上下文和系统指令）。
+    """
+    # 1. 尝试从 rollout 中读取已有 goal 的 objective
+    existing = get_existing_thread_goal(rollout_path)
+    if existing:
+        return sanitize_goal(existing, rollout_path, title)
+
+    # 2. fork 子会话的“继续”类输入必须优先穿透父任务意图，避免就地停顿
+    summary = extract_recent_dialogue_summary(rollout_path)
+    user_texts = _rollout_user_texts(rollout_path)
+    clean_title = _strip_goal_prefixes(title or "")
+    title_is_continuation = _is_short_continuation(clean_title)
+    has_business_text = any(not _is_short_continuation(text) for text in user_texts)
+    continuation_only = not has_business_text and (
+        bool(user_texts) or title_is_continuation or bool(_fork_parent_id(rollout_path))
+    )
+
+    # 3. 核心：调用 AGY 语言服务提炼目标
+    agy_res = extract_goal_via_agy_agent(
+        rollout_path,
+        title=title,
+        agy_mgr=agy_mgr,
+        run_dir=run_dir,
+        timeout_sec=None if require_agy else 25.0,
+        codex_session_id=codex_session_id,
+        cancel_event=cancel_event,
+    )
+    if agy_res:
+        return sanitize_goal(agy_res, rollout_path, title)
+    if require_agy:
+        raise GoalExtractionError("AGY 未返回有效目标，请重试或手动输入")
+
+    # 4. 属于“继续”类但无法回溯父任务时，回退到宏观长程目标
+    if continuation_only:
+        parent_context = _fork_parent_business_context(rollout_path)
+        if parent_context and not _latest_followup_context(rollout_path):
+            return sanitize_goal(parent_context, rollout_path, title)
+        return _contextual_fallback(rollout_path, title), ""
+
+    if _latest_followup_context(rollout_path):
+        return _contextual_fallback(rollout_path, title), ""
+
+    # 5. 检查会话 title
+    if clean_title and clean_title != "无标题任务" and len(clean_title) > 3:
+        clean_title = clean_title.rstrip("….").strip()
+        if clean_title and not clean_title.startswith("读取codex://"):
+            return sanitize_goal(clean_title, rollout_path, title)
+
+    # 6. 提取最近一轮用户诉求（严密过滤系统标记、错误标签与无意义串）
+    if summary:
+        lines = [line for line in summary.splitlines() if line.startswith("User:")]
+        if lines:
+            last_user = lines[-1].replace("User:", "").strip()
+            last_user = _strip_goal_prefixes(last_user)
+            first_para = last_user.split("\n\n")[0].strip()
+            if (
+                len(first_para) > 4
+                and not first_para.startswith("<")
+                and not any(k in first_para for k in ("turn_aborted", "interrupted", "unified exec", "runs文件夹中有调试日志"))
+            ):
+                return sanitize_goal(first_para[:300], rollout_path, title)
+
+    fallback_title = clean_title if (clean_title and clean_title != "无标题任务") else "当前任务"
+    return sanitize_goal(f"完成{fallback_title}所有要求，补齐测试并完成验收", rollout_path, title)
+
+
 def extract_clean_goal(
     rollout_path: Optional[Path],
     title: str = "",
     agy_mgr: Optional[Any] = None,
     run_dir: Optional[Path] = None,
     codex_session_id: Optional[str] = None,
+    require_agy: bool = False,
+    cancel_event: Optional[threading.Event] = None,
 ) -> str:
-    """在懒人模式下，由 AGY 智能提炼纯净交付目标，或启发式优雅回退。
-
-    绝不添加“推进并完成：”等多余前缀，下发提示词严格约束为 /goal [目标]。
-    优先级：
-    1. rollout 中已有的 thread_goal_updated 目标；
-    2. 核心：通过 Antigravity AGY 深度阅读任务上下文并智能提炼纯净目标；
-    3. 会话原生 title (若具备业务语义)；
-    4. 最近一轮用户输入的有效文本（去除环境上下文和系统指令）。
-    """
-    # 1. 尝试从 rollout 中读取已有 goal 的 objective
-    existing = get_existing_thread_goal(rollout_path)
-    if existing:
-        return existing
-
-    # 2. 核心：无条件优先调用 AGY 语言服务提炼目标
-    agy_res = extract_goal_via_agy_agent(
+    return extract_clean_goal_with_reason(
         rollout_path,
         title=title,
         agy_mgr=agy_mgr,
         run_dir=run_dir,
-        timeout_sec=25.0,
         codex_session_id=codex_session_id,
-    )
-    if agy_res:
-        return agy_res
-
-    # 3. 检查会话 title
-    clean_title = (title or "").strip()
-    for prefix in ("/goal ", "推进并完成：", "推进并完成:", "完成：", "完成:"):
-        if clean_title.startswith(prefix):
-            clean_title = clean_title[len(prefix):].strip()
-    if clean_title and clean_title != "无标题任务" and len(clean_title) > 3:
-        clean_title = clean_title.rstrip("….").strip()
-        if clean_title and not clean_title.startswith("读取codex://"):
-            return clean_title
-
-    # 4. 提取最近一轮用户诉求（严密过滤系统标记、错误标签与无意义串）
-    summary = extract_recent_dialogue_summary(rollout_path)
-    if summary:
-        lines = [l for l in summary.splitlines() if l.startswith("User:")]
-        if lines:
-            last_user = lines[-1].replace("User:", "").strip()
-            for prefix in ("/goal ", "推进并完成：", "推进并完成:", "完成：", "完成:"):
-                if last_user.startswith(prefix):
-                    last_user = last_user[len(prefix):].strip()
-            first_sent = last_user.split("\n")[0].split("。")[0].split(".")[0].strip()
-            if (
-                len(first_sent) > 4
-                and not first_sent.startswith("<")
-                and not any(k in first_sent for k in ("turn_aborted", "interrupted", "unified exec", "runs文件夹中有调试日志"))
-            ):
-                return first_sent[:50]
-
-    fallback_title = clean_title if (clean_title and clean_title != "无标题任务") else "当前任务"
-    return f"完成{fallback_title}所有要求并通过测试"
+        require_agy=require_agy,
+        cancel_event=cancel_event,
+    )[0]
 
 
 # 向后兼容别名
@@ -912,6 +1290,18 @@ def run_goal_supervisor(
         if act:
             parts.append(f"| {act}")
 
+    def guarded_goal(candidate: str) -> str:
+        clean, guard_reason = sanitize_goal(candidate, rollout, title)
+        if guard_reason:
+            ivl(
+                "GOAL_GUARDRAIL",
+                original=str(candidate or "")[:300],
+                reason=guard_reason,
+                fallback=clean,
+            )
+            log(f"GOAL_GUARDRAIL 已拦截微观或现状误读目标: {guard_reason}")
+        return clean
+
     if state_mgr is None:
         state_mgr = SupervisorState(run_dir, sid=sid, mode="goal", ws=ws_path)
 
@@ -946,27 +1336,52 @@ def run_goal_supervisor(
 
     # 2. 阶段 1：目标设立检查 (识别目标是否设立)
     existing_goal = get_existing_thread_goal(rollout)
-    skip_goal_injection = False
+    goal_already_set = bool(goal_target == "__ALREADY_SET__" or (not goal_target and existing_goal))
+    # 目标已设立时不再重复下发 /goal(会覆盖既有目标)，但仍必须注入长程托管续跑指令：
+    # 否则重构后的提示词策略永远到不了 LLM，模型会把秒级动作当阶段目标后自动退出。
+    reuse_existing_prompt = False
 
-    if goal_target == "__ALREADY_SET__" or (not goal_target and existing_goal):
-        skip_goal_injection = True
-        clean_goal = existing_goal or "推进当前任务"
-        final_prompt = ""
+    if goal_already_set:
+        clean_goal = guarded_goal(existing_goal or GOAL_GUARDRAIL_FALLBACK)
+        final_prompt = build_long_horizon_directive(clean_goal)
+        reuse_existing_prompt = True
         log("=" * 60)
         log("GOAL     目标模式已启动 (三阶段自主流转)")
         log(f"GOAL     目标会话: [{sid[:8]}] {title or '(无标题)'}")
-        log(f"GOAL_PHASE 1 [目标已设立] 检测到已有活跃目标: [{clean_goal}]，跳过目标设定指令")
+        log(f"GOAL_PHASE 1 [目标已设立] 检测到已有活跃目标: [{clean_goal}]，下发长程托管续跑指令")
         log("=" * 60)
         ivl("GOAL_PHASE", phase=1, status="ALREADY_SET", goal=clean_goal)
         prompt_file = run_dir / "goal_prompt.txt"
-        prompt_file.write_text(f"Existing goal: {clean_goal}\n", encoding="utf-8")
+        prompt_file.write_text(final_prompt + "\n", encoding="utf-8")
         state_mgr.transition("RUNNING", detail=f"Goal mode active (existing): {clean_goal}")
-        ivl("GOAL_STARTED", session=sid, prompt=f"existing:{clean_goal}", title=title)
+        ivl("GOAL_STARTED", session=sid, prompt=f"existing:{clean_goal}", title=title, strategy="long_horizon_resume")
     else:
         clean_goal = str(goal_target or "").strip()
-        if clean_goal == "__LAZY__" or not clean_goal:
+        if not clean_goal:
+            return finish_goal("FAILED", "尚未设定 Goal 目标；请手动输入，或明确选择懒人模式")
+        if clean_goal == "__LAZY__":
             ivl("GOAL_LAZY_EXTRACT", session=sid)
-            clean_goal = extract_clean_goal(rollout, title=title, agy_mgr=agy_mgr, run_dir=run_dir, codex_session_id=sid)
+            try:
+                clean_goal, guard_reason = extract_clean_goal_with_reason(
+                    rollout,
+                    title=title,
+                    agy_mgr=agy_mgr,
+                    run_dir=run_dir,
+                    codex_session_id=sid,
+                    require_agy=True,
+                )
+            except GoalExtractionError as exc:
+                return finish_goal("FAILED", f"AGY 目标提炼未完成: {exc}")
+            if guard_reason:
+                ivl(
+                    "GOAL_GUARDRAIL",
+                    original="AGY/启发式提炼结果",
+                    reason=guard_reason,
+                    fallback=clean_goal,
+                )
+                log(f"GOAL_GUARDRAIL 已拦截微观或现状误读目标: {guard_reason}")
+        else:
+            clean_goal = guarded_goal(clean_goal)
 
         if clean_goal.startswith("/goal "):
             final_prompt = clean_goal
@@ -986,34 +1401,36 @@ def run_goal_supervisor(
 
     initial_size = rollout.stat().st_size if (rollout and rollout.exists()) else 0
 
-    # 3. 目标指令注入 (若已设立则仅聚焦并恢复桌面窗口)
+    # 3. 目标指令注入 (既有目标时下发长程续跑指令，新目标时下发 /goal)
     target_hwnd = find_best_codex_window()
-    if not skip_goal_injection:
-        if target_hwnd > 0:
-            log(f"GOAL_INJECT 检测到 Codex 桌面主窗口 (HWND: {target_hwnd})，正在注入...")
-            inject_res = inject_into_codex_gui(
-                target_hwnd=target_hwnd,
-                target_sid=sid,
-                target_title=title,
-                text=final_prompt,
-                rollout_path=rollout,
-            )
-            ivl("GOAL_INJECT", status=inject_res.status, detail=inject_res.detail)
-            log(f"GOAL_INJECT 注入回执: {inject_res.status} ({inject_res.detail})")
-            if inject_res.status == "NOT_SENT":
-                return finish_goal("FAILED", f"GUI 指令注入失败: {inject_res.detail} (请确保目标会话在 Codex 桌面端展开)")
-        else:
-            log("GOAL_INJECT 未检测到 Codex 前台活动主窗口，指令已记录到 prompt_file")
-            ivl("GOAL_INJECT", status="RECORDED", detail="桌面端窗口未激活")
+    if target_hwnd > 0:
+        kind = "长程续跑指令" if reuse_existing_prompt else "Goal 目标指令"
+        log(f"GOAL_INJECT 检测到 Codex 桌面主窗口 (HWND: {target_hwnd})，正在注入{kind}...")
+        inject_res = inject_into_codex_gui(
+            target_hwnd=target_hwnd,
+            target_sid=sid,
+            target_title=title,
+            text=final_prompt,
+            rollout_path=rollout,
+        )
+        ivl("GOAL_INJECT", status=inject_res.status, detail=inject_res.detail,
+            kind="resume_directive" if reuse_existing_prompt else "goal_command")
+        log(f"GOAL_INJECT 注入回执: {inject_res.status} ({inject_res.detail})")
+        if inject_res.status == "NOT_SENT":
+            reason = "长程续跑指令" if reuse_existing_prompt else "Goal 目标指令"
+            return finish_goal("FAILED", f"GUI {reason}注入失败: {inject_res.detail} (请确保目标会话在 Codex 桌面端展开)")
     else:
         if sid:
             _navigate_target(sid)
-        if target_hwnd > 0:
-            ensure_codex_window_restored()
-        log("GOAL_PHASE 1 目标已设立，直接进入计划与长程执行阶段")
+        log("GOAL_INJECT 未检测到 Codex 前台活动主窗口，指令已记录到 prompt_file")
+        ivl("GOAL_INJECT", status="RECORDED", detail="桌面端窗口未激活")
+        if reuse_existing_prompt:
+            # 桌面端未开时无法下发续跑指令，但既有目标仍在走，不因此中断守护。
+            log("GOAL_PHASE 1 目标已设立且无法注入，直接进入计划与长程执行阶段")
 
     # 4. 看门狗三阶段流转主循环
-    has_started = skip_goal_injection
+    # 桌面端未开且目标已设立时无需等待新回合；其余情况都必须确认注入真的引发了新回合。
+    has_started = reuse_existing_prompt and target_hwnd <= 0
     wait_start_deadline = time.monotonic() + 30.0
     last_activity = ""
     last_change_time = time.monotonic()
@@ -1036,6 +1453,8 @@ def run_goal_supervisor(
         max_autopilot = 30
     settle_logged = False
     last_phase = ""
+    last_heartbeat_log = time.monotonic()
+    last_heartbeat_ivl = time.monotonic()
 
     try:
         while True:
@@ -1082,6 +1501,20 @@ def run_goal_supervisor(
             idle_elapsed = time.monotonic() - last_change_time
             if idle_elapsed > stale_warn_sec and idle_elapsed % 120 < check_interval:
                 log(f"[WARN] GOAL 会话已静默 {int(idle_elapsed)} 秒，持续监测中...")
+
+            # 心跳日志：长跑期间必须让外部看得见"还活着、在看什么"，避免观感上"无任何反应"。
+            now_mono = time.monotonic()
+            if now_mono - last_heartbeat_log >= 60.0:
+                last_heartbeat_log = now_mono
+                log(
+                    f"GOAL_WAIT phase={current_phase or 'init'} size={curr_size} "
+                    f"activity={last_activity or 'idle'} idle={int(idle_elapsed)}s "
+                    f"elapsed={int(now_mono - start_time)}s"
+                )
+                if now_mono - last_heartbeat_ivl >= 300.0:
+                    last_heartbeat_ivl = now_mono
+                    ivl("GOAL_WAIT", phase=current_phase, size=curr_size,
+                        activity=last_activity, idle_sec=int(idle_elapsed))
 
             # 阶段 D：生命周期判定与暂停分析
             is_working, reason, last_msg = is_codex_working(rollout)

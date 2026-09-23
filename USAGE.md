@@ -103,6 +103,7 @@ Doloris 提供了三种完全不同的任务交接与运行模式，满足从低
   1. Codex 桌面窗口全程显示在前台。
   2. 基于 Windows 原生 UI Automation (UIA)，通过 `active-thread-<SID>` 与 `codex://threads/<SID>` 机器元数据进行**双重机器身份校验**。严格拒绝非目标面板、拒绝模糊标题匹配、拒绝正文文本误匹配。
   3. 定位目标输入框，执行原子写入并触发提交，监听新指令接收证据（`GUI_INJECT_ACK`），严密防止网络抖动导致的重复发送。
+* **只读预检（注入前自证）**：发送任何按键前先跑一次 `gui_inject.ps1 -ProbeOnly` 只读身份探针（不敲键、不点按、不写剪贴板）；若判定为环境性不可送达（例如桌面端以更高权限运行、UIA 拒绝访问），立刻给出中文结论并停止发送，不再空耗有界重试预算。现场排查：`python tests/check_gui_probe.py --sid <会话 SID>`。
 
 ---
 
@@ -164,8 +165,10 @@ pets/
 
 ### 1. `tasks/<任务名>/task.md`（任务描述文件）
 全文将作为任务初始 Prompt 下发给 Worker。必须明确：
-* 交付物目录约定（通常在 `--work-dir` 目录下，如 `work/`）。
+* 交付物目录约定（默认候选是任务工作根下的 `work/`，也可在任务文本中写明绝对路径，或用 `--delivery-dir` 显式覆盖）。
 * 授权范围与规范（告知 Worker 常规技术决策已授权主管，可直接提问）。
+
+交付目录不存在或不可写时会进入基线 `blockers` 并阻止静默回退到会话根目录扫描；`--work-dir` 只影响该候选目录的推导，不会改变 `acceptance.md` 的解析基准。
 
 ### 2. `tasks/<任务名>/acceptance.md`（机器可验证的验收清单）
 每行定义一条断言，只有全部满足才允许判为 `SUCCESS`：
@@ -179,6 +182,12 @@ work/report.md
 # 3. 验证生成的文件数量（work/chapters 目录下必须存在至少 12 个 ch*.md 文件）
 work/chapters/ch*.md :12
 ```
+
+解析规则与安全边界：
+* 所有断言路径一律相对**目标会话工作根**解析（`--adopt` 时是被接管会话的 cwd，否则是 Doloris 所在根目录），而不是相对 `--work-dir` 或 `--delivery-dir`。若产物在 `work/` 下，必须写作 `work/...`。
+* `<相对 glob> :N` 要求至少 N 个位于工作区内的非空文件，省略 `:N` 时 N=1；`checklist: <路径> :N` 要求文件内 `- [x]` / `- [X]` 数量至少为 N，`checklist:` 后与 `:N` 前允许空格。
+* `#` 开头的行为注释；空白规范、纯注释或任何无法满足的断言都按失败处理（fail-closed）。绝对路径、UNC 路径、`..` 以及 glob 等价的目录穿越写法会被直接拒绝。
+* 存在 `acceptance.md` 时优先于旧版 12 章与默认契约；只有显式传入 `--selftest-12ch` 才会启用 `work/PROGRESS.md` 12 项勾选 + 12 个章节文件的兼容验收。无 `acceptance.md` 且未启用该参数时，使用默认契约：交付目录内 `PROGRESS.md` 全部勾选且 `report.md` 非空。
 
 ---
 
@@ -225,7 +234,12 @@ doloris [--adopt TARGET] [--fork | --resume | --gui] [其他选项...]
 | `--gui` | 否 | 启用 Mode 3：原生双有头 GUI 注入，App 全程前台活跃 |
 | `--quick` | 关 | 快速交接模式：跳过交互式提问，直接选用当前上下文 |
 | `--yes` | 关 | 免确认模式：自动接受所有交接确认提示 |
-| `--work-dir` | `work` | 交付物生成目录（相对于当前工作区根目录） |
+| `--work-dir` | `work` | 推导默认交付目录时的候选相对路径；不改变 `acceptance.md` 相对工作区根的解析基准 |
+| `--delivery-dir` | 自动检测 | 显式指定用户交付目录；路径不存在或不可写会记为阻塞 |
+| `--writable-root` | 会话工作目录 | 额外授权可写根目录，可重复指定 |
+| `--verification-plan` | 空 | 启动时固化的功能验证计划 JSON；Worker 无法中途替换授权命令 |
+| `--selftest-12ch` | 关 | 仅在无 `acceptance.md` 时启用旧版 12 章写作验收 |
+| `--inspect-run` | 空 | 只读加载 `runs/<时间戳>/supervisor_state.json` 并输出 JSON 诊断摘要，不启动监管 |
 | `--max-run-sec` | `0` (不设限) | 任务总时长预算（秒），默认跑完为止，超时主动熔断 |
 | `--handoff-timeout-sec` | `90` | 模式 2 (kill) 检查在途工具调用安全退出的等待时限 |
 | `--l2-cmd` | `antigravity` | L2 智能委托通道：`antigravity`（默认）、`off`（禁用） |

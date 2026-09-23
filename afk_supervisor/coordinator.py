@@ -11,10 +11,9 @@ import json
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 
-from afk_supervisor.models import ActionType, DeadlineBudget, EvidencePacket, L2Result
-from afk_supervisor.platform.process import log
+from afk_supervisor.models import ActionType, DeadlineBudget, EvidencePacket
 from afk_supervisor.baseline import TaskBaseline
 from afk_supervisor.evidence import collect_evidence, calculate_reviewed_revision
 from afk_supervisor.l2.protocol import extract_protocol_json, normalize_next_action

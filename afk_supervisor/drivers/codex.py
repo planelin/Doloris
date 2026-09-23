@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from afk_supervisor.platform.process import log
-from afk_supervisor.sessions.discovery import register_thread_for_codex_ui, get_codex_home, get_codex_sessions_dir
+from afk_supervisor.sessions.discovery import register_thread_for_codex_ui, get_codex_sessions_dir
 
 
 class CodexDriver:
@@ -216,17 +216,36 @@ class CodexDriver:
                 if self.wait_exit(timeout):
                     log(f"KILL    进程树 pid={self.proc.pid} 已优雅退出")
                     self._close_handles()
-                    return
+                    return True
             except Exception:
                 pass
             no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            subprocess.run(["taskkill", "/PID", str(self.proc.pid), "/T", "/F"], capture_output=True, creationflags=no_win)
+            failure_detail = ""
+            try:
+                killed = subprocess.run(
+                    ["taskkill", "/PID", str(self.proc.pid), "/T", "/F"],
+                    capture_output=True, text=True, errors="replace", timeout=15, creationflags=no_win,
+                )
+                if getattr(killed, "returncode", 0):
+                    failure_detail = f"{getattr(killed, 'stderr', '') or ''}{getattr(killed, 'stdout', '') or ''}".strip()[:200]
+            except Exception as error:
+                failure_detail = f"{type(error).__name__}: {error}"
             try:
                 self.proc.wait(timeout=3)
             except Exception:
                 pass
+            # 真回执: taskkill 的退出码说明不了进程已死 (权限不足时它只是失败),
+            # 必须回查进程状态, 否则会得到"已强制终止"的假回执。
+            if self.proc.poll() is None:
+                hint = ""
+                if "denied" in failure_detail.lower() or "拒绝访问" in failure_detail:
+                    hint = " (权限不足: Worker 以更高权限运行, 请以相同或更高权限启动守护进程)"
+                log(f"KILL    pid={self.proc.pid} 未能终止: {failure_detail or 'taskkill 未杀死进程'}{hint}")
+                self._close_handles()
+                return False
             log(f"KILL    进程树 pid={self.proc.pid} 已强制终止")
         self._close_handles()
+        return True
 
     def heartbeat_age(self, launched_at: float) -> float:
         # A resumed process inherits an old rollout. Its startup grace begins at

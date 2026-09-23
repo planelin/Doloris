@@ -10,7 +10,8 @@ import re
 from pathlib import Path
 from typing import List, Optional, Set, Tuple
 
-from afk_supervisor.l2.transport import worker_last_message
+# cli.py 从本模块再导出该符号；保留以免破坏既有调用方。
+from afk_supervisor.l2.transport import worker_last_message  # noqa: F401
 
 ASK_MARKERS = (
     "【决策请求】", "【需要决策】", "[决策请求]",
@@ -52,7 +53,11 @@ def is_interaction_request(last_msg: str) -> bool:
 
 
 def _acceptance_selftest(work_dir: Path) -> Tuple[bool, str]:
-    """selftest 12章格式: work_dir/PROGRESS.md 12项勾选 + 12个章节文件非空。"""
+    """Legacy selftest 12章格式: work_dir/PROGRESS.md 12项勾选 + 12个章节文件非空。
+
+    该契约只适用于章节式写作任务，必须由 --selftest-12ch 显式启用，
+    不能作为通用任务的默认验收标准。
+    """
     prog = work_dir / "PROGRESS.md"
     if not prog.exists():
         return False, f"PROGRESS.md 不存在于 {work_dir}"
@@ -71,45 +76,177 @@ def _acceptance_selftest(work_dir: Path) -> Tuple[bool, str]:
     return ok, detail
 
 
-def check_acceptance(task_dir: Path, workspace_root: Path, artifact_dir: Optional[Path] = None) -> Tuple[bool, str]:
+def _is_within(base: Path, target: Path) -> bool:
+    try:
+        Path(target).resolve().relative_to(base.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _resolve_spec_path(base: Path, raw_path: str, label: str = "") -> Tuple[Optional[Path], str]:
+    """把验收规范中的相对路径解析到工作区根内；拒绝绝对路径与目录穿越。"""
+    text = raw_path.strip().strip('"').strip("'")
+    shown = label or text
+    if not text:
+        return None, "空路径断言"
+    if Path(text).is_absolute() or re.match(r"^[a-zA-Z]:", text) or text.startswith(("\\\\", "//")):
+        return None, f"{shown} 使用绝对路径/UNC，验收规范只允许工作区相对路径"
+    parts = [part for part in re.split(r"[\\/]+", text) if part not in ("", ".")]
+    if ".." in parts:
+        return None, f"{shown} 含 .. 路径穿越，已拒绝"
+    resolved = (base / text).resolve()
+    if not _is_within(base, resolved):
+        return None, f"{shown} 解析后越出工作区根目录，已拒绝"
+    return resolved, ""
+
+
+_GLOB_CLASS_RE = re.compile(r"\[([^\]]*)\]")
+
+
+def _glob_probe(pattern: str) -> str:
+    """把 glob 模式展开为等价字面路径，供穿越预检使用。
+
+    字符集按最保守的字面含义处理: 只要类内可能出现 '.' 就当作点，
+    使 [.a][.a]/x、.[.]/[.]x 这类等价于 ../x 的写法同样被拒绝，
+    不依赖 glob 实现是否会把点分量交给字符类匹配。
+    其余通配符替换为 x 以保持路径形状。
+    """
+    def expand_class(match) -> str:
+        body = match.group(1).lstrip("!^")
+        return "." if "." in body else "x"
+    probe = _GLOB_CLASS_RE.sub(expand_class, pattern)
+    return probe.replace("*", "x").replace("?", "x")
+
+
+def evaluate_acceptance_spec(spec: Path, base: Path) -> Tuple[bool, str]:
+    """刚性断言评估；acceptance.py 与 evidence.py 共用同一实现与同一基准。
+
+    支持的断言形式 (全部相对 base 解析):
+         <glob>                至少匹配 1 个非空文件
+         <glob> :N             至少匹配 N 个非空文件
+         checklist: <path> :N  文件内 '- [x]' 数量 ≥ N
+    空规范、仅注释、绝对路径、.. 穿越一律判失败。
+    """
+    base = Path(base).resolve()
+    try:
+        lines = Path(spec).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as error:
+        return False, f"验收规范不可读: {error}"
+
+    problems: List[str] = []
+    assertions = 0
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        assertions += 1
+        if line.lower().startswith("checklist:"):
+            body = line[len("checklist:"):].strip()
+            head, sep, tail = body.rpartition(":")
+            if sep and tail.strip().isdigit():
+                path_text, need = head.strip(), int(tail.strip())
+            else:
+                path_text, need = body, 1
+            if need < 1:
+                problems.append(f"checklist: {path_text or '(空)'} 断言语义无效 (N<1)")
+                continue
+            target, error = _resolve_spec_path(base, path_text)
+            if error:
+                problems.append(error)
+                continue
+            if not target.is_file():
+                problems.append(f"{path_text} 不存在")
+                continue
+            try:
+                txt = target.read_text(encoding="utf-8", errors="replace")
+            except OSError as read_error:
+                problems.append(f"{path_text} 不可读: {read_error}")
+                continue
+            done = txt.count("- [x]") + txt.count("- [X]")
+            if done < need:
+                problems.append(f"{path_text} 勾选{done}<{need}")
+        else:
+            head, sep, tail = line.rpartition(":")
+            if sep and tail.strip().isdigit():
+                pat, need = head.strip(), int(tail.strip())
+            else:
+                pat, need = line, 1
+            if need < 1:
+                problems.append(f"{pat or '(空)'} 断言语义无效 (N<1)")
+                continue
+            _, error = _resolve_spec_path(base, _glob_probe(pat), label=pat)
+            if error:
+                problems.append(error)
+                continue
+            hits = []
+            try:
+                for match in base.glob(pat):
+                    try:
+                        if match.is_file() and match.stat().st_size > 0 and _is_within(base, match):
+                            hits.append(match)
+                    except OSError:
+                        continue
+            except (OSError, ValueError) as glob_error:
+                problems.append(f"{pat} 匹配失败: {glob_error}")
+                continue
+            if len(hits) < need:
+                problems.append(f"{pat} 非空文件{len(hits)}<{need}")
+
+    if assertions == 0:
+        return False, f"验收规范为空或没有任何有效断言: {spec}"
+    return (not problems), ("全部满足" if not problems else "; ".join(problems[:4]))
+
+
+def _acceptance_default_contract(artifact_dir: Path) -> Tuple[bool, str]:
+    """无 acceptance.md 时的通用兜底契约 (与 task.md 基线声明保持一致):
+    PROGRESS.md 全部勾选且无待办，report.md 非空。
+    """
+    artifact_dir = Path(artifact_dir)
+    problems: List[str] = []
+    prog = artifact_dir / "PROGRESS.md"
+    if not prog.is_file():
+        problems.append(f"PROGRESS.md 不存在于 {artifact_dir}")
+    else:
+        try:
+            txt = prog.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            problems.append("PROGRESS.md 不可读")
+        else:
+            done = txt.count("- [x]") + txt.count("- [X]")
+            todo = txt.count("- [ ]")
+            if done < 1:
+                problems.append("PROGRESS.md 勾选0<1")
+            if todo > 0:
+                problems.append(f"PROGRESS.md 仍有{todo}项待办")
+    report = artifact_dir / "report.md"
+    if not report.is_file() or report.stat().st_size <= 0:
+        problems.append("report.md 不存在或为空")
+    detail = "默认契约满足: PROGRESS.md 全勾选且 report.md 非空" if not problems else "; ".join(problems[:4])
+    return (not problems), detail
+
+
+def check_acceptance(
+    task_dir: Path,
+    workspace_root: Path,
+    artifact_dir: Optional[Path] = None,
+    selftest_12ch: bool = False,
+) -> Tuple[bool, str]:
     """通用显式验收。优先读 tasks/<name>/acceptance.md:
          <glob>              至少匹配1个非空文件 (相对 workspace_root 解析)
          <glob> :N           至少匹配 N 个非空文件
          checklist: <path> :N   文件内 '- [x]' 数量 ≥ N
-       无 acceptance.md 时回退 selftest 默认。
-       所有路径断言严格统一相对 workspace_root 解析。
+
+    无 acceptance.md 时默认执行 task.md 声明的通用契约；
+    章节式 12 章 selftest 仅在 selftest_12ch=True 时启用。
+    所有路径断言严格统一相对 workspace_root 解析。
     """
     spec = Path(task_dir) / "acceptance.md" if task_dir else None
-    if not spec or not spec.exists():
-        return _acceptance_selftest(artifact_dir or (Path(workspace_root) / "work"))
-
-    base = Path(workspace_root).resolve()
-    problems = []
-    for raw in spec.read_text(encoding="utf-8", errors="replace").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.lower().startswith("checklist:"):
-            parts = [p.strip() for p in line[len("checklist:"):].split(":") if p.strip()]
-            path, need = parts[0], (int(parts[1]) if len(parts) > 1 else 1)
-            f = base / path
-            if not f.exists():
-                problems.append(f"{path} 不存在")
-                continue
-            txt = f.read_text(encoding="utf-8", errors="replace")
-            done = txt.count("- [x]") + txt.count("- [X]")
-            if done < need:
-                problems.append(f"{path} 勾选{done}<{need}")
-        else:
-            parts = line.rsplit(":", 1)
-            if len(parts) == 2 and parts[1].strip().isdigit():
-                pat, need = parts[0].strip(), int(parts[1])
-            else:
-                pat, need = line, 1
-            hits = [m for m in base.glob(pat) if m.is_file() and m.stat().st_size > 0]
-            if len(hits) < need:
-                problems.append(f"{pat} 非空文件{len(hits)}<{need}")
-    return (not problems), ("全部满足" if not problems else "; ".join(problems[:4]))
+    if spec and spec.is_file():
+        return evaluate_acceptance_spec(spec, Path(workspace_root).resolve())
+    if selftest_12ch:
+        return _acceptance_selftest(artifact_dir or (Path(workspace_root).resolve() / "work"))
+    return _acceptance_default_contract(artifact_dir or Path(workspace_root).resolve())
 
 
 def check_acceptance_natural(
@@ -204,6 +341,29 @@ def check_acceptance_natural(
         if root_cand.exists():
             add_candidate(root_cand)
 
+    def is_real_negation(prefix_str: str, neg_word: str) -> bool:
+        if neg_word == "不":
+            cleaned = re.sub(r"(?:还|挺|真|很)?不错|不仅|不得不|不妨", "", prefix_str)
+            return "不" in cleaned
+        return neg_word in prefix_str
+
+    def find_positive_done_signal() -> Tuple[bool, str]:
+        """识别未被否定/暂停语境覆盖的完工语义，空字符串表示未命中。"""
+        negation_detected = None
+        for sig in DONE_SIGNALS:
+            idx = last_msg.find(sig)
+            while idx != -1:
+                prefix = last_msg[max(0, idx - 15):idx].strip()
+                neg_matches = [neg for neg in NEGATION_WORDS if is_real_negation(prefix, neg)]
+                if neg_matches:
+                    negation_detected = f"检测到否定语义 ('{neg_matches[0]}{sig}'), 任务未完工"
+                elif not any(p in last_msg for p in PAUSE_MARKERS):
+                    return True, f"识别到自然完工语义: '{sig}'"
+                idx = last_msg.find(sig, idx + len(sig))
+        if negation_detected:
+            return False, negation_detected
+        return False, ""
+
     if checklist_candidates:
         checklist_candidates.sort(
             key=lambda p: p.stat().st_mtime if p.exists() else 0,
@@ -225,30 +385,29 @@ def check_acceptance_natural(
                 elif done >= 1 and todo == 0:
                     if min_mtime > 0 and primary.stat().st_mtime < min_mtime:
                         continue
+                    # 清单由 Worker 自己写入，不能单独构成完工证据；本回合
+                    # (min_mtime 之后) 新写入的全勾选清单必须同时有明确完工语义。
+                    if min_mtime > 0:
+                        signaled, signal_reason = find_positive_done_signal()
+                        if not signaled:
+                            detail = signal_reason or (
+                                f"项目清单已全勾选 ({rel_path}: 勾选{done}, 剩余0)，"
+                                "但最终消息缺少明确完工语义；拒绝仅凭 Worker 自写清单放行"
+                            )
+                            return False, detail
+                        return True, (
+                            f"项目清单已全部勾选完成 ({rel_path}: 勾选{done}, 剩余0)；"
+                            f"{signal_reason}"
+                        )
                     return True, f"项目清单已全部勾选完成 ({rel_path}: 勾选{done}, 剩余0)"
             except OSError:
                 pass
 
-    def is_real_negation(prefix_str: str, neg_word: str) -> bool:
-        if neg_word == "不":
-            cleaned = re.sub(r"(?:还|挺|真|很)?不错|不仅|不得不|不妨", "", prefix_str)
-            return "不" in cleaned
-        return neg_word in prefix_str
-
-    negation_detected = None
-    for sig in DONE_SIGNALS:
-        idx = last_msg.find(sig)
-        while idx != -1:
-            prefix = last_msg[max(0, idx - 15):idx].strip()
-            neg_matches = [neg for neg in NEGATION_WORDS if is_real_negation(prefix, neg)]
-            if neg_matches:
-                negation_detected = f"检测到否定语义 ('{neg_matches[0]}{sig}'), 任务未完工"
-            elif not any(p in last_msg for p in PAUSE_MARKERS):
-                return True, f"识别到自然完工语义: '{sig}'"
-            idx = last_msg.find(sig, idx + len(sig))
-
-    if negation_detected:
-        return False, negation_detected
+    signaled, signal_reason = find_positive_done_signal()
+    if signaled:
+        return True, signal_reason
+    if signal_reason:
+        return False, signal_reason
 
     return False, "未检测到活跃的已完成清单或明确完工语义"
 

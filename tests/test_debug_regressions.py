@@ -14,6 +14,7 @@ from afk_supervisor.l2.protocol import build_protocol_prompt, validate_protocol_
 from afk_supervisor.models import EvidenceItem, L2Result
 from afk_supervisor.observations import command_accepted, normalize_command_text
 from afk_supervisor.state import SupervisorState
+from afk_supervisor.storage import atomic_json
 
 
 class DebugFixture(unittest.TestCase):
@@ -130,6 +131,20 @@ class EvidenceRegressions(DebugFixture):
         self.assertFalse(self.collect().mechanical_failures)
 
 
+class PlatformBoundaryRegressions(DebugFixture):
+    def test_adapter_name_cannot_break_out_of_powershell_literal(self):
+        from afk_supervisor.platform import windows
+        with patch("afk_supervisor.platform.windows.subprocess.run") as run:
+            run.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
+            self.assertTrue(windows.net_disable("Bob's Wi-Fi"))
+            self.assertTrue(windows.net_enable("Bob's Wi-Fi"))
+        commands = [call.args[0][-1] for call in run.call_args_list]
+        self.assertEqual(commands, [
+            "Disable-NetAdapter -Name 'Bob''s Wi-Fi' -Confirm:$false",
+            "Enable-NetAdapter -Name 'Bob''s Wi-Fi' -Confirm:$false",
+        ])
+
+
 class BaselineAndStateRegressions(DebugFixture):
     def test_explicit_task_respects_delivery_flag_and_confirmation(self):
         task_dir = self.root / "task"
@@ -207,6 +222,53 @@ class CoordinatorAndPromptRegressions(DebugFixture):
         self.assertIn("FINAL_REQUIRED_DETAIL", incremental)
         self.assertIn(self.baseline.task_id, incremental)
         self.assertIn("required_criteria", incremental)
+
+
+class StorageDurabilityRegressions(unittest.TestCase):
+    """Windows 上杀毒/索引器造成的瞬时 os.replace 冲突不得让检查点写入直接失败。"""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(prefix="afk-storage-")
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.target = self.root / "supervisor_state.json"
+
+    @staticmethod
+    def _transient():
+        return PermissionError(13, "Access denied", None, 5)
+
+    def test_transient_replace_conflict_is_retried(self):
+        import os
+        real_replace = os.replace  # 必须在 patch 生效前取出真实实现
+        calls = []
+
+        def flaky(source, destination):
+            calls.append(destination)
+            if len(calls) < 3:
+                raise self._transient()
+            return real_replace(source, destination)
+
+        with patch("afk_supervisor.storage.os.replace", side_effect=flaky):
+            atomic_json(self.target, {"state": "SUCCESS"})
+
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(json.loads(self.target.read_text(encoding="utf-8")), {"state": "SUCCESS"})
+
+    def test_persistent_replace_conflict_still_fails_closed(self):
+        with patch("afk_supervisor.storage.os.replace", side_effect=self._transient()) as replace:
+            with self.assertRaises(PermissionError):
+                atomic_json(self.target, {"state": "SUCCESS"})
+
+        self.assertEqual(replace.call_count, 4)
+        self.assertFalse(self.target.exists())
+        self.assertEqual(list(self.root.glob("*.tmp.*")), [], "重试失败后不得残留临时文件")
+
+    def test_non_transient_replace_error_is_not_retried(self):
+        with patch("afk_supervisor.storage.os.replace", side_effect=FileNotFoundError(2, "missing")) as replace:
+            with self.assertRaises(FileNotFoundError):
+                atomic_json(self.target, {"state": "SUCCESS"})
+
+        self.assertEqual(replace.call_count, 1)
 
 
 if __name__ == "__main__":

@@ -21,7 +21,6 @@ from afk_supervisor.coordinator import SupervisorCoordinator
 from afk_supervisor.models import ActionType, EvidenceItem, EvidencePacket
 from afk_supervisor.l2.protocol import (
     build_protocol_prompt,
-    normalize_next_action,
     validate_protocol_payload,
 )
 

@@ -30,6 +30,16 @@ from afk_supervisor.compat import get_sym
 from afk_supervisor.actions import UnattendedL2, DecisionStopped, repair_action, WORKER_ACTIONS, CHANNEL_ERRORS
 from afk_supervisor.observations import read_events, command_accepted, file_size
 
+# 注入回执窗口：确认窗口从"最后一次发送返回"起算，注入脚本自身耗时不得挤占它；
+# 明确未送达 (NOT_SENT) 时只按有界重试预算判定，否则慢速发送会提前掐断重试。
+GUI_ACK_WINDOW_SEC = 30.0
+GUI_RETRY_INTERVAL_SEC = 6.0
+GUI_RETRY_TOTAL_SEC = 90.0
+GUI_MAX_ATTEMPTS = 3
+# 心跳间隔：GUI 模式过去只在状态发生变化时写日志，长时间等待期间用户在界面上
+# 看不到任何输出，会误判为"接管后无反应/卡死"。这里按固定间隔输出可观测心跳。
+GUI_HEARTBEAT_INTERVAL_SEC = 30.0
+
 
 def run_gui_supervisor(
     sid: str,
@@ -49,7 +59,8 @@ def run_gui_supervisor(
 ) -> int:
     """双有头交互监管守护循环。"""
     if ivl is None:
-        ivl = lambda event, **kw: None
+        def ivl(event, **kw):
+            return None
     if budget is None:
         budget = DeadlineBudget(args.max_run_sec)
 
@@ -99,6 +110,34 @@ def run_gui_supervisor(
     coordinator.state_mgr = state_mgr
     state_mgr.max_interactions = max_interactions
     state_mgr.transition("RUNNING", detail="GUI supervision loop running")
+
+    heartbeat_path = Path(rollout) if rollout else None
+    loop_start = time.monotonic()
+    last_heartbeat = loop_start
+    # 最近一次注入回执 (含身份探针结论)：心跳与终局报告都要带上它，
+    # 否则权限/可访问性树这类基础设施失败只能表现为"接管后无反应"。
+    last_delivery = {"status": "-", "detail": "-"}
+
+    def beat(phase: str, force: bool = False) -> None:
+        """周期性写入 GUI_WAIT 心跳，证明守护循环仍在推进而非卡死。"""
+        nonlocal last_heartbeat
+        now = time.monotonic()
+        if not force and now - last_heartbeat < GUI_HEARTBEAT_INTERVAL_SEC:
+            return
+        last_heartbeat = now
+        try:
+            size_now = file_size(heartbeat_path) if heartbeat_path else 0
+        except OSError:
+            size_now = -1
+        elapsed_sec = int(now - loop_start)
+        delivery_note = last_delivery["detail"] or "-"
+        if last_delivery["status"] not in ("", "-"):
+            delivery_note = f"[{last_delivery['status']}] {delivery_note}"
+        log(f"GUI_WAIT phase={phase} size={size_now} "
+            f"activity={last_activity or '-'} delivery={delivery_note} elapsed={elapsed_sec}s")
+        ivl("GUI_WAIT", phase=phase, size=size_now,
+            activity=last_activity or "-", delivery_status=last_delivery["status"],
+            delivery_detail=last_delivery["detail"] or "-", elapsed_sec=elapsed_sec)
 
     def finish(state: str, detail: str) -> int:
         state_mgr.transition(state, detail=detail)
@@ -152,7 +191,11 @@ def run_gui_supervisor(
         pending_injection["status"] = status
         pending_injection["last_try"] = time.monotonic()
         state_mgr.mark_delivery(status)
+        last_delivery["status"] = status
+        last_delivery["detail"] = str(detail)
         ivl("GUI_DELIVERY", status=status, attempt=state_mgr.dispatch_attempts, detail=detail)
+        # 立即强制一条心跳：注入失败的原因不能等到下一个 30s 周期才可见。
+        beat(f"delivery_{status.lower()}", force=True)
 
     try:
         while True:
@@ -163,6 +206,7 @@ def run_gui_supervisor(
             p_roll = Path(rollout)
 
             if pending_injection:
+                beat("awaiting_ack")
                 events, offset = read_events(p_roll, state_mgr.event_offset)
                 state_mgr.event_offset = offset
                 if command_accepted(events, pending_injection["text"]):
@@ -171,30 +215,39 @@ def run_gui_supervisor(
                     pending_injection = None
                     continue
                 state_mgr.save()
-                elapsed = time.monotonic() - pending_injection["t0"]
-                if elapsed >= 30:
+                now = time.monotonic()
+                if pending_injection["status"] == "NOT_SENT":
+                    # 明确未送达：没有在途指令可等待确认，只按重试总预算退出。
+                    if now - pending_injection["t0"] >= GUI_RETRY_TOTAL_SEC:
+                        return finish("FAILED", "GUI 指令始终未送达；已超出有界重试总预算，禁止盲目重发。"
+                                                f"最后回执: {last_delivery['detail']}")
+                    if now - pending_injection["last_try"] >= GUI_RETRY_INTERVAL_SEC:
+                        if state_mgr.dispatch_attempts >= GUI_MAX_ATTEMPTS:
+                            return finish("FAILED", "GUI 连续三次明确未发送；基础设施失败，未重复执行任务。"
+                                                    f"最后回执: {last_delivery['detail']}")
+                        # Only an explicit NOT_SENT receipt allows a retry, and only
+                        # while the same stopped turn still owns the composer.
+                        if not is_working_fn(p_roll)[0] and file_size(p_roll) == state_mgr.dispatch_offset:
+                            send_pending()
+                elif now - pending_injection["last_try"] >= GUI_ACK_WINDOW_SEC:
                     return finish("FAILED", "GUI 指令接收未确认；保留在途指令和送达状态，禁止盲目重发")
-                if pending_injection["status"] == "NOT_SENT" and time.monotonic() - pending_injection["last_try"] >= 6:
-                    if state_mgr.dispatch_attempts >= 3:
-                        return finish("FAILED", "GUI 连续三次明确未发送；基础设施失败，未重复执行任务")
-                    # Only an explicit NOT_SENT receipt allows a retry, and only
-                    # while the same stopped turn still owns the composer.
-                    if not is_working_fn(p_roll)[0] and file_size(p_roll) == state_mgr.dispatch_offset:
-                        send_pending()
                 continue
 
             if not p_roll.exists():
+                beat("rollout_missing")
                 continue
             working, reason, task_agent_msg = is_working_fn(p_roll)
             if working:  # Includes unknown/partial/unreadable evidence.
                 if reason != last_activity:
                     ivl("ACTIVITY", activity=reason)
                     last_activity = reason
+                beat("worker_active")
                 continue
             observed_offset = file_size(p_roll)
             last_msg = task_agent_msg
             msg_hash = hashlib.sha256(f"{observed_offset}:{last_msg}".encode("utf-8")).hexdigest()
             if msg_hash == last_handled_msg_hash:
+                beat("no_new_turn")
                 continue
 
             payload = None
@@ -286,6 +339,7 @@ def run_gui_supervisor(
             injections += 1
             state_mgr.resumes = injections
             state_mgr.save()
+            # t0 只用于 NOT_SENT 重试总预算；确认窗口从每次 send_pending 返回后起算。
             pending_injection = {"text": inject_text, "kind": inject_kind, "t0": time.monotonic()}
             last_handled_msg_hash = msg_hash
             send_pending()

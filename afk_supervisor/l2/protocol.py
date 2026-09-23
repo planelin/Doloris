@@ -7,7 +7,7 @@ afk_supervisor.l2.protocol — 结构化协议引擎与严格校验器 (afk_agy_
 
 import json
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from afk_supervisor.models import ActionType, EvidencePacket
 from afk_supervisor.baseline import TaskBaseline
@@ -393,7 +393,6 @@ def build_protocol_prompt(
             f"【决议要求】在授权范围内直接选出明确方案并说明理由，verdict=PROCEED；若确实无法继续则 STOP，不转人工。next_action.instructions 仅包含直接给 Worker 的执行指令。\n"
         )
         rev = ""
-        short_evidence_summary = "(无)"
 
     elif mode == "REPAIR":
         body = (
@@ -404,7 +403,6 @@ def build_protocol_prompt(
             f"【修复守则】不替 Worker 写普通业务代码；不得放宽权限改交付目录消灭报错；repairs 详记 action、target、verification、rollback。\n"
         )
         rev = evidence_packet.reviewed_revision if evidence_packet else ""
-        short_evidence_summary = "(REPAIR 模式)"
 
     elif mode == "REVIEW":
         rev = evidence_packet.reviewed_revision if evidence_packet else "rev-none"
@@ -417,7 +415,6 @@ def build_protocol_prompt(
                     line += f" | 详情: {it.details[:160]}"
                 ev_lines.append(line)
         evidence_str = "\n".join(ev_lines) if ev_lines else "(暂无收集到证据)"
-        short_evidence_summary = f"rev={rev} | art_rev={art_rev} | items={len(evidence_packet.items) if evidence_packet else 0}"
 
         crit_lines = []
         for rc in task_baseline.required_criteria:
@@ -437,7 +434,6 @@ def build_protocol_prompt(
     else:
         body = question_or_context
         rev = ""
-        short_evidence_summary = "(无)"
 
     if mode == "DECIDE":
         footer_json = (

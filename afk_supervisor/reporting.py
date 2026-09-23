@@ -33,7 +33,7 @@ def send_terminal_notification(state: str, detail: str, report_path: Path, title
             data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
             headers={"Content-Type": "application/json; charset=utf-8"}
         )
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=5):
             pass
         log("NOTIFY   终态通知已成功投递至 Webhook")
     except Exception as e:
@@ -78,9 +78,9 @@ def generate_final_report(
     ]
 
     if ivl_path.exists():
-        for l in ivl_path.read_text(encoding="utf-8", errors="replace").strip().splitlines():
+        for line in ivl_path.read_text(encoding="utf-8", errors="replace").strip().splitlines():
             try:
-                r = json.loads(l)
+                r = json.loads(line)
                 payload_str = json.dumps({k: v for k, v in r.items() if k not in ("ts", "event")}, ensure_ascii=False)
                 lines.append(f"- `{r['ts']}` **{r['event']}** {payload_str}")
             except Exception:

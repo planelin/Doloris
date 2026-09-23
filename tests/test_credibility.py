@@ -11,6 +11,7 @@ tests/test_credibility.py — 验收可信度与刚性证据约束回归测试�
 - Item 16: 产物版本与修改时间戳 (mtime) 隔离，仅 touch 不改内容时 artifact_revision 保持不变。
 """
 
+import json
 import os
 import shutil
 import tempfile
@@ -21,12 +22,11 @@ from unittest.mock import MagicMock, patch
 
 from afk_supervisor.baseline import TaskBaseline, extract_task_baseline
 from afk_supervisor.evidence import (
-    calculate_artifact_revision,
-    calculate_reviewed_revision,
     collect_evidence,
 )
 from afk_supervisor.models import ActionType, EvidenceItem, EvidencePacket
 from afk_supervisor.l2.protocol import validate_protocol_payload
+from afk_supervisor.state import SupervisorState
 
 
 class TestAcceptanceCredibility(unittest.TestCase):
@@ -359,6 +359,167 @@ class TestAcceptanceCredibility(unittest.TestCase):
             initial_art_rev, touched_art_rev,
             "仅 touch 文件刷新 mtime 但内容完全相同时，artifact_revision 必须严格保持不变"
         )
+
+    def test_acceptance_spec_rejects_paths_outside_workspace_root(self):
+        """验收规范不得引用工作区之外的路径，含 glob 等价的穿越写法。"""
+        from afk_supervisor.acceptance import evaluate_acceptance_spec
+        ws = self.base_p / "ws"
+        ws.mkdir()
+        outside = self.base_p / "outside.txt"
+        outside.write_text("secret", encoding="utf-8")
+        spec = self.base_p / "acceptance.md"
+
+        for line in ("../outside.txt", "*/../outside.txt", "[.][.]/outside.txt", "docs/../outside.txt",
+                     "[.a][.a]/outside.txt", ".[.]/[.]x", "[.x][.x]/outside.txt"):
+            with self.subTest(line=line):
+                spec.write_text(line, encoding="utf-8")
+                ok, detail = evaluate_acceptance_spec(spec, ws)
+                self.assertFalse(ok, detail)
+                self.assertIn("穿越", detail)
+
+        # 点类通配符本身合法，不得被误判为穿越（只以 ".." 形状为拒绝依据）。
+        (ws / ".notes.md").write_text("content", encoding="utf-8")
+        spec.write_text("[._]notes.md", encoding="utf-8")
+        ok_legit, detail_legit = evaluate_acceptance_spec(spec, ws)
+        self.assertNotIn("穿越", detail_legit)
+        self.assertTrue(ok_legit, detail_legit)
+
+        for line in (str(outside), f"checklist: {outside}"):
+            with self.subTest(line=line):
+                spec.write_text(line, encoding="utf-8")
+                ok, detail = evaluate_acceptance_spec(spec, ws)
+                self.assertFalse(ok, detail)
+                self.assertIn("绝对路径", detail)
+
+    def test_acceptance_spec_counts_only_confined_nonempty_files(self):
+        from afk_supervisor.acceptance import evaluate_acceptance_spec
+        ws = self.base_p / "ws"
+        (ws / "docs" / "deep").mkdir(parents=True)
+        (ws / "docs" / "a.md").write_text("content", encoding="utf-8")
+        (ws / "docs" / "empty.md").write_text("", encoding="utf-8")
+        (ws / "docs" / "deep" / "b.md").write_text("content", encoding="utf-8")
+        spec = self.base_p / "acceptance.md"
+
+        for line, expected in (("docs/*.md:1", True), ("docs/*.md:2", False), ("docs/**/*.md:2", True)):
+            with self.subTest(line=line):
+                spec.write_text(line, encoding="utf-8")
+                ok, detail = evaluate_acceptance_spec(spec, ws)
+                self.assertEqual(ok, expected, detail)
+
+        (ws / "PROGRESS.md").write_text("- [x] 完成\n", encoding="utf-8")
+        spec.write_text("checklist: PROGRESS.md :1", encoding="utf-8")
+        self.assertTrue(evaluate_acceptance_spec(spec, ws)[0])
+        spec.write_text("checklist: PROGRESS.md :2", encoding="utf-8")
+        self.assertFalse(evaluate_acceptance_spec(spec, ws)[0])
+
+    def test_empty_acceptance_spec_fails_closed(self):
+        """空规范或仅注释不得被当作"无需验收"而直接通过。"""
+        from afk_supervisor.acceptance import evaluate_acceptance_spec
+        ws = self.base_p / "ws"
+        ws.mkdir()
+        spec = self.base_p / "acceptance.md"
+        for content in ("", "\n \n", "# 只有注释\n"):
+            with self.subTest(content=repr(content)):
+                spec.write_text(content, encoding="utf-8")
+                ok, detail = evaluate_acceptance_spec(spec, ws)
+                self.assertFalse(ok, detail)
+                self.assertIn("空", detail)
+
+    def test_explicit_spec_outranks_legacy_selftest_and_default_contract(self):
+        from afk_supervisor.acceptance import check_acceptance
+        task_dir = self.base_p / "task"
+        artifact = self.base_p / "work"
+        task_dir.mkdir()
+        artifact.mkdir()
+        spec = task_dir / "acceptance.md"
+        spec.write_text("result.txt:1", encoding="utf-8")
+        self.assertFalse(check_acceptance(task_dir, self.base_p, artifact, selftest_12ch=True)[0])
+        (self.base_p / "result.txt").write_text("delivered", encoding="utf-8")
+        self.assertTrue(check_acceptance(task_dir, self.base_p, artifact, selftest_12ch=True)[0])
+
+        spec.unlink()
+        ok, detail = check_acceptance(task_dir, self.base_p, artifact)
+        self.assertFalse(ok)
+        self.assertIn("PROGRESS.md", detail)
+        (artifact / "PROGRESS.md").write_text("- [x] 完成\n", encoding="utf-8")
+        (artifact / "report.md").write_text("交付报告\n", encoding="utf-8")
+        self.assertTrue(check_acceptance(task_dir, self.base_p, artifact)[0])
+        (artifact / "PROGRESS.md").write_text("- [x] 完成\n- [ ] 未完成\n", encoding="utf-8")
+        ok, detail = check_acceptance(task_dir, self.base_p, artifact)
+        self.assertFalse(ok)
+        self.assertIn("待办", detail)
+
+    def test_fresh_self_written_checklist_needs_completion_semantics(self):
+        """min_mtime 之后新写入的全勾选清单不能单独放行，必须与明确完工语义互证。"""
+        from afk_supervisor.acceptance import check_acceptance_natural
+        ws = self.base_p / "ws"
+        ws.mkdir()
+        prog = ws / "PROGRESS.md"
+        prog.write_text("- [x] 模块一\n- [x] 模块二\n", encoding="utf-8")
+        future = time.time() + 5
+        os.utime(prog, (future, future))
+        min_mtime = time.time()
+
+        ok, detail = check_acceptance_natural(ws, "正在收尾，还有一点内容要补。", min_mtime=min_mtime)
+        self.assertFalse(ok, detail)
+        self.assertIn("自写清单", detail)
+
+        ok2, detail2 = check_acceptance_natural(ws, "所有工作全部完成。", min_mtime=min_mtime)
+        self.assertTrue(ok2, detail2)
+        self.assertIn("清单", detail2)
+        self.assertIn("自然完工语义", detail2)
+
+    def test_stale_checklist_still_allows_explicit_completion_signal(self):
+        from afk_supervisor.acceptance import check_acceptance_natural
+        ws = self.base_p / "ws"
+        ws.mkdir()
+        prog = ws / "PROGRESS.md"
+        prog.write_text("- [x] 模块一\n", encoding="utf-8")
+        old = time.time() - 3600
+        os.utime(prog, (old, old))
+
+        ok, detail = check_acceptance_natural(ws, "全部完成，已交付。", min_mtime=time.time())
+        self.assertTrue(ok, detail)
+        self.assertIn("自然完工语义", detail)
+
+    def test_inspect_run_reads_checkpoint_and_fails_closed(self):
+        """只读诊断入口必须能加载真实检查点，并在缺失/损坏时明确失败。"""
+        from afk_supervisor.cli import inspect_run
+        run = self.base_p / "run"
+        run.mkdir()
+        state = SupervisorState(run_dir=run, sid="sess-inspect", mode="resume", ws=self.base_p)
+        state.transition("RUNNING", detail="working")
+
+        code, text = inspect_run(run)
+        payload = json.loads(text)
+        self.assertEqual(code, 0, text)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["state"], "RUNNING")
+        self.assertEqual(payload["session_id"], "sess-inspect")
+
+        checkpoint = run / "supervisor_state.json"
+        checkpoint.write_text("{not-json", encoding="utf-8")
+        code_bad, text_bad = inspect_run(run)
+        payload_bad = json.loads(text_bad)
+        self.assertEqual(code_bad, 1, text_bad)
+        self.assertFalse(payload_bad["ok"])
+        self.assertIn("检查点无效", payload_bad["error"])
+
+        with self.assertRaises(FileNotFoundError):
+            SupervisorState.load(self.base_p / "missing-run", strict=True)
+
+    def test_checkpoint_from_future_schema_is_rejected(self):
+        run = self.base_p / "run-future"
+        run.mkdir()
+        SupervisorState(run_dir=run, sid="sess-future", persist_initial=True)
+        checkpoint = run / "supervisor_state.json"
+        data = json.loads(checkpoint.read_text(encoding="utf-8"))
+        data["schema_version"] = 999
+        checkpoint.write_text(json.dumps(data), encoding="utf-8")
+
+        with self.assertRaises(ValueError):
+            SupervisorState.load(run, strict=True)
+        self.assertIsNone(SupervisorState.load(run))
 
 
 if __name__ == "__main__":

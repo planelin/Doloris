@@ -73,40 +73,86 @@ def clean_session_id(raw: str) -> str:
     return s.strip()
 
 
-def load_codex_thread_titles() -> Dict[str, str]:
-    """从 ~/.codex/session_index.jsonl 与 state_5.sqlite 加载官方会话标题。"""
-    titles = {}
-    codex_home = get_codex_home()
-    session_index = codex_home / "session_index.jsonl"
-    state_db = codex_home / "state_5.sqlite"
-
-    if session_index.exists():
-        try:
-            for line in session_index.read_text(encoding="utf-8", errors="replace").splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    d = json.loads(line)
-                    if "id" in d and d.get("thread_name"):
-                        titles[d["id"]] = d["thread_name"].strip()
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
-    if state_db.exists():
-        try:
-            con = sqlite3.connect(f"file:{state_db}?mode=ro", uri=True)
-            cur = con.cursor()
-            cur.execute("SELECT id, name FROM threads WHERE name IS NOT NULL")
-            for sid, name in cur.fetchall():
-                if sid not in titles and name and name.strip():
-                    titles[sid] = name.strip()
-            con.close()
-        except Exception:
-            pass
+def _load_session_index_titles() -> Dict[str, str]:
+    """读取 ~/.codex/session_index.jsonl 的 thread_name (旧式索引，可能落后于侧栏)。"""
+    titles: Dict[str, str] = {}
+    session_index = get_codex_home() / "session_index.jsonl"
+    if not session_index.exists():
+        return titles
+    try:
+        for line in session_index.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                d = json.loads(line)
+                if "id" in d and d.get("thread_name"):
+                    titles[str(d["id"]).strip()] = str(d["thread_name"]).strip()
+            except Exception:
+                continue
+    except Exception:
+        pass
     return titles
+
+
+def _load_state_db_titles() -> Dict[str, Tuple[str, str]]:
+    """读取 state_5.sqlite 的 (name, title)。
+
+    name 是桌面端侧栏实际显示的会话名 (含 [Fork] 等前缀)，
+    title 是同一行的简短标题；两者都比 session_index.jsonl 更接近 UI 真值。
+    """
+    rows: Dict[str, Tuple[str, str]] = {}
+    state_db = get_codex_home() / "state_5.sqlite"
+    if not state_db.exists():
+        return rows
+    try:
+        con = sqlite3.connect(f"file:{state_db}?mode=ro", uri=True)
+        try:
+            cur = con.cursor()
+            cur.execute("SELECT id, name, title FROM threads")
+            for sid, name, title in cur.fetchall():
+                key = str(sid or "").strip()
+                if not key:
+                    continue
+                rows[key] = (str(name or "").strip(), str(title or "").strip())
+        finally:
+            con.close()
+    except Exception:
+        pass
+    return rows
+
+
+def load_codex_thread_titles() -> Dict[str, str]:
+    """加载官方会话标题，优先桌面端侧栏显示名 (state_5.sqlite.name)。
+
+    session_index.jsonl 会滞后于侧栏 (例如缺少 "[Fork] " 前缀)，若优先使用它，
+    传入 UI Automation 的目标标题将与实际 DOM 名称不一致，导致身份校验必然失败。
+    """
+    index_titles = _load_session_index_titles()
+    db_titles = _load_state_db_titles()
+    titles: Dict[str, str] = dict(index_titles)
+    for sid, (name, _title) in db_titles.items():
+        if name:
+            titles[sid] = name
+    return titles
+
+
+def load_codex_thread_title_candidates(sid: str) -> List[str]:
+    """返回某个会话可用于 UI 身份校验的全部标题候选 (按可信度排序、去重)。
+
+    只作为"同一 SID 下的名字候选"，不得脱离 SID 单独用于标识任务。
+    """
+    clean = clean_session_id(sid)
+    if not clean:
+        return []
+    candidates: List[str] = []
+    name, short_title = _load_state_db_titles().get(clean, ("", ""))
+    index_title = _load_session_index_titles().get(clean, "")
+    for value in (name, short_title, index_title):
+        text = str(value or "").strip()
+        if text and text not in candidates:
+            candidates.append(text)
+    return candidates
 
 
 def read_session_title(p: Path, scan: int = 262144) -> str:
@@ -195,7 +241,13 @@ def find_last_codex_session(cwd: Optional[Path] = None) -> Optional[Tuple[str, P
 
 
 def find_codex_session_by_id(raw_sid: str) -> Optional[Tuple[str, Path, Optional[str]]]:
-    """根据会话 ID 查找对应的最新 rollout 文件与 cwd。
+    """根据会话 ID 查找对应的 rollout 文件与 cwd。
+
+    桌面端 fork 子会话的文件名为 rollout-<ts>-<root_sid>_<child_sid>.jsonl，
+    但其 session_meta 会继承 root_sid，因此按 ID 匹配会同时命中父文件与所有后代
+    fork 文件。后代文件 mtime 更新，若按 mtime 取"最新"，接管到的将是子会话轨迹
+    (父会话暂停校验、目标提炼都会读错对象)。这里改为：请求哪个 ID，就优先返回
+    文件名以该 ID 结尾的原始 rollout 文件，仅在没有原始文件时才回退。
     返回 (actual_sid, rollout_path, session_cwd) 或 None。
     """
     sid = clean_session_id(raw_sid)
@@ -210,12 +262,55 @@ def find_codex_session_by_id(raw_sid: str) -> Optional[Tuple[str, Path, Optional
                 mt = p.stat().st_mtime
             except OSError:
                 mt = 0
-            matches.append((mt, meta[0], p, meta[1]))
+            # 原始文件 (rollout-<ts>-<sid>.jsonl) 优先于继承同一 session_meta 的后代 fork 文件。
+            is_origin = p.stem.endswith(meta[0])
+            matches.append((0 if is_origin else 1, -mt, meta[0], p, meta[1]))
     if matches:
-        matches.sort(reverse=True)
-        _, actual_sid, p, scwd = matches[0]
+        matches.sort(key=lambda item: (item[0], item[1]))
+        _, _neg_mtime, actual_sid, p, scwd = matches[0]
         return actual_sid, p, scwd
-    return None
+    # 兜底：桌面端 fork 子会话的文件名为 rollout-<ts>-<root_sid>_<child_sid>.jsonl，
+    # session_meta 会继承 root 会话 ID，只能按文件名后缀识别子会话。
+    fork_matches = []
+    for p in codex_sessions.rglob("rollout-*.jsonl"):
+        if not p.stem.endswith(sid):
+            continue
+        meta = _read_meta(p)
+        scwd = meta[1] if meta else None
+        try:
+            mt = p.stat().st_mtime
+        except OSError:
+            mt = 0
+        fork_matches.append((mt, sid, p, scwd))
+    if not fork_matches:
+        return None
+    fork_matches.sort(reverse=True)
+    _, actual_sid, p, scwd = fork_matches[0]
+    return actual_sid, p, scwd
+
+
+def find_codex_session_rollouts(raw_sid: str) -> List[Tuple[str, Path, Optional[str]]]:
+    """返回与某个会话 ID 相关的全部 rollout，按文件名时间前缀从早到晚排序。
+
+    用于回溯 fork 会话的业务主线：fork 子文件名形如
+    rollout-<ts>-<root_sid>_<child_sid>.jsonl，其 session_meta 会继承 root 会话 ID，
+    因此必须同时按文件名匹配，且原始会话文件（文件名以该 ID 结尾）排在 fork 子文件之前。
+    """
+    sid = clean_session_id(raw_sid)
+    codex_sessions = get_codex_sessions_dir()
+    if not sid or not codex_sessions.exists():
+        return []
+    matches: List[Tuple[str, str, Path, Optional[str]]] = []
+    for p in codex_sessions.rglob("rollout-*.jsonl"):
+        if sid not in p.name:
+            continue
+        meta = _read_meta(p)
+        if meta is None and not p.stem.endswith(sid):
+            continue
+        actual_sid, scwd = meta if meta else (sid, None)
+        matches.append((p.name, actual_sid, p, scwd))
+    matches.sort(key=lambda item: item[0])
+    return [(actual_sid, p, scwd) for _, actual_sid, p, scwd in matches]
 
 
 def register_thread_for_codex_ui(session_id: str, title_prefix: str = "[Fork] ", parent_id: Optional[str] = None) -> bool:
@@ -241,7 +336,7 @@ def register_thread_for_codex_ui(session_id: str, title_prefix: str = "[Fork] ",
             cur.execute("SELECT name, source, title FROM threads WHERE id = ?", (session_id,))
             row = cur.fetchone()
             if row:
-                name, source, title = row[0] or "", row[1] or "", row[2] or ""
+                name, _source, title = row[0] or "", row[1] or "", row[2] or ""
                 new_name = name
                 if title_prefix and not name.startswith(title_prefix):
                     new_name = title_prefix + name

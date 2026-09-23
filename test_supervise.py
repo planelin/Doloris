@@ -661,7 +661,6 @@ class TestProtocolAndAcceptanceScenarios(unittest.TestCase):
 
     # 5. AGY 返回陈旧 request_id、错误 task_id 或不匹配的 reviewed_revision -> 协议校验拦截
     def test_scenario_5_stale_or_mismatched_protocol_rejected(self):
-        coord = self._create_coordinator()
         stale_payload = {
             "protocol_version": "afk_agy_protocol_v1",
             "mode": "REVIEW",
@@ -879,8 +878,8 @@ class TestProtocolAndAcceptanceScenarios(unittest.TestCase):
         self.assertIn("已终结", det_nat)
 
         # 2. 即使消息未命中任何关键词 ("未检测到活跃的已完成清单或明确完工语义")，当 AGY 主管客观审查 PASS 且代码无语法错误时，SupervisorCoordinator 与主循环均放行完工
-        test_file = self.ws / "index.js"
-        test_file.write_text("console.log('NOVA UI ready');\n", encoding="utf-8")
+        test_file = self.ws / "index.py"
+        test_file.write_text("value = 'NOVA UI ready'\n", encoding="utf-8")
 
         coord = self._create_coordinator()
         pass_payload = {
@@ -1051,10 +1050,10 @@ class TestQoderReviewImprovements(unittest.TestCase):
         self.assertEqual(res.payload, payload)
 
         # 兼容旧元组解包
-        v, a, l = res
+        v, a, log_path = res
         self.assertEqual(v, "PASS")
         self.assertEqual(a, "LGTM")
-        self.assertEqual(l, Path("l2.log"))
+        self.assertEqual(log_path, Path("l2.log"))
 
         # 兼容索引访问
         self.assertEqual(res[0], "PASS")

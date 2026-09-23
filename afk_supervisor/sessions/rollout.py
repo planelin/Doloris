@@ -10,7 +10,7 @@ import json
 import re
 import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Tuple
 
 
 def codex_handoff_state(path) -> dict:
@@ -27,6 +27,9 @@ def codex_handoff_state(path) -> dict:
     last_event = ""
     invalid = False
     last_agent_message = ""
+    fork_parent_id = ""
+    saw_thread_settings = False
+    only_fork_metadata = True
     try:
         p = Path(path)
         before = p.stat()
@@ -48,10 +51,21 @@ def codex_handoff_state(path) -> dict:
                     continue
                 kind = obj.get("type")
                 event = payload.get("type", "")
-                if event in ("token_count", "thread_settings_applied", "item_completed") or kind in (
-                    "token_usage_record", "world_state", "turn_context", "session_meta", "compacted"
-                ):
+                if kind == "session_meta":
+                    parent_id = payload.get("forked_from_id")
+                    session_id = payload.get("session_id") or payload.get("id")
+                    if isinstance(parent_id, str) and parent_id.strip() and isinstance(session_id, str) and session_id.strip():
+                        fork_parent_id = parent_id.strip()
                     continue
+                if event == "thread_settings_applied":
+                    saw_thread_settings = True
+                    continue
+                if event in ("token_count", "item_completed") or kind in (
+                    "token_usage_record", "world_state", "turn_context", "compacted"
+                ):
+                    only_fork_metadata = False
+                    continue
+                only_fork_metadata = False
                 last_event = event or kind or ""
                 if kind == "event_msg" and event in ("task_complete", "turn_aborted"):
                     known = True
@@ -94,16 +108,22 @@ def codex_handoff_state(path) -> dict:
             state, reason = "unknown", "轨迹包含损坏/尚未写完的 JSON 事件"
         elif pending_ids:
             state, reason = "unsafe", f"工具调用尚未返回: {', '.join(pending_ids)}"
+        elif fork_parent_id and saw_thread_settings and only_fork_metadata and not known:
+            state = "safe"
+            turn_ended = True
+            reason = "新建 fork 会话尚无回合，可安全接管"
         elif not known:
             state, reason = "unknown", "没有可确认生命周期或工具边界的事件"
         else:
             state, reason = "safe", "已记录的工具调用均已返回，可中断模型侧生成（不代表任务完成）"
         return dict(state=state, reason=reason, last_event=last_event,
                     pending_calls=pending_ids, file_age_sec=age, turn_ended=turn_ended,
-                    last_agent_message=last_agent_message, event_offset=before.st_size)
+                    last_agent_message=last_agent_message, event_offset=before.st_size,
+                    never_started=(state == "safe" and not known))
     except (OSError, TypeError, UnicodeError) as exc:
         return dict(state="unknown", reason=f"无法读取会话轨迹: {exc}",
-                    last_event=last_event, pending_calls=sorted(pending), file_age_sec=None, turn_ended=False)
+                    last_event=last_event, pending_calls=sorted(pending), file_age_sec=None,
+                    turn_ended=False, never_started=False)
 
 
 def rollout_tail_state(path, tail=16384) -> str:

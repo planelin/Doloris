@@ -12,12 +12,18 @@ import json
 import os
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, List, Optional
 
 from afk_supervisor.models import EvidenceItem, EvidencePacket
 from afk_supervisor.baseline import TaskBaseline, delivery_path_blockers
+
+# 采证配额: 防止超大目录把监管循环拖死；语法核验另行限制总耗时。
+MAX_SCAN_FILES = 20000
+MAX_SYNTAX_CHECKS = 200
+SYNTAX_BUDGET_SEC = 120.0
 
 
 def compute_file_sha256(path: Path, chunk_size: int = 65536) -> str:
@@ -153,8 +159,16 @@ def collect_evidence(
                 p = Path(root) / f
                 if p.name.lower() not in {"progress.md", "todo.md", "checklist.md"}:
                     scanned_files.append(p)
+                    if len(scanned_files) > MAX_SCAN_FILES:
+                        raise RuntimeError(
+                            f"交付目录文件数超过采证配额 ({MAX_SCAN_FILES})，拒绝建立不完整证据链"
+                        )
     except Exception as e:
-        mechanical_failures.append(f"扫描交付目录发生异常: {e}")
+        if isinstance(e, RuntimeError) and "采证配额" in str(e):
+            mechanical_failures.append(str(e))
+        else:
+            mechanical_failures.append(f"扫描交付目录发生异常: {e}")
+        scanned_files = scanned_files[:MAX_SCAN_FILES]
 
     scanned_files.sort(key=lambda p: p.relative_to(deliv_dir).as_posix())
     # Preserve legacy readable IDs unless punctuation/separators make two paths
@@ -225,11 +239,31 @@ def collect_evidence(
 
     # 5. 本地自动化机械核验 (语法检查与显式断言)
     no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    syntax_deadline = time.monotonic() + SYNTAX_BUDGET_SEC
+    syntax_checked = 0
+
+    def _syntax_budget_exhausted(kind: str) -> bool:
+        nonlocal syntax_checked
+        if syntax_checked >= MAX_SYNTAX_CHECKS or time.monotonic() >= syntax_deadline:
+            items.append(EvidenceItem(
+                id=f"ev_syntax_budget_{kind}",
+                category="verification_result",
+                summary=f"{kind} 语法核验已超出配额，剩余文件未检查",
+                details=f"配额: 最多 {MAX_SYNTAX_CHECKS} 个文件 / {SYNTAX_BUDGET_SEC:g}s",
+                verification_kind="syntax",
+                status="SKIPPED",
+            ))
+            return True
+        syntax_checked += 1
+        return False
+
     # (a) JS 语法检查 (node --check)
     js_files = [p for p in scanned_files if p.suffix.lower() == ".js"]
     for js_p in js_files:
         rel = js_p.relative_to(deliv_dir)
         clean_id = path_ids[js_p]
+        if _syntax_budget_exhausted("JS"):
+            break
         try:
             r = subprocess.run(["node", "--check", str(js_p)], capture_output=True, text=True, timeout=10, creationflags=no_win)
             if r.returncode != 0:
@@ -248,7 +282,7 @@ def collect_evidence(
                     summary=f"JS语法检查通过: {rel}",
                 ))
         except FileNotFoundError:
-            # 运行器缺失不伪装通过
+            # 运行器缺失不得伪装通过：记录机械失败并明确标注该次核验被跳过。
             err_msg = f"未找到 Node.js 执行程序，无法完成 JS 语法核验 ({rel})"
             mechanical_failures.append(err_msg)
             items.append(EvidenceItem(
@@ -256,7 +290,10 @@ def collect_evidence(
                 category="verification_result",
                 summary=err_msg,
                 details="Node executable not found",
+                verification_kind="syntax",
+                status="SKIPPED",
             ))
+            break
         except subprocess.TimeoutExpired:
             err_msg = f"JS 语法检查执行超时 ({rel})"
             mechanical_failures.append(err_msg)
@@ -279,6 +316,8 @@ def collect_evidence(
     for py_p in py_files:
         rel = py_p.relative_to(deliv_dir)
         clean_id = path_ids[py_p]
+        if _syntax_budget_exhausted("Python"):
+            break
         try:
             r = subprocess.run([sys.executable, "-I", "-B", "-c", "import pathlib, sys; compile(pathlib.Path(sys.argv[1]).read_bytes(), sys.argv[1], 'exec')", str(py_p)], capture_output=True, text=True, timeout=10, creationflags=no_win)
             if r.returncode != 0:
@@ -316,38 +355,11 @@ def collect_evidence(
     # (c) 显式 acceptance.md 规格核验 (机械断言)
     if task_dir:
         spec = Path(task_dir) / "acceptance.md"
-        if spec.exists():
-            problems = []
-            try:
-                for raw in spec.read_text(encoding="utf-8", errors="replace").splitlines():
-                    line = raw.strip()
-                    if not line or line.startswith("#"):
-                        continue
-                    if line.lower().startswith("checklist:"):
-                        parts = [p.strip() for p in line[len("checklist:"):].split(":") if p.strip()]
-                        path_str, need = parts[0], (int(parts[1]) if len(parts) > 1 else 1)
-                        target_file = cwd / path_str
-                        if not target_file.exists():
-                            problems.append(f"{path_str} 不存在")
-                            continue
-                        txt = target_file.read_text(encoding="utf-8", errors="replace")
-                        d_count = txt.count("- [x]") + txt.count("- [X]")
-                        if d_count < need:
-                            problems.append(f"{path_str} 勾选{d_count}<{need}")
-                    else:
-                        parts = line.rsplit(":", 1)
-                        if len(parts) == 2 and parts[1].strip().isdigit():
-                            pat, need = parts[0].strip(), int(parts[1])
-                        else:
-                            pat, need = line, 1
-                        hits = [m for m in cwd.glob(pat) if m.is_file() and m.stat().st_size > 0]
-                        if len(hits) < need:
-                            problems.append(f"{pat} 非空文件{len(hits)}<{need}")
-            except Exception as e:
-                problems.append(f"读取 acceptance.md 发生异常: {e}")
-
-            if problems:
-                detail_str = "; ".join(problems[:4])
+        if spec.is_file():
+            # 与 check_acceptance 共用同一实现、同一基准 (session_cwd = 工作区根)。
+            from afk_supervisor.acceptance import evaluate_acceptance_spec
+            spec_ok, detail_str = evaluate_acceptance_spec(spec, cwd)
+            if not spec_ok:
                 mechanical_failures.append(f"显式验收未满足: {detail_str}")
                 items.append(EvidenceItem(
                     id="ev_spec_acceptance",
@@ -360,7 +372,7 @@ def collect_evidence(
                     id="ev_spec_acceptance",
                     category="verification_result",
                     summary="显式验收全部满足",
-                    details="全部满足",
+                    details=detail_str,
                 ))
 
     # 6. 计算双版本哈希
@@ -368,7 +380,10 @@ def collect_evidence(
     for item in items:
         if item.id.startswith("ev_syntax_"):
             item.verification_kind = "syntax"
-            item.status = "PASS" if "检查通过" in item.summary else "FAIL"
+            if item.status == "SKIPPED":
+                pass
+            else:
+                item.status = "PASS" if "检查通过" in item.summary else "FAIL"
             item.artifact_revision = art_rev
         elif item.id == "ev_spec_acceptance":
             item.verification_kind = "acceptance_spec"

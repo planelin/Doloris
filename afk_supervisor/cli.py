@@ -17,13 +17,12 @@ import uuid
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from afk_supervisor.models import DeadlineBudget
 from afk_supervisor.platform.process import log, WorkspaceSupervisorLock, close_codex_app, verify_codex_writer_released
 from afk_supervisor.platform.windows import keep_awake, detect_system_proxy
 from afk_supervisor.baseline import extract_task_baseline
-from afk_supervisor.evidence import collect_evidence
 from afk_supervisor.coordinator import SupervisorCoordinator
 from afk_supervisor.state import SupervisorState
 from afk_supervisor.l2.bridge import AntigravityManager
@@ -47,7 +46,34 @@ BACKUP_EXCLUDE_DIRS = {
     ".git", ".svn", ".hg", "node_modules", ".venv", "venv", "env",
     "__pycache__", ".codex", ".idea", ".vscode", "dist", "build",
     ".next", ".nuxt", "target", "bin", "obj",
+    "runs", ".mypy_cache", ".pytest_cache", ".tox", ".cache",
 }
+
+# 备份硬上限：快照是接管前的保险，不允许它把交付时间拖成无上限。
+BACKUP_MAX_SECONDS = 180.0
+BACKUP_MAX_FILES = 20000
+BACKUP_SINGLE_FILE_LIMIT = 50 * 1024 * 1024
+
+
+def _backup_excluded_roots(scwd: Path, run_dir: Path) -> List[Path]:
+    """返回绝不能进入快照的目录 (监管器自身的运行目录及其父级 runs/)。"""
+    roots: List[Path] = []
+    for candidate in (run_dir, Path(run_dir).parent):
+        try:
+            resolved = Path(candidate).resolve()
+        except OSError:
+            continue
+        if resolved == scwd or resolved in roots:
+            continue
+        if scwd in resolved.parents:
+            roots.append(resolved)
+    return roots
+
+
+def _is_backup_artifact(name: str) -> bool:
+    """识别本工具自己的快照产物，避免把旧归档再压缩一遍或递归进正在写的归档。"""
+    lowered = name.lower()
+    return lowered.startswith("backup-pre-adopt-") and lowered.endswith((".zip", ".zip.part"))
 
 
 def wait_session_quiet(rollout: Path, quiet_sec: float = 15, max_wait: float = 90) -> bool:
@@ -70,35 +96,75 @@ def wait_session_quiet(rollout: Path, quiet_sec: float = 15, max_wait: float = 9
         time.sleep(min(1, remaining))
 
 
-def backup_workspace(scwd: Path, run_dir: Path, max_size_mb: int = 300) -> Optional[Path]:
-    """在接管前对目标工作区做一次轻量快照备份。"""
+def backup_workspace(
+    scwd: Path,
+    run_dir: Path,
+    max_size_mb: int = 300,
+    max_seconds: float = BACKUP_MAX_SECONDS,
+    max_files: int = BACKUP_MAX_FILES,
+) -> Optional[Path]:
+    """在接管前对目标工作区做一次有硬上限的轻量快照备份。
+
+    备份目录可能就在被备份的工作区内部 (例如 scwd=<项目父目录> 而 run_dir=<项目>/runs/<ts>)，
+    因此必须同时做到：
+    - 归档先写 *.zip.part，全部成功后再原子改名，避免半成品被当成可用快照；
+    - 任何情况下都不遍历 run_dir 及其父目录 (监管器自己的产物目录)；
+    - 跳过本工具历史备份产物，杜绝"正在写的 zip 把自己写进自己"的递归增长；
+    - 总字节 / 文件数 / 总耗时任一超限即停止追加，并如实汇报被截断。
+    """
     if not scwd.exists() or not scwd.is_dir():
         log(f"BACKUP  目标目录不存在或非目录, 跳过备份: {scwd}")
         return None
 
+    scwd = scwd.resolve()
+    run_dir = Path(run_dir).resolve()
+    excluded_roots = _backup_excluded_roots(scwd, run_dir)
     proj_name = scwd.name or "workspace"
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     archive_path = run_dir / f"backup-pre-adopt-{proj_name}-{ts}.zip"
+    part_path = archive_path.with_name(archive_path.name + ".part")
 
     max_bytes = max_size_mb * 1024 * 1024
+    deadline = time.monotonic() + max(1.0, float(max_seconds))
     total_bytes = 0
     file_count = 0
     skipped_large = 0
+    truncated_reason = ""
 
     log(f"BACKUP  正在对工作区进行快照备份: {scwd} -> {archive_path.name}")
+    if excluded_roots:
+        log(f"BACKUP  已排除监管器运行目录: {', '.join(str(p) for p in excluded_roots)}")
     try:
-        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        with zipfile.ZipFile(part_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             for root, dirs, files in os.walk(scwd):
-                dirs[:] = [d for d in dirs if d.lower() not in BACKUP_EXCLUDE_DIRS]
+                kept_dirs = []
+                for name in dirs:
+                    if name.lower() in BACKUP_EXCLUDE_DIRS:
+                        continue
+                    try:
+                        if Path(root, name).resolve() in excluded_roots:
+                            continue
+                    except OSError:
+                        continue
+                    kept_dirs.append(name)
+                dirs[:] = kept_dirs
                 for file in files:
+                    if time.monotonic() > deadline:
+                        truncated_reason = f"总耗时超过 {max_seconds:.0f}s 上限"
+                        break
+                    if _is_backup_artifact(file):
+                        continue
                     fp = Path(root) / file
                     try:
                         st = fp.stat()
-                        if st.st_size > 50 * 1024 * 1024:
+                        if st.st_size > BACKUP_SINGLE_FILE_LIMIT:
                             skipped_large += 1
                             continue
                         if total_bytes + st.st_size > max_bytes:
-                            log(f"BACKUP  工作区快照达到上限 ({max_size_mb}MB), 停止追加剩余文件")
+                            truncated_reason = f"达到 {max_size_mb}MB 总量上限"
+                            break
+                        if file_count >= max_files:
+                            truncated_reason = f"达到 {max_files} 文件数上限"
                             break
                         rel_path = fp.relative_to(scwd)
                         zf.write(fp, arcname=str(rel_path))
@@ -106,26 +172,29 @@ def backup_workspace(scwd: Path, run_dir: Path, max_size_mb: int = 300) -> Optio
                         file_count += 1
                     except (OSError, PermissionError):
                         continue
-                if total_bytes > max_bytes:
+                if truncated_reason:
                     break
         if file_count == 0:
             log("BACKUP  工作区为空或所有文件均被过滤, 无需备份")
             try:
-                archive_path.unlink()
+                part_path.unlink()
             except OSError:
                 pass
             return None
 
+        os.replace(part_path, archive_path)
         size_mb = archive_path.stat().st_size / (1024 * 1024)
-        log(f"BACKUP  工作区快照完成: {archive_path.name} ({file_count} 个文件, 压缩后 {size_mb:.2f}MB, 过滤超大文件: {skipped_large})")
+        tail = f", 已截断: {truncated_reason}" if truncated_reason else ""
+        log(f"BACKUP  工作区快照完成: {archive_path.name} ({file_count} 个文件, 压缩后 {size_mb:.2f}MB, 过滤超大文件: {skipped_large}{tail})")
         return archive_path
     except Exception as e:
         log(f"WARN    工作区快照备份异常: {e}")
-        try:
-            if archive_path.exists():
-                archive_path.unlink()
-        except OSError:
-            pass
+        for stale in (part_path, archive_path):
+            try:
+                if stale.exists():
+                    stale.unlink()
+            except OSError:
+                pass
         return None
 
 
@@ -138,13 +207,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--max-run-sec", type=int, default=0, help="总时长上限(秒), 默认0=不设限(跑完为止); 亦可显式指定秒数")
     ap.add_argument("--no-probe", action="store_true", help="跳过启动探针")
     ap.add_argument("--driver", choices=["claude", "codex"], default=None, help="不填时自动推断: --adopt→codex, 否则claude")
-    ap.add_argument("--work-dir", default="work", help="worker产物目录(相对启动cwd), 验收也在此目录")
+    ap.add_argument("--work-dir", default="work", help="worker产物目录, 相对任务工作根解析 (--adopt 时为目标会话cwd, 否则为监管器所在目录); 验收规范 acceptance.md 始终相对该工作根解析, 不受本参数影响")
     ap.add_argument("--adopt", default="", help="接管已有codex会话: 'last'(本目录最近会话) 或 session-id")
     ap.add_argument("--quick", action="store_true", help="快速挂机: 无感接管当前会话, 基于自然完工语义与项目清单自动验收")
     ap.add_argument("--fork", action="store_true", help="Fork无损接管: 基于目标会话派生新Thread并后台续跑，保留桌面端App存活且不触发单写锁冲突")
     ap.add_argument("--gui", action="store_true", help="双有头GUI监管: 保持桌面端App前台活跃，监听事件并通过Windows原生UI自动化注入指令")
     ap.add_argument("--goal", action="store_true", help="Goal自主目标模式: 中途切入，下发 /goal [目标] 并独立守护")
-    ap.add_argument("--goal-target", default="", help="Goal模式目标描述文本 (留空或__LAZY__则由AGY自动提炼)")
+    ap.add_argument("--goal-target", default="", help="Goal模式目标描述文本 (__LAZY__ 显式启用AGY提炼；留空不会调用AGY)")
     ap.add_argument("--adopt-mode", choices=["resume", "fork", "gui", "goal"], default=None, help="接管模式: resume(默认/杀App原地续写), fork(派生新会话且不杀App), gui(双有头原生UI自动化), goal(独立Goal目标模式)")
     ap.add_argument("--yes", action="store_true", help="跳过会话选择，自动选最新会话；resume 模式始终自动关闭 App")
     ap.add_argument("--handoff-timeout-sec", type=float, default=90, help="kill 模式确认安全退出的最长等待秒数；超时记录失败，不盲杀/不并发 resume")
@@ -154,16 +223,63 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--max-interactions", type=int, default=10, help="交互决策(agy代答)次数上限")
     ap.add_argument("--l2-project-id", default="", help="antigravity L2的项目id; 留空则自动从最近会话元数据发现")
     ap.add_argument("--delivery-dir", default="", help="显式指定用户交付目录 (若不指定则从任务输入或工作区中检测)")
+    ap.add_argument("--writable-root", action="append", default=[], help="额外授权可写根目录 (可重复); 不填时默认仅会话工作目录")
+    ap.add_argument("--verification-plan", default="", help="启动时固化的功能验证计划 JSON (只在显式指定时执行其命令)")
+    ap.add_argument("--selftest-12ch", action="store_true", help="兼容参数: 无 acceptance.md 时按旧版 12 章写作 selftest 验收 (非默认)")
+    ap.add_argument("--inspect-run", default="", help="只读检查 runs/<时间戳> 的检查点并输出 JSON 摘要, 不启动监管")
     ap.add_argument("--proxy", default="", help="显式指定网络代理 (若不指定则自动探测系统代理)")
     ap.add_argument("--timeout-sec", type=int, default=1800, help="L2单次等待预算(秒)，超时保留同一AGY会话和请求")
     ap.add_argument("--resume", default="", help="兼容参数: 原地续跑指定的 session-id")
     return ap
 
 
+def inspect_run(run_dir: Path) -> Tuple[int, str]:
+    """只读加载检查点，返回 (exit_code, json_text)。损坏时拒绝猜测任何恢复动作。"""
+    target = Path(run_dir).expanduser()
+    try:
+        state = SupervisorState.load(target, strict=True)
+    except (OSError, ValueError) as exc:
+        return 1, json.dumps(
+            {"ok": False, "run_dir": str(target), "error": str(exc)},
+            ensure_ascii=False,
+        )
+    assert state is not None
+    summary = {
+        "ok": True,
+        "run_dir": str(state.run_dir),
+        "checkpoint": str(state.run_dir / "supervisor_state.json"),
+        "state": state.state,
+        "detail": state.detail,
+        "mode": state.mode,
+        "session_id": state.worker_session_id or state.parent_session_id,
+        "workspace": state.ws,
+        "round": state.round,
+        "resumes": state.resumes,
+        "max_resumes": state.max_resumes,
+        "interactions": state.interactions,
+        "reviews": state.reviews,
+        "repairs": state.repairs,
+        "retries": state.retries,
+        "dispatch_status": state.dispatch_status,
+        "pending_action_type": state.pending_action_type,
+        "last_dispatched_request_id": state.last_dispatched_request_id,
+        "terminal_finalized": state.terminal_finalized,
+        "updated_at": state.updated_at,
+        "report_exists": (state.run_dir / "report.md").is_file(),
+        "interventions_exists": (state.run_dir / "interventions.jsonl").is_file(),
+    }
+    return 0, json.dumps(summary, ensure_ascii=False, indent=2)
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """CLI 主入口函数。"""
     ap = build_arg_parser()
     args = ap.parse_args(argv)
+
+    if args.inspect_run:
+        code, text = inspect_run(Path(args.inspect_run))
+        print(text)
+        return code
 
     if args.handoff_timeout_sec <= 0:
         ap.error("--handoff-timeout-sec 必须大于 0")
@@ -191,7 +307,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     task_md = Path(args.task).resolve() if args.task else None
     session_cwd = str(ws_dir)
     work_dir = Path(session_cwd)
-    l2_cmd = None if args.l2_cmd.strip().lower() in ("off", "none") else args.l2_cmd.strip()
     ts = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}"
     run_dir = ws_dir / "runs" / ts
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -227,7 +342,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     else:
         prompt_path.write_text(
             task_md.read_text(encoding="utf-8") +
-            "\n\n[运行约束] 只使用文件读取/创建/编辑工具, 禁止执行shell命令。"
+            "\n\n[运行约束] 产物改动只通过文件读取/创建/编辑工具完成；需要自测时可执行只读的"
+            "构建/测试/语法检查命令, 严禁破坏性命令与改动用户环境。"
             "遇到需要用户决策的问题时, 结束回合并在最终消息以【决策请求】开头, "
             "列出问题与选项后停止; 其余情况完成全部要求后停止。\n",
             encoding="utf-8")
@@ -391,12 +507,23 @@ def main(argv: Optional[List[str]] = None) -> int:
         try:
             ivl("HANDOFF_START", session=sid, mode="kill", timeout_sec=args.handoff_timeout_sec)
             close_fn = get_sym("close_codex_app", close_codex_app)
-            killed = close_fn(rollout, max_wait=args.handoff_timeout_sec, on_event=ivl)
-            ivl("APP_CLOSED", killed=killed, verified=True)
+            killed = [str(pid) for pid in (close_fn(rollout, max_wait=args.handoff_timeout_sec, on_event=ivl) or [])]
             # Never unlink an active OS lock: that can create a second writer.
             lock_path = get_codex_locks_dir() / f"{sid}.lock"
-            verify_codex_writer_released(lock_path)
-            ivl("WRITER_RELEASED", lock_path=str(lock_path), lock_file_deleted=False)
+            # 探针返回实际执行结果；被占用时这里会抛错，交接直接判定失败。
+            lock_probe = verify_codex_writer_released(lock_path)
+            # 只有"确实关闭了桌面进程"才是已验证的交接；空进程列表不得标记为 verified。
+            ivl(
+                "APP_CLOSED",
+                killed=killed,
+                verified=bool(killed),
+                desktop_app_found=bool(killed),
+                detail="" if killed else "未发现需要关闭的 Codex 桌面进程；未执行任何进程终止",
+            )
+            ivl("WRITER_RELEASED", lock_path=str(lock_path), lock_file_deleted=False,
+                probe=lock_probe)
+            if not killed:
+                log("CLOSE    未发现 Codex 桌面进程；写锁已可获取，按无占用交接继续")
         except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
             from afk_supervisor.reporting import generate_final_report
             detail = f"kill 交接失败（基础设施/安全边界未确认；未启动无头端）: {exc}"
@@ -416,6 +543,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         task_md=task_md,
         work_dir=args.work_dir,
         explicit_delivery_dir=args.delivery_dir or None,
+        writable_roots=args.writable_root or None,
     )
     baseline_file = run_dir / "task_baseline.json"
     try:
@@ -423,6 +551,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         baseline_file.write_text(json.dumps(asdict(task_baseline), indent=2, ensure_ascii=False), encoding="utf-8")
     except Exception:
         pass
+
+    # 功能验证计划只在启动时固定一次；Worker 无法中途替换被授权的测试命令。
+    if args.verification_plan:
+        from afk_supervisor.verification import pin_plan
+        try:
+            pinned = pin_plan(args.verification_plan, run_dir, task_baseline)
+        except (OSError, ValueError, KeyError) as exc:
+            return finish_handoff("FAILED", f"功能验证计划无效，未启动监管: {exc}")
+        args.approved_verification_plan = pinned
+        ivl("VERIFICATION_PLAN", source=pinned["source"], sha256=pinned["sha256"][:12],
+            pinned=pinned["path"])
 
     coordinator = SupervisorCoordinator(
         run_dir=run_dir,
@@ -440,7 +579,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     def verify(custom_last_msg: Optional[str] = None, min_mtime: float = 0.0, title_str: str = "") -> Tuple[bool, str]:
         if task_md:
-            return check_acceptance(task_md.parent, ws_path, Path(task_baseline.delivery_dir))
+            return check_acceptance(task_md.parent, ws_path, Path(task_baseline.delivery_dir),
+                                    selftest_12ch=args.selftest_12ch)
         last_msg = custom_last_msg if custom_last_msg is not None else worker_last_message(run_dir)
         if not min_mtime and getattr(driver, "jsonl", None) and driver.jsonl.exists():
             min_mtime = driver.jsonl.stat().st_ctime - 120

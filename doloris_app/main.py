@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import sys
 import tkinter as tk
 
 from doloris_app.mascot import DesktopMascot
@@ -38,7 +37,7 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except Exception as e:
+    except Exception:
         import traceback
         err_msg = traceback.format_exc()
         try:
