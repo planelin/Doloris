@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from afk_supervisor.platform.gui import _navigate_target, ensure_codex_window_restored, find_best_codex_window, inject_into_codex_gui
+from afk_supervisor.platform.gui import find_best_codex_window, inject_into_codex_gui
 from afk_supervisor.platform.process import WorkspaceSupervisorLock, log
 from afk_supervisor.platform.windows import set_keep_awake
 from afk_supervisor.reporting import generate_final_report, send_terminal_notification
@@ -1420,8 +1420,6 @@ def run_goal_supervisor(
             reason = "长程续跑指令" if reuse_existing_prompt else "Goal 目标指令"
             return finish_goal("FAILED", f"GUI {reason}注入失败: {inject_res.detail} (请确保目标会话在 Codex 桌面端展开)")
     else:
-        if sid:
-            _navigate_target(sid)
         log("GOAL_INJECT 未检测到 Codex 前台活动主窗口，指令已记录到 prompt_file")
         ivl("GOAL_INJECT", status="RECORDED", detail="桌面端窗口未激活")
         if reuse_existing_prompt:
