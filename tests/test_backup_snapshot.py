@@ -20,12 +20,12 @@ class BackupSnapshotRegressions(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory(prefix="afk-backup-")
         self.addCleanup(temp.cleanup)
-        self.root = Path(temp.name)
+        self.root = Path(temp.name).resolve()
         self.ws = self.root / "workspace"
         (self.ws / "src").mkdir(parents=True)
         (self.ws / "src" / "app.py").write_text("value = 1\n" * 50, encoding="utf-8")
         # run_dir 位于工作区内部，且 runs/ 下已有历史备份产物。
-        self.run_dir = self.ws / "runs" / "20260923-115900"
+        self.run_dir = (self.ws / "runs" / "20260923-115900").resolve()
         self.run_dir.mkdir(parents=True)
 
     def test_archive_never_contains_the_run_directory_or_its_own_output(self):
@@ -39,7 +39,7 @@ class BackupSnapshotRegressions(unittest.TestCase):
         # 必须在有界时间内完成，且不能因为遍历自身产物而递归膨胀。
         self.assertLess(elapsed, 30.0)
         self.assertIsNotNone(archive)
-        self.assertEqual(archive.parent, self.run_dir)
+        self.assertEqual(archive.parent.resolve(), self.run_dir.resolve())
         self.assertTrue(archive.name.startswith("backup-pre-adopt-workspace-"))
         self.assertTrue(archive.name.endswith(".zip"))
 

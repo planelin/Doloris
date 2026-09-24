@@ -37,7 +37,9 @@ classifiers = [
     "Topic :: Software Development :: Testing",
     "Topic :: System :: Monitoring",
 ]
-dependencies = []
+dependencies = [
+    "Pillow>=10.0.0",
+]
 
 [project.scripts]
 doloris = "afk_supervisor.cli:main"

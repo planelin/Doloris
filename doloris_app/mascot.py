@@ -9,7 +9,13 @@ import tkinter as tk
 from pathlib import Path
 from typing import List, Optional
 
-from PIL import Image, ImageTk
+try:
+    from PIL import Image, ImageTk
+    HAS_PIL = True
+except ImportError:
+    Image = None  # type: ignore
+    ImageTk = None  # type: ignore
+    HAS_PIL = False
 
 from doloris_app.bubble import SpeechBubble
 from doloris_app.controller import SupervisionController
@@ -41,6 +47,8 @@ class DesktopMascot:
         self.base_width = 192
         self.base_height = 208
         self.root.title("Doloris Desktop Companion")
+        if not HAS_PIL:
+            raise RuntimeError("Pillow is required for the desktop mascot. Install it with: pip install Pillow")
 
         # Window styling: frameless, topmost, transparent background
         self.root.overrideredirect(True)

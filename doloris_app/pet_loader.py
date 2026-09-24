@@ -7,7 +7,13 @@ import os
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from PIL import Image, ImageDraw
+try:
+    from PIL import Image, ImageDraw
+    HAS_PIL = True
+except ImportError:
+    Image = None  # type: ignore
+    ImageDraw = None  # type: ignore
+    HAS_PIL = False
 
 # Codex V2 Pet Specification
 CODEX_V2_COLS = 8
@@ -563,6 +569,8 @@ def create_procedural_golden_skin() -> PetSkin:
 
 def create_default_pet_skin() -> PetSkin:
     """Returns the primary procedural Doloris default pet skin."""
+    if not HAS_PIL:
+        raise RuntimeError("Pillow is required for pet graphics. Install it with: pip install Pillow")
     try:
         return create_procedural_doloris_skin()
     except Exception:
@@ -571,6 +579,8 @@ def create_default_pet_skin() -> PetSkin:
 
 def discover_available_pets() -> List[PetSkin]:
     """Scans ~/.codex/pets/ and local folders to discover available pet skins."""
+    if not HAS_PIL:
+        return []
     default_skin = create_default_pet_skin()
     skins: List[PetSkin] = [default_skin]
     known_names = {default_skin.name, default_skin.display_name}

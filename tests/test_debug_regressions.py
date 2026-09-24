@@ -21,10 +21,10 @@ class DebugFixture(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory(prefix="afk-debug-")
         self.addCleanup(temp.cleanup)
-        self.root = Path(temp.name)
-        self.ws = self.root / "workspace"
+        self.root = Path(temp.name).resolve()
+        self.ws = (self.root / "workspace").resolve()
         self.ws.mkdir()
-        self.run = self.root / "run"
+        self.run = (self.root / "run").resolve()
         self.run.mkdir()
         self.baseline = TaskBaseline(
             task_id="debug-task", original_requirements="Deliver the documented result",
@@ -154,7 +154,7 @@ class BaselineAndStateRegressions(DebugFixture):
         output = self.ws / "output"
         output.mkdir()
         baseline = extract_task_baseline(session_cwd=self.ws, task_md=task, explicit_delivery_dir=str(output))
-        self.assertEqual(Path(baseline.delivery_dir), output)
+        self.assertEqual(Path(baseline.delivery_dir).resolve(), output.resolve())
         self.assertTrue(baseline.human_confirmation_required)
 
     def test_followup_user_requirements_not_discarded(self):
@@ -230,7 +230,7 @@ class StorageDurabilityRegressions(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory(prefix="afk-storage-")
         self.addCleanup(temp.cleanup)
-        self.root = Path(temp.name)
+        self.root = Path(temp.name).resolve()
         self.target = self.root / "supervisor_state.json"
 
     @staticmethod

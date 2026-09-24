@@ -4,7 +4,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from PIL import Image
+try:
+    from PIL import Image
+    HAS_PIL = True
+except ImportError:
+    Image = None  # type: ignore
+    HAS_PIL = False
 
 from doloris_app.pet_loader import (
     CODEX_V2_CELL_H,
@@ -18,6 +23,7 @@ from doloris_app.pet_loader import (
 )
 
 
+@unittest.skipUnless(HAS_PIL, "Pillow is required for pet loader tests")
 class TestPetLoader(unittest.TestCase):
     def test_default_pet_skin_generation(self):
         skin = create_default_pet_skin()

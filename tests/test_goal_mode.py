@@ -17,6 +17,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+try:
+    from PIL import Image  # noqa: F401
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
+
 from afk_supervisor.cli import build_arg_parser
 from afk_supervisor.goal_engine import (
     GOAL_GUARDRAIL_FALLBACK,
@@ -90,7 +96,7 @@ class TestGoalEngine(unittest.TestCase):
 
     def setUp(self):
         self.tmp_dir = tempfile.TemporaryDirectory()
-        self.run_dir = Path(self.tmp_dir.name)
+        self.run_dir = Path(self.tmp_dir.name).resolve()
 
     def tearDown(self):
         self.tmp_dir.cleanup()
@@ -790,6 +796,7 @@ class TestGoalEngine(unittest.TestCase):
             mock_sub.return_value.stdout = json.dumps({"ok": True, "delivery_status": "SENT", "method": "verified_task_enter"})
             inject_into_codex_gui("test text", target_hwnd=12345, target_sid="01a0c793-01bc-7c92-a3b6-0e735df4da1d", target_title="Test Title")
             mock_nav.assert_called_once_with("01a0c793-01bc-7c92-a3b6-0e735df4da1d")
+    @unittest.skipUnless(HAS_PIL, "Pillow is required for mascot GUI tests")
     def test_mascot_prompt_goal_mode_skips_when_goal_exists(self):
         """测试桌宠 prompt_goal_mode 检测到已有活跃目标时跳过弹窗直接启动。"""
         from doloris_app.mascot import DesktopMascot
@@ -817,6 +824,7 @@ class TestGoalEngine(unittest.TestCase):
             self.assertIn("已设立目标", mascot.show_bubble.call_args[0][0])
 
 
+    @unittest.skipUnless(HAS_PIL, "Pillow is required for mascot GUI tests")
     def test_mascot_prompt_goal_mode_opens_dialog_when_no_goal(self):
         """测试未设立目标时正确弹出弹窗，且初始不限时。"""
         from doloris_app.mascot import DesktopMascot
