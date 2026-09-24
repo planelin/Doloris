@@ -24,6 +24,7 @@ from afk_supervisor.coordinator import SupervisorCoordinator
 from afk_supervisor.l2.bridge import AntigravityManager
 from afk_supervisor.l2.transport import clean_l2_decision_text
 from afk_supervisor.reporting import generate_final_report
+from afk_supervisor.sessions.discovery import find_codex_session_by_id
 from afk_supervisor.sessions.rollout import is_codex_working, codex_session_state
 from afk_supervisor.state import SupervisorState
 from afk_supervisor.compat import get_sym
@@ -211,6 +212,15 @@ def run_gui_supervisor(
                 return finish("TIMEOUT", f"已达总时长上限 {args.max_run_sec}s")
             get_sym("ensure_codex_window_restored", ensure_codex_window_restored)()
             p_roll = Path(rollout)
+            refreshed = get_sym("find_codex_session_by_id", find_codex_session_by_id)(sid)
+            if refreshed and refreshed[1] != p_roll and refreshed[1].exists():
+                old_p_roll = p_roll
+                p_roll = refreshed[1]
+                rollout = p_roll
+                log(f"GUI_ROLLOUT 检测到 Codex 会话分页轮转: {old_p_roll.name} -> {p_roll.name}")
+                ivl("ROLLOUT_ROTATED", old=old_p_roll.name, new=p_roll.name)
+                state_mgr.event_offset = 0
+                state_mgr.dispatch_offset = 0
 
             if pending_injection:
                 beat("awaiting_ack")
@@ -276,7 +286,7 @@ def run_gui_supervisor(
                     get_sym("ensure_codex_window_restored", ensure_codex_window_restored)()
                     beat("rate_limit_cooldown")
                 pending_injection = {
-                    "text": "请继续推进当前任务",
+                    "text": "继续",
                     "kind": "速率受限自愈恢复",
                     "status": "PENDING",
                     "t0": time.monotonic(),
@@ -362,7 +372,7 @@ def run_gui_supervisor(
                     continue
                 if ok:
                     return finish("SUCCESS", detail)
-                inject_text = "继续推进项目，完成尚未达标的要求。"
+                inject_text = "继续"
 
             # L2 may have taken minutes: never inject into a restarted/unknown turn.
             if is_working_fn(p_roll)[0] or file_size(p_roll) != observed_offset:

@@ -388,7 +388,7 @@ def run_headless_supervisor(
                 # 分支 E: 普通 FAIL 或 INCONCLUSIVE (worker_fix / gather_evidence)
                 headless_l2_retries = 0
                 early_exits += 1
-                cleaned_answer = clean_l2_decision_text(answer) or "请根据需求清单继续推进项目并交付目标成果。"
+                cleaned_answer = clean_l2_decision_text(answer) or "继续"
                 answer_path = run_dir / f"answer-{interactions}.txt"
                 answer_path.write_text(cleaned_answer, encoding="utf-8")
                 resume_with_action(answer_path, payload, act_type or ActionType.WORKER_INSTRUCTION)

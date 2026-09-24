@@ -81,6 +81,39 @@ class SessionIdentityTests(DebugFixture):
         # 回溯业务主线时父文件必须排在 fork 子文件之前。
         self.assertEqual([item[1] for item in rollouts], [parent, child])
 
+    def test_paginated_continuation_rollout_wins_over_stale_origin(self):
+        """当会话产生分页续接文件时，按该会话 SID 查询必须优先返回最新的分页续接文件。"""
+        sid = "01a0d333-e33f-7a02-be04-fa041c6c7882"
+        page_id = "01a0d34f-4fec-7c31-855f-bc91b3f2cb16"
+        origin = self.root / f"rollout-2026-09-24T19-36-28-{sid}.jsonl"
+        continuation = self.root / f"rollout-2026-09-24T20-06-25-{sid}_{page_id}.jsonl"
+        origin.write_text(json.dumps({
+            "type": "session_meta",
+            "payload": {"id": sid, "session_id": sid, "cwd": str(self.ws)},
+        }) + "\n", encoding="utf-8")
+        continuation.write_text(json.dumps({
+            "type": "session_meta",
+            "payload": {
+                "id": sid,
+                "session_id": sid,
+                "cwd": str(self.ws),
+                "history_mode": "paginated",
+                "history_base": {"thread_id": sid},
+            },
+        }) + "\n", encoding="utf-8")
+        now = time.time()
+        os.utime(origin, (now - 600, now - 600))
+        os.utime(continuation, (now, now))
+
+        with patch("afk_supervisor.sessions.discovery.get_codex_sessions_dir", return_value=self.root), \
+             patch("afk_supervisor.sessions.discovery.get_codex_home", return_value=self.root):
+            found = find_codex_session_by_id(sid)
+
+        self.assertIsNotNone(found)
+        self.assertEqual(found[0], sid)
+        self.assertEqual(found[1], continuation)
+        self.assertEqual(found[2], str(self.ws))
+
     def test_sidebar_name_beats_stale_session_index_title(self):
         """侧栏显示名 (state_5.sqlite.name) 优先于滞后的 session_index.jsonl。"""
         sid = "01a0cc3a-2f4f-7791-be89-f5f59e005336"

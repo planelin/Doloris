@@ -47,6 +47,16 @@ def _json_str(s: str) -> str:
         return s
 
 
+def clean_path_str(p_str: Optional[str]) -> Optional[str]:
+    """清洗 Windows 扩展路径前缀 (\\\\?\\) 并去除两端空白。"""
+    if not p_str or not isinstance(p_str, str):
+        return None
+    s = p_str.strip()
+    if s.startswith("\\\\?\\"):
+        s = s[4:]
+    return s.strip()
+
+
 def _read_meta(p: Path) -> Optional[Tuple[str, Optional[str]]]:
     """读 rollout 头部 session_meta，返回 (session_id, cwd) 或 None。"""
     try:
@@ -57,7 +67,8 @@ def _read_meta(p: Path) -> Optional[Tuple[str, Optional[str]]]:
         if meta.get("thread_source") == "guardian_review" or (isinstance(source, dict) and "subagent" in source):
             return None
         sid = meta.get("id") or meta.get("session_id")
-        return (sid, meta.get("cwd")) if isinstance(sid, str) and sid else None
+        scwd = clean_path_str(meta.get("cwd"))
+        return (sid, scwd) if isinstance(sid, str) and sid else None
     except (OSError, ValueError, TypeError):
         return None
 
@@ -240,19 +251,59 @@ def find_last_codex_session(cwd: Optional[Path] = None) -> Optional[Tuple[str, P
     return sid, p, scwd
 
 
+def _load_state_db_session(raw_sid: str) -> Optional[Tuple[str, Path, Optional[str]]]:
+    """从 state_5.sqlite 读取指定会话记录的活跃 rollout_path 与 cwd。"""
+    clean = clean_session_id(raw_sid)
+    if not clean:
+        return None
+    state_db = get_codex_home() / "state_5.sqlite"
+    if not state_db.exists():
+        return None
+    try:
+        con = sqlite3.connect(f"file:{state_db}?mode=ro", uri=True)
+        try:
+            cur = con.cursor()
+            cur.execute("PRAGMA table_info(threads)")
+            cols = {r[1] for r in cur.fetchall()}
+            if not {"id", "rollout_path", "cwd"}.issubset(cols):
+                return None
+            cur.execute("SELECT id, rollout_path, cwd FROM threads WHERE id = ?", (clean,))
+            row = cur.fetchone()
+            if row and row[1]:
+                rpath_str = clean_path_str(str(row[1]))
+                if rpath_str:
+                    p = Path(rpath_str)
+                    if p.exists():
+                        scwd = clean_path_str(row[2])
+                        return (str(row[0]).strip(), p, scwd)
+        finally:
+            con.close()
+    except Exception:
+        pass
+    return None
+
+
 def find_codex_session_by_id(raw_sid: str) -> Optional[Tuple[str, Path, Optional[str]]]:
     """根据会话 ID 查找对应的 rollout 文件与 cwd。
 
-    桌面端 fork 子会话的文件名为 rollout-<ts>-<root_sid>_<child_sid>.jsonl，
-    但其 session_meta 会继承 root_sid，因此按 ID 匹配会同时命中父文件与所有后代
-    fork 文件。后代文件 mtime 更新，若按 mtime 取"最新"，接管到的将是子会话轨迹
-    (父会话暂停校验、目标提炼都会读错对象)。这里改为：请求哪个 ID，就优先返回
-    文件名以该 ID 结尾的原始 rollout 文件，仅在没有原始文件时才回退。
+    1. 优先查桌面端 state_5.sqlite: threads 表直接记录当前活跃的 rollout_path 与 cwd。
+    2. 若未从数据库命中，从 ~/.codex/sessions 扫描匹配：
+       - 原始起始文件 (rollout-<ts>-<sid>.jsonl) 或分页续接文件 (history_mode == "paginated")
+         均视为本会话的自有一体轨迹，按修改时间取最新（确保分页后追踪最新续接文件）。
+       - 未标注分页但继承了同一 session_meta 的后代独立 fork 文件降权，防止抢占主会话。
+    3. 兜底识别文件名以 child_sid 结尾的 fork 子文件。
     返回 (actual_sid, rollout_path, session_cwd) 或 None。
     """
     sid = clean_session_id(raw_sid)
+    if not sid:
+        return None
+
+    db_match = _load_state_db_session(sid)
+    if db_match:
+        return db_match
+
     codex_sessions = get_codex_sessions_dir()
-    if not sid or not codex_sessions.exists():
+    if not codex_sessions.exists():
         return None
     matches = []
     for p in codex_sessions.rglob("rollout-*.jsonl"):
@@ -262,8 +313,19 @@ def find_codex_session_by_id(raw_sid: str) -> Optional[Tuple[str, Path, Optional
                 mt = p.stat().st_mtime
             except OSError:
                 mt = 0
-            # 原始文件 (rollout-<ts>-<sid>.jsonl) 优先于继承同一 session_meta 的后代 fork 文件。
-            is_origin = p.stem.endswith(meta[0])
+            # 原始文件 (rollout-<ts>-<sid>.jsonl) 或分页续接文件 (history_mode == "paginated")
+            # 优先于继承同一 session_meta 但无分页声明的独立 fork 文件。
+            is_paginated = False
+            try:
+                with p.open("r", encoding="utf-8") as stream:
+                    rec = json.loads(stream.readline())
+                pl = rec.get("payload", rec)
+                is_paginated = (pl.get("history_mode") == "paginated") or (
+                    isinstance(pl.get("history_base"), dict) and pl.get("history_base", {}).get("thread_id") == sid
+                )
+            except Exception:
+                pass
+            is_origin = p.stem.endswith(meta[0]) or is_paginated
             matches.append((0 if is_origin else 1, -mt, meta[0], p, meta[1]))
     if matches:
         matches.sort(key=lambda item: (item[0], item[1]))

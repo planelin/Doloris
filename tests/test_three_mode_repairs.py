@@ -296,7 +296,7 @@ class ThreeModeRepairs(LoopFixture):
         dispatch.side_effect = self.pass_dispatch
         rc, inject = self.run_observed_gui(dispatch=dispatch, inject_fn=inject_fn)
         self.assertEqual(rc, 0)
-        self.assertIn("请继续推进当前任务", injected_texts)
+        self.assertIn("继续", injected_texts)
         self.assertEqual(self.state.state, "SUCCESS")
 
     def test_task_restart_during_l2_prevents_injection(self):

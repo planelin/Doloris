@@ -429,7 +429,7 @@ class TestGoalEngine(unittest.TestCase):
         self.assertTrue(info["is_paused"])
         self.assertEqual(info["pause_type"], "goal_paused")
         self.assertEqual(info["action"], "resume_goal")
-        self.assertEqual(info["choice"], "继续推进目标")
+        self.assertEqual(info["choice"], "继续")
 
     def test_goal_prompt_strict_format(self):
         """测试注入的 Goal 提示词严格只有 '/goal [目标]'，没有多余的前缀与噪音。"""

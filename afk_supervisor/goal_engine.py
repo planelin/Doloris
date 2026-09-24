@@ -33,6 +33,7 @@ from afk_supervisor.l2.bridge import (
     get_agy_brain_dir,
     get_agy_conversation_for_codex,
 )
+from afk_supervisor.sessions.discovery import find_codex_session_by_id
 
 LONG_HORIZON_SYSTEM_PROMPT = (
     "该目标用于数小时无人值守托管，必须具备持续执行价值与可实现、可测试、可验收的闭环。"
@@ -1255,7 +1256,7 @@ def analyze_goal_pause(rollout_path: Optional[Path]) -> Dict[str, Any]:
             "is_paused": True,
             "pause_type": "goal_paused",
             "action": "resume_goal",
-            "choice": "继续推进目标",
+            "choice": "继续",
             "detail": "Codex 内部目标暂停，自动发送继续指令",
         }
 
@@ -1461,6 +1462,14 @@ def run_goal_supervisor(
             if max_run_sec > 0 and (time.monotonic() - start_time) > max_run_sec:
                 return finish_goal("TIMEOUT", f"达到设定的最大运行时间上限 ({max_run_sec}s)")
 
+            refreshed = find_codex_session_by_id(sid)
+            if refreshed and refreshed[1] != rollout and refreshed[1].exists():
+                old_rollout = rollout
+                rollout = refreshed[1]
+                log(f"GOAL_ROLLOUT 检测到 Codex 会话分页轮转: {old_rollout.name} -> {rollout.name}")
+                ivl("ROLLOUT_ROTATED", old=old_rollout.name, new=rollout.name)
+                last_change_time = time.monotonic()
+
             curr_size = rollout.stat().st_size if (rollout and rollout.exists()) else 0
 
             # 阶段 A：确认新 Goal 回合已启动（若跳过注入则直接处于启动状态）
@@ -1532,10 +1541,10 @@ def run_goal_supervisor(
                             target_hwnd=target_hwnd,
                             target_sid=sid,
                             target_title=title,
-                            text="请继续推进当前目标",
+                            text="继续",
                             rollout_path=rollout,
                         )
-                        ivl("GOAL_INJECT_DECISION", status=inject_res.status, detail=inject_res.detail, choice="请继续推进当前目标")
+                        ivl("GOAL_INJECT_DECISION", status=inject_res.status, detail=inject_res.detail, choice="继续")
                     time.sleep(check_interval)
                     continue
 
