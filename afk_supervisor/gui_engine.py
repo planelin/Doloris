@@ -24,7 +24,7 @@ from afk_supervisor.coordinator import SupervisorCoordinator
 from afk_supervisor.l2.bridge import AntigravityManager
 from afk_supervisor.l2.transport import clean_l2_decision_text
 from afk_supervisor.reporting import generate_final_report
-from afk_supervisor.sessions.rollout import is_codex_working
+from afk_supervisor.sessions.rollout import is_codex_working, codex_session_state
 from afk_supervisor.state import SupervisorState
 from afk_supervisor.compat import get_sym
 from afk_supervisor.actions import UnattendedL2, DecisionStopped, repair_action, WORKER_ACTIONS, CHANNEL_ERRORS
@@ -70,6 +70,7 @@ def run_gui_supervisor(
     interactions = 0
     injections = 0
     l2_channel_failures = 0
+    consecutive_rate_limits = 0
     last_handled_msg_hash = ""
     pending_injection = None
     last_activity = ""
@@ -92,7 +93,13 @@ def run_gui_supervisor(
             rollout_path=Path(rollout) if rollout else None,
             session_cwd=Path(scwd),
             title=title,
-            work_dir=args.work_dir,
+            work_dir=args.work_dir if isinstance(getattr(args, "work_dir", None), str) else "work",
+            explicit_delivery_dir=(
+                args.delivery_dir if isinstance(getattr(args, "delivery_dir", None), str) and args.delivery_dir else None
+            ),
+            writable_roots=(
+                args.writable_root if isinstance(getattr(args, "writable_root", None), list) and args.writable_root else None
+            ),
         )
         coordinator = SupervisorCoordinator(
             run_dir=run_dir,
@@ -249,6 +256,39 @@ def run_gui_supervisor(
             if msg_hash == last_handled_msg_hash:
                 beat("no_new_turn")
                 continue
+
+            snapshot = codex_session_state(p_roll)
+            if snapshot.get("is_rate_limited"):
+                err_msg = snapshot.get("turn_error_message") or "Codex API 速率受限或网络偶发异常"
+                retry_wait = max(5.0, snapshot.get("retry_delay_sec") or 25.0)
+                consecutive_rate_limits += 1
+                log(f"[WARN] RATE_LIMIT ({consecutive_rate_limits}) 检测到 Codex API 速率受限/偶发网络故障: {err_msg}")
+                if consecutive_rate_limits >= 8:
+                    return finish("FAILED", f"Codex API 连续 {consecutive_rate_limits} 次速率受限或网络中断，超出自动恢复上限: {err_msg}")
+                log(f"[WAIT] 触发防雪崩熔断避让，冷却等待 {retry_wait:.0f}s 后自动注入恢复指令...")
+                ivl("RATE_LIMIT_BACKOFF", error=err_msg[:200], retry_wait_sec=retry_wait,
+                    consecutive_rate_limits=consecutive_rate_limits)
+                cooldown_deadline = time.monotonic() + retry_wait
+                while time.monotonic() < cooldown_deadline:
+                    if budget.is_expired():
+                        return finish("TIMEOUT", f"已达总时长上限 {args.max_run_sec}s")
+                    time.sleep(min(2.0, max(0.5, cooldown_deadline - time.monotonic())))
+                    get_sym("ensure_codex_window_restored", ensure_codex_window_restored)()
+                    beat("rate_limit_cooldown")
+                pending_injection = {
+                    "text": "请继续推进当前任务",
+                    "kind": "速率受限自愈恢复",
+                    "status": "PENDING",
+                    "t0": time.monotonic(),
+                    "last_try": 0.0,
+                }
+                state_mgr.event_offset = file_size(p_roll)
+                state_mgr.dispatch_offset = file_size(p_roll)
+                send_pending()
+                last_handled_msg_hash = msg_hash
+                continue
+
+            consecutive_rate_limits = 0
 
             payload = None
             inject_kind = "Worker continuation"

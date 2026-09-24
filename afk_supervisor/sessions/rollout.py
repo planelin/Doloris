@@ -10,7 +10,54 @@ import json
 import re
 import time
 from pathlib import Path
-from typing import Tuple
+from typing import Any, Tuple
+
+RATE_LIMIT_KEYWORDS = (
+    "rate limit", "rate_limit", "ratelimit", "429",
+    "exceeded rate limit", "tpm", "rpm", "token limit",
+    "quota exceeded", "insufficient_quota",
+    "server overloaded", "overloaded", "503", "502", "504",
+    "bad gateway", "gateway timeout",
+    "connection error", "network error", "timed out",
+)
+
+
+def is_rate_limit_error(error_info: Any) -> bool:
+    """检查错误信息是否为 Codex/LLM API 速率限制、服务过载或网络偶发异常。"""
+    if not error_info:
+        return False
+    if isinstance(error_info, dict):
+        text = " ".join(str(v) for v in (
+            error_info.get("message"),
+            error_info.get("codex_error_info"),
+            error_info.get("type"),
+            error_info.get("code"),
+        ) if v).lower()
+    else:
+        text = str(error_info).lower()
+    return any(kw in text for kw in RATE_LIMIT_KEYWORDS)
+
+
+def extract_retry_delay(error_info: Any, default: float = 25.0) -> float:
+    """从速率受限或超时错误信息中提取需等待的秒数 (例如 retry after 20 seconds)。"""
+    if not error_info:
+        return default
+    text = ""
+    if isinstance(error_info, dict):
+        text = str(error_info.get("message") or "")
+    else:
+        text = str(error_info)
+    m = re.search(r"retry\s+after\s+(\d+(?:\.\d+)?)\s*s(?:econds?)?", text, re.I)
+    if not m:
+        m = re.search(r"retry\s+in\s+(\d+(?:\.\d+)?)\s*s(?:econds?)?", text, re.I)
+    if m:
+        try:
+            val = float(m.group(1))
+            return max(5.0, min(val + 5.0, 120.0))
+        except (ValueError, TypeError):
+            pass
+    return default
+
 
 
 def codex_handoff_state(path) -> dict:
@@ -30,6 +77,10 @@ def codex_handoff_state(path) -> dict:
     fork_parent_id = ""
     saw_thread_settings = False
     only_fork_metadata = True
+    last_turn_error = None
+    last_turn_error_msg = ""
+    is_rate_limited = False
+    retry_delay_sec = 0.0
     try:
         p = Path(path)
         before = p.stat()
@@ -71,9 +122,28 @@ def codex_handoff_state(path) -> dict:
                     known = True
                     turn_ended = True
                     last_agent_message = payload.get("last_agent_message", "") if event == "task_complete" else ""
+                    err_val = payload.get("error")
+                    if err_val:
+                        last_turn_error = err_val
+                        if isinstance(err_val, dict):
+                            last_turn_error_msg = str(err_val.get("message") or err_val.get("codex_error_info") or "")
+                        else:
+                            last_turn_error_msg = str(err_val)
+                        is_rate_limited = is_rate_limit_error(err_val)
+                        if is_rate_limited:
+                            retry_delay_sec = extract_retry_delay(err_val, default=25.0)
+                    else:
+                        last_turn_error = None
+                        last_turn_error_msg = ""
+                        is_rate_limited = False
+                        retry_delay_sec = 0.0
                 elif kind == "event_msg" and event in ("task_started", "turn_started", "user_message", "agent_message", "agent_reasoning", "agent_reasoning_raw_content"):
                     known = True
                     turn_ended = False
+                    last_turn_error = None
+                    last_turn_error_msg = ""
+                    is_rate_limited = False
+                    retry_delay_sec = 0.0
                 elif kind == "response_item" and event in ("reasoning", "message", "compaction"):
                     known = True
                     turn_ended = False
@@ -119,11 +189,15 @@ def codex_handoff_state(path) -> dict:
         return dict(state=state, reason=reason, last_event=last_event,
                     pending_calls=pending_ids, file_age_sec=age, turn_ended=turn_ended,
                     last_agent_message=last_agent_message, event_offset=before.st_size,
-                    never_started=(state == "safe" and not known))
+                    never_started=(state == "safe" and not known),
+                    turn_error=last_turn_error, turn_error_message=last_turn_error_msg,
+                    is_rate_limited=is_rate_limited, retry_delay_sec=retry_delay_sec)
     except (OSError, TypeError, UnicodeError) as exc:
         return dict(state="unknown", reason=f"无法读取会话轨迹: {exc}",
                     last_event=last_event, pending_calls=sorted(pending), file_age_sec=None,
-                    turn_ended=False, never_started=False)
+                    turn_ended=False, never_started=False,
+                    turn_error=None, turn_error_message="",
+                    is_rate_limited=False, retry_delay_sec=0.0)
 
 
 def rollout_tail_state(path, tail=16384) -> str:
@@ -215,6 +289,10 @@ def peek_rollout_activity(rollout_path, max_bytes=65536) -> str:
                             joined = joined[:77] + "..."
                         return f"[输出] {joined}"
             elif ptype == "task_complete" or (t == "event_msg" and ptype == "task_complete"):
+                err = payload.get("error")
+                if err:
+                    err_msg = err.get("message") if isinstance(err, dict) else str(err)
+                    return f"[偶发限流/网络异常: {str(err_msg)[:50]}]"
                 return "[任务完成]"
             elif ptype == "turn_aborted":
                 return "[回合打断]"
@@ -243,8 +321,12 @@ def is_codex_working(rollout_path: Path) -> Tuple[bool, str, str]:
     """
     snapshot = codex_session_state(rollout_path)
     stopped = snapshot["status"] == "stopped"
-    reason = (f"已确认回合停止 ({snapshot['last_event']})" if stopped else
-              f"{snapshot['status']}: {snapshot['reason']}")
+    if stopped and snapshot.get("is_rate_limited"):
+        reason = f"已确认回合停止 (task_complete - 偶发速率受限/网络异常: {str(snapshot.get('turn_error_message', ''))[:40]})"
+    elif stopped:
+        reason = (f"已确认回合停止 ({snapshot['last_event']})")
+    else:
+        reason = f"{snapshot['status']}: {snapshot['reason']}"
     return not stopped, reason, snapshot.get("last_agent_message", "") if stopped else ""
 
 

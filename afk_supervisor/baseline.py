@@ -132,22 +132,105 @@ def _is_path_within_roots(path_str: str, roots: List[str]) -> bool:
         return False
 
 
+DELIVERY_FILE_EXTENSIONS = (
+    '.py', '.cmd', '.bat', '.sh', '.json', '.md', '.log',
+    '.pdf', '.docx', '.doc', '.xlsx', '.xls', '.csv', '.txt',
+    '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp',
+    '.zip', '.tar', '.gz', '.7z', '.rar',
+    '.exe', '.dll', '.bin', '.iso',
+)
+
+DELIVERY_KW_PATTERN = re.compile(
+    r'(?:'
+    r'工作区|交付目录|工作目录|项目目录|工程目录|项目在|工程在|代码在|产物在|'
+    r'delivery_dir|workspace|work_dir|project_dir|'
+    r'输出目录|输出到|保存到|生成到|output[\s_-]*to|save[\s_-]*to|deliver[\s_-]*to'
+    r')[\s:：=]*[`"\'\s]*([a-zA-Z]:[\\/][^\s,，;；"\'`。\r\n]+|/[^\s,，;；"\'`。\r\n]+|[a-zA-Z0-9_\.\-]+[\\/][^\s,，;；"\'`。\r\n]*)',
+    re.IGNORECASE,
+)
+
+
+def is_forbidden_system_root(path_str: str) -> bool:
+    """检查路径是否为系统关键保护根目录，严禁作为交付目录或扩展授权。"""
+    try:
+        p = Path(path_str).resolve()
+    except Exception:
+        return True
+
+    # 盘符根目录 (如 C:\, D:\, /)
+    if p.parent == p or str(p) in (p.drive + "\\", p.drive + "/", "/"):
+        return True
+
+    p_str = str(p).lower().replace("/", "\\")
+    p_posix = p.as_posix().lower()
+
+    # Windows 系统关键目录
+    windows_forbidden = (
+        r"\windows",
+        r"\program files",
+        r"\program files (x86)",
+        r"\programdata",
+        r"\recovery",
+        r"\$recycle.bin",
+        r"\system volume information",
+        r"\boot",
+        r"\msocache",
+    )
+    drive = p.drive.lower()
+    for bad in windows_forbidden:
+        target_bad = drive + bad if drive else bad
+        if p_str == target_bad or p_str.startswith(target_bad + "\\"):
+            return True
+
+    # Unix 系统关键目录 (兼顾跨平台以及 Windows 下解析为盘符根子目录)
+    unix_forbidden = (
+        "/bin", "/sbin", "/etc", "/usr", "/var", "/dev",
+        "/proc", "/sys", "/root", "/boot", "/lib", "/lib64",
+    )
+    no_drive_posix = re.sub(r'^[a-z]:', '', p_posix)
+    for ubad in unix_forbidden:
+        if no_drive_posix == ubad or no_drive_posix.startswith(ubad + "/"):
+            return True
+        if p_posix == ubad or p_posix.startswith(ubad + "/"):
+            return True
+
+    return False
+
+
 def extract_explicit_delivery_dir(text: str) -> Optional[str]:
     """从文本中提取用户显式指定的交付目录（若无则返回 None）。"""
     if not text:
         return None
-    cleaned = re.sub(r"\\([_`*~])", r"\1", text)
-    kw_abs_match = re.search(
-        r'(?:工作区|交付目录|delivery_dir|workspace)[\s:：=]*([a-zA-Z]:[\\/][^\s,，;；"\'\r\n]+)',
-        cleaned,
-        re.IGNORECASE,
-    )
-    if kw_abs_match:
-        return kw_abs_match.group(1).rstrip('\\/`。')
-    abs_matches = re.findall(r'(?<![a-zA-Z0-9])([a-zA-Z]:[\\/][^\s,，;；"\'`。\r\n]+)', text)
+    # 过滤可能携带附件路径的 Codex 元信息注入与环境上下文
+    cleaned = re.sub(r"#\s*Files mentioned by the user:[\s\S]*?(?=\n\n|\n[^\s\-]|\Z)", "", text)
+    cleaned = re.sub(r"<environment_context>[\s\S]*?</environment_context>", "", cleaned)
+    cleaned = re.sub(r"<collaboration_mode>[\s\S]*?</collaboration_mode>", "", cleaned)
+    cleaned = re.sub(r"\\([_`*~])", r"\1", cleaned)
+
+    kw_match = DELIVERY_KW_PATTERN.search(cleaned)
+    if kw_match:
+        cand = kw_match.group(1).rstrip('\\/`\'"。，；、')
+        if not cand.lower().endswith(DELIVERY_FILE_EXTENSIONS):
+            try:
+                if not Path(cand).is_file():
+                    return cand
+            except Exception:
+                return cand
+
+    # 兜底探测: 必须是绝对路径、非 URL、非文件扩展名、非已存在普通文件
+    abs_matches = re.findall(r'(?<![a-zA-Z0-9])([a-zA-Z]:[\\/][^\s,，;；"\'`。\r\n]+)', cleaned)
     for cand_path in abs_matches:
-        cand_p = cand_path.rstrip('\\/`。')
-        if not cand_p.lower().endswith(('.py', '.cmd', '.bat', '.sh', '.json', '.md', '.log')):
+        cand_p = cand_path.rstrip('\\/`\'"。，；、')
+        if cand_p.lower().startswith(("http:", "https:")):
+            continue
+        if cand_p.lower().endswith(DELIVERY_FILE_EXTENSIONS):
+            continue
+        try:
+            if Path(cand_p).is_file():
+                continue
+        except Exception:
+            pass
+        if "." not in Path(cand_p).name:
             return cand_p
     return None
 
@@ -218,6 +301,10 @@ def extract_task_baseline(
         task_id = task_p.parent.name
         orig_req = task_p.read_text(encoding="utf-8", errors="replace")
         req_deliv = _resolve_delivery_dir(cwd, [orig_req], explicit_delivery_dir, cwd / work_dir)
+        if req_deliv and not is_forbidden_system_root(req_deliv):
+            resolved_req = str(Path(req_deliv).resolve())
+            if not _is_path_within_roots(resolved_req, w_roots):
+                w_roots.append(resolved_req)
         path_problems = delivery_path_blockers(req_deliv, w_roots)
         eff_deliv = req_deliv if not path_problems else ""
 
@@ -299,6 +386,10 @@ def extract_task_baseline(
     ]
     human_confirmations = _human_confirmations("\n".join(user_prompts or [orig_req]))
     requested_delivery_dir = _resolve_delivery_dir(cwd, user_prompts or [orig_req], explicit_delivery_dir, cwd)
+    if requested_delivery_dir and not is_forbidden_system_root(requested_delivery_dir):
+        resolved_req = str(Path(requested_delivery_dir).resolve())
+        if not _is_path_within_roots(resolved_req, w_roots):
+            w_roots.append(resolved_req)
     path_problems = delivery_path_blockers(requested_delivery_dir, w_roots)
     blockers.extend(path_problems)
     effective_delivery_dir = requested_delivery_dir if not path_problems else ""

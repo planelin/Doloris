@@ -1518,6 +1518,27 @@ def run_goal_supervisor(
             is_working, reason, last_msg = is_codex_working(rollout)
 
             if not is_working:
+                snapshot = codex_session_state(rollout)
+                if snapshot.get("is_rate_limited"):
+                    err_msg = snapshot.get("turn_error_message") or "Codex API 速率受限或网络偶发异常"
+                    retry_wait = max(5.0, snapshot.get("retry_delay_sec") or 25.0)
+                    log(f"[WARN] GOAL RATE_LIMIT 检测到 Codex API 速率受限/偶发网络故障: {err_msg}")
+                    log(f"[WAIT] 触发防雪崩熔断避让，冷却等待 {retry_wait:.0f}s 后自动注入恢复指令...")
+                    ivl("RATE_LIMIT_BACKOFF", error=err_msg[:200], retry_wait_sec=retry_wait)
+                    time.sleep(retry_wait)
+                    target_hwnd = target_hwnd or find_best_codex_window()
+                    if target_hwnd > 0:
+                        inject_res = inject_into_codex_gui(
+                            target_hwnd=target_hwnd,
+                            target_sid=sid,
+                            target_title=title,
+                            text="请继续推进当前目标",
+                            rollout_path=rollout,
+                        )
+                        ivl("GOAL_INJECT_DECISION", status=inject_res.status, detail=inject_res.detail, choice="请继续推进当前目标")
+                    time.sleep(check_interval)
+                    continue
+
                 pause_info = analyze_goal_pause(rollout)
 
                 # 分支 1：模型暂停需要审批计划或选择推荐项 -> 自动注入决策推进
@@ -1591,7 +1612,7 @@ def run_goal_supervisor(
                 snapshot = codex_session_state(rollout)
                 last_ev = snapshot.get("last_event", "")
 
-                if last_ev == "task_complete":
+                if last_ev == "task_complete" and not snapshot.get("is_rate_limited"):
                     # 严密闸门：若任务处于停滞/阻塞状态或有未决交互，绝不允许误判为完工早退！
                     is_stalled = (
                         pause_info.get("pause_type") == "goal_stalled"

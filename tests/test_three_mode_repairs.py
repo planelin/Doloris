@@ -275,6 +275,30 @@ class ThreeModeRepairs(LoopFixture):
         self.assertEqual(dispatch.call_args.kwargs["mode"], "DECIDE")
         inject.assert_not_called()
 
+    def test_gui_engine_recovers_from_rate_limit_without_calling_review(self):
+        rate_limit_payload = {
+            "type": "task_complete",
+            "error": {
+                "message": "rate limit exceeded: Your requests to gpt-6-astra for gpt-6-astra in eastus2 have exceeded rate limit. Please retry after 20 seconds.",
+                "codex_error_info": "rate_limit_exceeded"
+            }
+        }
+        self.rollout.write_text(json.dumps({"type": "event_msg", "payload": rate_limit_payload}) + "\n", encoding="utf-8")
+
+        dispatch = Mock()
+        injected_texts = []
+        def inject_fn(text, **kwargs):
+            injected_texts.append(text)
+            self.append(event("user_message", message=text) + event("task_started") +
+                        event("task_complete", last_agent_message="任务已完成"))
+            return DeliveryResult("SENT", "simulated UI")
+
+        dispatch.side_effect = self.pass_dispatch
+        rc, inject = self.run_observed_gui(dispatch=dispatch, inject_fn=inject_fn)
+        self.assertEqual(rc, 0)
+        self.assertIn("请继续推进当前任务", injected_texts)
+        self.assertEqual(self.state.state, "SUCCESS")
+
     def test_task_restart_during_l2_prevents_injection(self):
         def dispatch(*args, **kwargs):
             result = self.instruction(*args, **kwargs)
