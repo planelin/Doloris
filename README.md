@@ -156,10 +156,7 @@ flowchart TD
 无需记忆任何复杂命令行参数，让可爱的代班桌宠常驻桌面角落：
 
 ```powershell
-# 启动桌宠应用（控制台模式）
-.\doloris-app.cmd
-
-# 或双击根目录下的 doloris-app.vbs 静默启动（无黑框弹出）
+# 双击根目录下的 doloris-app.vbs 静默启动（无黑框弹出）
 ```
 
 **桌宠交互指南**：
