@@ -196,7 +196,6 @@ def summarize(gates: List[Gate]) -> Dict[str, Any]:
 def _fmt_attempt(attempt: GateAttempt, index: int) -> List[str]:
     verdict = attempt.agy_verdict or "?"
     lines = []
-    head = (attempt.snippet or "").replace("\n", " ")[:60]
     lines.append(f"  尝试{index} [{attempt.ts}] AGY={verdict}")
     if attempt.agy_answer:
         lines.append(f"    AGY 决议: {attempt.agy_answer.replace(chr(10), ' ')[:ANSWER_SNIPPET_CHARS]}")

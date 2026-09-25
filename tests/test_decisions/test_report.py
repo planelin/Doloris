@@ -106,7 +106,6 @@ class BuildGatesTests(unittest.TestCase):
         self.assertEqual(attempt.jev_route, "")
 
     def test_malformed_json_lines_are_skipped(self):
-        events = parse_audit_events.__wrapped__ if hasattr(parse_audit_events, "__wrapped__") else None
         import tempfile
         from pathlib import Path
         with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False, encoding="utf-8") as handle:
@@ -161,7 +160,6 @@ class SummaryTests(unittest.TestCase):
     def test_summary_with_sufficient_samples_applies_thresholds(self):
         gates = self.make_gates()
         import copy
-        events_backup = None  # 直接放大样本: 复制门直到 attempts >= 20
         gates = gates + [copy.deepcopy(g) for g in gates for _ in range(10)]
         for gate in gates:
             for attempt in gate.attempts:
