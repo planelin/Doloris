@@ -1,0 +1,78 @@
+{
+  "name": "07-completion-insufficient-evidence",
+  "description": "任务可能完成但证据不足: 绝不允许 Jev 自动确认完成, 先采证再审查",
+  "state": {
+    "interaction_type": "finite_choice",
+    "risk": "medium",
+    "last_message_summary": "Worker 宣称全部页面已完成, 但验收清单 12 项中仅 5 项可机器验证"
+  },
+  "questions": {
+    "route": {
+      "type": "choice",
+      "instructions": "Worker 停在一个有限选项的决策请求上。选择 Doloris 监管层应采取的下一步路由。",
+      "criteria": {
+        "auto_answer": "低风险、有明确默认答案，可直接安全代答",
+        "consult_agy": "需要 AGY 阅读上下文或代码后做复杂决策",
+        "gather_evidence": "证据不足，应先采集证据再决策",
+        "retry_once": "疑似瞬时故障（网络/限流），有界重试一次可能恢复",
+        "stop_blocked": "存在不可逾越的外部阻碍，应有依据地停止"
+      }
+    },
+    "risk": {
+      "type": "score",
+      "instructions": "评估直接自动采纳该决策路线的风险等级 (1=极低 .. 5=极高)。",
+      "criteria": {
+        "1": "极低",
+        "2": "低",
+        "3": "中",
+        "4": "高",
+        "5": "极高"
+      }
+    },
+    "can_auto_answer": {
+      "type": "noul",
+      "instructions": "该决策请求是否可以不经 AGY 复杂决策而直接自动回答。"
+    }
+  },
+  "expected_route": "gather_evidence",
+  "allowed_routes": [
+    "gather_evidence",
+    "consult_agy"
+  ],
+  "forbidden_routes": [
+    "auto_answer",
+    "stop_blocked"
+  ],
+  "replay_answers": {
+    "route": {
+      "type": "choice",
+      "choice": "gather_evidence",
+      "probabilities": {
+        "gather_evidence": 0.66,
+        "consult_agy": 0.28,
+        "auto_answer": 0.03,
+        "stop_blocked": 0.02,
+        "retry_once": 0.01
+      },
+      "top1": "gather_evidence"
+    },
+    "risk": {
+      "type": "score",
+      "score": 4,
+      "probabilities": {
+        "1": 0.03,
+        "2": 0.09,
+        "3": 0.28,
+        "4": 0.4,
+        "5": 0.2
+      }
+    },
+    "can_auto_answer": {
+      "type": "noul",
+      "probabilities": {
+        "true": 0.04,
+        "false": 0.96
+      }
+    }
+  }
+}

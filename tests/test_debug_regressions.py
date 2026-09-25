@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from afk_supervisor.baseline import TaskBaseline, extract_task_baseline
+from afk_supervisor.baseline import TaskBaseline, extract_explicit_delivery_dir, extract_task_baseline
 from afk_supervisor.coordinator import SupervisorCoordinator
 from afk_supervisor.evidence import collect_evidence, calculate_reviewed_revision
 from afk_supervisor.l2.protocol import build_protocol_prompt, validate_protocol_payload
@@ -188,6 +188,88 @@ class BaselineAndStateRegressions(DebugFixture):
         self.assertEqual(normalize_command_text(cmd), normalize_command_text(escaped_ui_msg))
         events = [{"payload": {"role": "user", "content": [{"text": escaped_ui_msg}]}}]
         self.assertTrue(command_accepted(events, cmd))
+
+
+class DeliveryDirPoisoningRegressions(DebugFixture):
+    """实测回归 (runs/20260925-125008-6bee): 问句中的裸路径被整段提取为交付目录,
+    毒化 delivery_dir/writable_roots/blockers, 导致几乎所有实际会话验收失败。
+    Goal 模式不受影响正是因为它不构建 rollout 基线。"""
+
+    REAL_POISON_MESSAGE = (
+        "C:\\Users\\lastnut\\.codex\\skills\\job-hunt-copilot\\resources\\projects"
+        "中怎么只有现在这个项目，基础简历中的项目应该怎样录入进去"
+    )
+
+    def test_question_bare_path_is_never_a_delivery_declaration(self):
+        self.assertIsNone(extract_explicit_delivery_dir(self.REAL_POISON_MESSAGE))
+
+    def test_question_glue_does_not_poison_rollout_baseline(self):
+        rollout = self.root / "rollout.jsonl"
+        prompts = ["继续简历项目的工作", self.REAL_POISON_MESSAGE]
+        rollout.write_text(
+            "\n".join(json.dumps({"payload": {"role": "user", "content": text}}) for text in prompts),
+            encoding="utf-8")
+        baseline = extract_task_baseline(session_cwd=self.ws, rollout_path=rollout)
+        self.assertEqual(Path(baseline.requested_delivery_dir), self.ws)
+        self.assertEqual(baseline.path_blockers, [])
+        self.assertEqual(baseline.blockers, [])
+        # 问句仍作为后续需求保留, 只是不再污染交付目录
+        self.assertIn("怎样录入", baseline.subsequent_changes[0]["change"])
+
+    def test_cjk_glued_nonexistent_bare_path_rejected_even_without_question(self):
+        text = "之前参考 C:\\refs\\base\\projects这一次的产出结构即可"
+        self.assertIsNone(extract_explicit_delivery_dir(text))
+
+    def test_existing_cjk_directory_bare_mention_still_detected(self):
+        cjk_dir = self.ws / "中文产出"
+        cjk_dir.mkdir()
+        text = f"{cjk_dir} 里有已完成的材料"
+        self.assertEqual(extract_explicit_delivery_dir(text), str(cjk_dir))
+
+    def test_keyword_declaration_survives_trailing_question(self):
+        self.assertEqual(
+            extract_explicit_delivery_dir("交付目录 C:\\build\\out2026？怎么命名比较好"),
+            "C:\\build\\out2026")
+
+    def test_keyword_cjk_directory_declaration_unaffected(self):
+        target = self.ws / "交付产出"
+        target.mkdir()
+        self.assertEqual(
+            extract_explicit_delivery_dir(f"产物在 {target} 下，请全部检查"),
+            str(target))
+
+    def test_nonexistent_ascii_bare_path_behavior_unchanged(self):
+        self.assertEqual(
+            extract_explicit_delivery_dir("C:\\build\\out2026v2 里面放最终交付"),
+            "C:\\build\\out2026v2")
+
+    def test_self_dispatched_fix_instruction_does_not_reanchor_poison(self):
+        """反馈循环回归: Doloris 自己下发的 worker_fix 指令会作为 user 消息落进 rollout,
+        指令里引用的毒化路径不得经关键词分支再次固化为交付目录。
+        指令文本含引用的问句片段 → 兜底探测同样跳过 → 回退默认交付目录 (安全可恢复)。"""
+        instruction = (
+            "1. 交付目录核对：系统登记的目标交付目录 "
+            "'C:\\refs\\base\\projects中怎么只有现在这个项目' 不存在。"
+            "Worker留言中提及产物落盘于 'C:\\refs\\base\\projects'，"
+            "请核实并确保所有产物文件在正确的交付路径下实际存在且完整可访问。"
+        )
+        self.assertIsNone(extract_explicit_delivery_dir(instruction))
+
+    def test_quoted_clean_path_in_instruction_without_question_is_usable(self):
+        """指令引用干净目录且不含问句片段时, 兜底探测仍可采用该已存在目录。"""
+        fake_projects = self.root / "refs" / "base" / "projects"
+        fake_projects.mkdir(parents=True)
+        instruction = (
+            "1. 交付目录核对：Worker留言中提及产物落盘于 "
+            f"'{fake_projects}'，请核实并确保所有产物文件实际存在。"
+        )
+        detected = extract_explicit_delivery_dir(instruction)
+        self.assertIsNotNone(detected)
+        self.assertEqual(Path(detected), fake_projects.resolve())
+
+    def test_keyword_quoting_nonexistent_cjk_glue_is_rejected(self):
+        instruction = "交付目录核对：目标交付目录 'C:\\refs\\base\\projects中怎么只有现在这个项目' 不存在。"
+        self.assertIsNone(extract_explicit_delivery_dir(instruction))
 
 
 class CoordinatorAndPromptRegressions(DebugFixture):

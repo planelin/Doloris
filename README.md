@@ -201,7 +201,7 @@ python -B -X utf8 tests/run_isolated.py
 python -m unittest
 ```
 
-当前包含 **260 项自动化测试**（全量套件与完全隔离沙箱均为 260/260 通过），涵盖安全退出边界、状态机迁移、GUI 机器身份校验、桌宠切片解析、懒人模式目标回退与协议序列化；GitHub Actions 会在 Windows + Python 3.10/3.12 上执行 Ruff 静态检查和同一套测试。
+当前包含 **443 项自动化测试**（完全隔离沙箱 443/443 通过），涵盖安全退出边界、状态机迁移、GUI 机器身份校验、桌宠切片解析、懒人模式目标回退与协议序列化；结构化决策层（Jev Provider）的数据契约、HTTP mock、响应标准化、脱敏、Shadow Mode、真实 API 契约映射与路由边界场景测试也已纳入同一沙箱。可选的真实 Jev API Smoke Test（需本机配置 Token）请参阅 [USAGE.md 第 9 节](USAGE.md)。GitHub Actions 会在 Windows + Python 3.10/3.12 上执行 Ruff 静态检查和同一套测试。
 
 ---
 

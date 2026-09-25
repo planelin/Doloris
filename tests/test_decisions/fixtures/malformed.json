@@ -1,0 +1,17 @@
+{
+  "model": "jev-1.13.0",
+  "answers": {
+    "route": {
+      "type": "choice",
+      "choice": "deploy_to_production",
+      "probabilities": {
+        "auto_answer": 1.5,
+        "consult_agy": -0.2
+      }
+    },
+    "unknown_question": {
+      "type": "noul",
+      "noul": 0.5
+    }
+  }
+}

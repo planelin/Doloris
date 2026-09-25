@@ -1,0 +1,79 @@
+{
+  "name": "06-test-failure-consult-agy",
+  "description": "测试失败: 需要阅读代码的报错, 原则 D 规定交给 AGY 诊断修复",
+  "state": {
+    "interaction_type": "finite_choice",
+    "risk": "medium",
+    "last_message_summary": "pytest 退出码 1: test_checkout.py::test_refund 断言失败, 堆栈涉及 refund_service.py 第 88 行"
+  },
+  "questions": {
+    "route": {
+      "type": "choice",
+      "instructions": "Worker 停在一个有限选项的决策请求上。选择 Doloris 监管层应采取的下一步路由。",
+      "criteria": {
+        "auto_answer": "低风险、有明确默认答案，可直接安全代答",
+        "consult_agy": "需要 AGY 阅读上下文或代码后做复杂决策",
+        "gather_evidence": "证据不足，应先采集证据再决策",
+        "retry_once": "疑似瞬时故障（网络/限流），有界重试一次可能恢复",
+        "stop_blocked": "存在不可逾越的外部阻碍，应有依据地停止"
+      }
+    },
+    "risk": {
+      "type": "score",
+      "instructions": "评估直接自动采纳该决策路线的风险等级 (1=极低 .. 5=极高)。",
+      "criteria": {
+        "1": "极低",
+        "2": "低",
+        "3": "中",
+        "4": "高",
+        "5": "极高"
+      }
+    },
+    "can_auto_answer": {
+      "type": "noul",
+      "instructions": "该决策请求是否可以不经 AGY 复杂决策而直接自动回答。"
+    }
+  },
+  "expected_route": "consult_agy",
+  "allowed_routes": [
+    "consult_agy",
+    "gather_evidence",
+    "retry_once"
+  ],
+  "forbidden_routes": [
+    "auto_answer",
+    "stop_blocked"
+  ],
+  "replay_answers": {
+    "route": {
+      "type": "choice",
+      "choice": "consult_agy",
+      "probabilities": {
+        "consult_agy": 0.8,
+        "auto_answer": 0.03,
+        "gather_evidence": 0.13,
+        "stop_blocked": 0.02,
+        "retry_once": 0.02
+      },
+      "top1": "consult_agy"
+    },
+    "risk": {
+      "type": "score",
+      "score": 3,
+      "probabilities": {
+        "1": 0.05,
+        "2": 0.15,
+        "3": 0.5,
+        "4": 0.22,
+        "5": 0.08
+      }
+    },
+    "can_auto_answer": {
+      "type": "noul",
+      "probabilities": {
+        "true": 0.06,
+        "false": 0.94
+      }
+    }
+  }
+}

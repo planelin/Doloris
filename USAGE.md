@@ -13,6 +13,7 @@
 6. [任务编写与交付验收标准 (Task & Acceptance)](#6-任务编写与交付验收标准-task--acceptance)
 7. [运行产物、终态与日志排查](#7-运行产物终态与日志排查)
 8. [常用命令行参数与环境变量全览](#8-常用命令行参数与环境变量全览)
+9. [决策模型接入：Jev Provider（Shadow Mode）](#9-决策模型接入jev-providershadow-mode)
 
 ---
 
@@ -246,3 +247,76 @@ doloris [--adopt TARGET] [--fork | --resume | --gui] [其他选项...]
 | `--l2-model` | `flash` | L2 模型选择：`flash_lite`、`flash`、`pro` |
 
 *项目开发与贡献指南请参阅 [CONTRIBUTING.md](CONTRIBUTING.md)；系统安全红线与状态机规范请参阅 [docs/SPECIFICATION.md](docs/SPECIFICATION.md)。*
+
+---
+
+## 9. 决策模型接入：Jev Provider（Shadow Mode）
+
+Doloris 内置一个**可替换的结构化决策层**（`afk_supervisor/decisions/`），当前只实现 MindsHub **Jev Provider**。它的定位是**影子观察者**：当 Worker 停在有限选项的决策请求上时，Doloris 把同样的上下文摘要发给 Jev 做分类/路由判断，并**只把结果写入审计日志**——任务的实际决策、修复与验收仍完全由原有确定性规则和 AGY 流程负责，行为不受任何影响。
+
+### 9.1 设计边界（务必理解）
+* **规则负责事实**：进程是否存在、文件是否变化、测试退出码、锁状态、机械验收结果等确定性检查，始终由 Doloris 代码判断；Jev 只做分类、路由与有限选项判断。
+* **Jev 负责决策，不负责执行**：Jev 只能返回 `AUTO_ANSWER` / `CONSULT_AGY` / `GATHER_EVIDENCE` / `RETRY_ONCE` / `STOP_BLOCKED` 五类路由信号；它不能返回、也不会被执行 shell 命令、文件删除、配置修改或任意代码补丁——一切实际动作仍走 Doloris 自己的白名单与既有执行路径。
+* **Jev 不负责修复、验收和危险操作**：REPAIR 修复、REVIEW 完工审查、任务最终完成判断仍由 AGY + 机械验收把关；Jev 的回答**不等于用户批准**。
+* **面向未来 Laya**：本地模型（Laya）尚未实现；未来只需实现同一个 `DecisionProvider` 接口即可替换 Jev，核心监管逻辑、审计事件与安全策略无需改动。
+
+### 9.2 环境变量
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `DOLORIS_DECISION_MODE` | `off` | `off` 不调用 Jev；`shadow` 调用 Jev 但只记录；`active` 预留给未来的低风险自动决策，**当前阶段不支持，显式设置也按 off 处理** |
+| `DOLORIS_JEV_ENDPOINT` | `https://api.mindshub.ai/v1/decisions` | Jev 决策 API 地址（仅允许 https 或本地回环地址） |
+| `DOLORIS_JEV_TOKEN` | 空 | MindsHub API Token；仅从环境变量读取，不写入源码/文档/日志/命令行 |
+| `DOLORIS_JEV_MODEL` | `jev` | 决策模型名 |
+| `DOLORIS_JEV_TIMEOUT_SEC` | `20` | 单次调用超时（连接与读取共用，秒） |
+
+代理说明：决策层使用 Python urllib，会自动遵循 `HTTPS_PROXY` / `HTTP_PROXY` 环境变量与 Windows 用户级系统代理（注册表 Internet Settings，与 `netsh winhttp show proxy` 显示的 WinHTTP 代理无关）。若 Jev API 在你的网络下需要走代理而调用持续超时（`TIMEOUT`，约等于超时上限的延迟），在启动 Doloris 的同一终端会话中显式设置 `$env:HTTPS_PROXY='http://127.0.0.1:<端口>'`（如 Clash Verge 默认 7897）即可；若走代理仍超时，检查分流规则是否把 API 域名匹配成了直连。
+
+默认 `DOLORIS_DECISION_MODE=off`：不配置任何变量时，Doloris 的行为与未接入决策层时**完全一致**，也不会发起任何网络调用。
+
+### 9.3 当前只支持 Shadow Mode
+`shadow` 模式下，Doloris 在检测到有限选项决策请求时（DECIDE 决策门），会向 Jev 发送**脱敏摘要**（仅最近消息摘要与交互类型；自动移除 token/cookie/密钥类字段、Bearer 头、SSH 私钥、带凭据的 URL 与用户路径中的用户名），并把 Jev 的判断写入 `runs/<时间戳>/l2_audit.jsonl`：
+
+```json
+{
+  "event": "DECISION_HEAD_SHADOW",
+  "provider": "jev",
+  "model": "jev",
+  "schema": "doloris.decision.v1",
+  "request_id": "req-decide-1-xxxxxxxx",
+  "question_keys": ["can_auto_answer", "risk", "route"],
+  "top_actions": {"route": "consult_agy"},
+  "latency_ms": 312,
+  "status": "OK",
+  "request_hash": "sha256:0f3a..."
+}
+```
+
+审计事件包含 provider、model、request_id、延迟、状态与各类概率，但**不包含完整原始 state**。Jev 的结果**不会**喂回 Codex、不会跳过 AGY、不会结束任务、不会修改工作区。调用失败（超时/网络/鉴权/非法响应）只会记录一条结构化错误事件，绝不把错误转换成默认同意或默认选择。
+
+#### 真实 API 契约要点（2026-09 实测 + 官方文档核对）
+
+* 线上请求体只接受 `model` / `state` / `questions` 三个字段；`schema` 与 `request_id` 是 Doloris 内部追踪概念，**不会**上线（多余字段会被 API 以 400 `api_usage_error` 拒绝）。
+* `choice` 问题的 `criteria` 线上为 name→description 映射；**`score` 问题的 criteria 线上必须是数组**（数组位置即分值，0 起）——Doloris 会自动把内部数值 key 的等级定义展开为有序数组，并在响应返回后把 index 空间的 `score`/`probabilities` 映射回内部等级 key。
+* 响应形状：`choice` 返回 `choice`/`probabilities`/`confidence`；`score` 返回 `score`/`legend`/`probabilities`/`confidence`；`noul` 返回 `noul` 数值（P(true)）。Doloris 统一结构在其上补充计算 `top1`/`top2`/`margin`，并把实际服务版本（如 `jev-1.13.0`）与 usage token 数记入审计 `raw_metadata`。
+* **请求必须携带产品 User-Agent**：Cloudflare WAF 会按客户端签名拦截默认脚本 UA（error 1010 → HTTP 403，表现为 AUTH_ERROR）。Doloris 已内置 `Doloris/1.0` UA，无需配置。
+* 错误码语义：401 密钥无效、403 密钥有效但无权限、429 限流（响应带 `Retry-After`）、502/503/529 供应商故障；均映射为结构化错误状态，不会自动重试密钥类错误。
+
+### 9.4 本地模拟测试与可选 Smoke Test
+```powershell
+# 全量隔离回归（含决策层全部模拟测试；无需网络、无需 Token、不触碰真实工作区）
+python -B -X utf8 tests/run_isolated.py
+
+# 仅运行决策层测试（数据结构 / Jev Provider mock / 标准化 / 脱敏 / Shadow / 场景路由边界）
+python -m unittest discover -s tests/test_decisions -v
+
+# 可选：真实 API Smoke Test（仅当本机已配置 DOLORIS_JEV_TOKEN 时才会真正执行）
+python -B -X utf8 tests/smoke_jev_api.py
+```
+Smoke Test 只发送一个固定的无敏感信息样例、验证 HTTP 通路与响应解析、打印脱敏结果；未配置 Token 时会明确输出 `SMOKE SKIP` 并跳过，不伪造成功。
+
+### 9.5 常见误区澄清
+* Jev **没有**自动接管所有决策——当前仅做影子记录；
+* Laya 本地模型**尚未**支持——只预留了 Provider 接口；
+* 任务完成判断**没有**交给 Jev——完工验收仍由机械验收 + AGY REVIEW 把关；
+* Jev 的回答**不等于**用户批准。

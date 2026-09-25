@@ -1,0 +1,16 @@
+{
+  "model": "jev-1.13.0",
+  "answers": {
+    "route": {
+      "type": "choice",
+      "choice": "consult_agy",
+      "confidence": 0.83,
+      "probabilities": {
+        "auto_answer": 0.12,
+        "consult_agy": 0.81,
+        "gather_evidence": 0.05,
+        "stop_blocked": 0.02
+      }
+    }
+  }
+}

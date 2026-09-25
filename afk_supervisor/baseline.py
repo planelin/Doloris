@@ -145,9 +145,19 @@ DELIVERY_KW_PATTERN = re.compile(
     r'工作区|交付目录|工作目录|项目目录|工程目录|项目在|工程在|代码在|产物在|'
     r'delivery_dir|workspace|work_dir|project_dir|'
     r'输出目录|输出到|保存到|生成到|output[\s_-]*to|save[\s_-]*to|deliver[\s_-]*to'
-    r')[\s:：=]*[`"\'\s]*([a-zA-Z]:[\\/][^\s,，;；"\'`。\r\n]+|/[^\s,，;；"\'`。\r\n]+|[a-zA-Z0-9_\.\-]+[\\/][^\s,，;；"\'`。\r\n]*)',
+    r')[\s:：=]*[`"\'\s]*([a-zA-Z]:[\\/][^\s,，;；？！：、""''《》（）"\'`。\r\n]+|/[^\s,，;；？！：、""''《》（）"\'`。\r\n]+|[a-zA-Z0-9_\.\-]+[\\/][^\s,，;；？！：、""''《》（）"\'`。\r\n]*)',
     re.IGNORECASE,
 )
+
+# 问句守卫: 问句中出现的裸路径通常是"引用"而非交付声明 (实测案例:
+# "C:\...\projects中怎么只有现在这个项目，基础简历中的项目应该怎样录入进去" 被整段
+# 当成交付目录, 毒化 delivery_dir/writable_roots/blockers 并导致全部实际测试验收失败)。
+# 误拒的代价只是回退默认交付目录 (可恢复); 误收的代价是整个运行必然失败, 因此宁严勿松。
+_INTERROGATIVE_RE = re.compile(r'？|\?|怎么|怎样|如何|为什么|为何')
+
+
+def _has_cjk(text: str) -> bool:
+    return any('\u4e00' <= ch <= '\u9fff' for ch in text)
 
 
 def is_forbidden_system_root(path_str: str) -> bool:
@@ -197,6 +207,19 @@ def is_forbidden_system_root(path_str: str) -> bool:
     return False
 
 
+def _is_prose_glued_path(path_str: str) -> bool:
+    """末段含 CJK 且磁盘上不存在 → 几乎必然是中文句子粘连进了路径
+    (例如引用自修复指令的 'projects中怎么只有现在这个项目')。
+    已存在的 CJK 目录不受影响; 真实新建目录声明通常干净分隔且 ASCII 命名。"""
+    try:
+        name = Path(path_str).name
+        if not _has_cjk(name):
+            return False
+        return not Path(path_str).exists()
+    except Exception:
+        return False
+
+
 def extract_explicit_delivery_dir(text: str) -> Optional[str]:
     """从文本中提取用户显式指定的交付目录（若无则返回 None）。"""
     if not text:
@@ -210,15 +233,19 @@ def extract_explicit_delivery_dir(text: str) -> Optional[str]:
     kw_match = DELIVERY_KW_PATTERN.search(cleaned)
     if kw_match:
         cand = kw_match.group(1).rstrip('\\/`\'"。，；、')
-        if not cand.lower().endswith(DELIVERY_FILE_EXTENSIONS):
+        if not cand.lower().endswith(DELIVERY_FILE_EXTENSIONS) and not _is_prose_glued_path(cand):
             try:
                 if not Path(cand).is_file():
                     return cand
             except Exception:
                 return cand
 
+    # 兜底探测守卫 1: 问句不做裸路径提取 (裸路径在问句里几乎总是引用)。
+    if _INTERROGATIVE_RE.search(cleaned):
+        return None
+
     # 兜底探测: 必须是绝对路径、非 URL、非文件扩展名、非已存在普通文件
-    abs_matches = re.findall(r'(?<![a-zA-Z0-9])([a-zA-Z]:[\\/][^\s,，;；"\'`。\r\n]+)', cleaned)
+    abs_matches = re.findall(r'(?<![a-zA-Z0-9])([a-zA-Z]:[\\/][^\s,，;；？！：、""''《》（）"\'`。\r\n]+)', cleaned)
     for cand_path in abs_matches:
         cand_p = cand_path.rstrip('\\/`\'"。，；、')
         if cand_p.lower().startswith(("http:", "https:")):
@@ -230,6 +257,10 @@ def extract_explicit_delivery_dir(text: str) -> Optional[str]:
                 continue
         except Exception:
             pass
+        # 兜底探测守卫 2: 末段含 CJK 且磁盘上不存在 → 几乎必然是中文句子
+        # 粘连进了路径 (已存在的 CJK 目录不受影响)。
+        if _is_prose_glued_path(cand_p):
+            continue
         if "." not in Path(cand_p).name:
             return cand_p
     return None
@@ -266,7 +297,7 @@ def _resolve_delivery_dir(cwd: Path, texts: List[str], explicit: Optional[str], 
     for text in reversed(texts):
         detected = extract_explicit_delivery_dir(text)
         if not detected:
-            match = re.search(r'(?:工作区|交付目录|delivery_dir|workspace)[\s:：=]*([a-zA-Z0-9_\-]+[\\/][^\s,，;；"\'\r\n]*)', text, re.IGNORECASE)
+            match = re.search(r'(?:工作区|交付目录|delivery_dir|workspace)[\s:：=]*([a-zA-Z0-9_\-]+[\\/][^\s,，;；？！：、"\'\r\n]*)', text, re.IGNORECASE)
             detected = match.group(1) if match else None
         if detected:
             return str((cwd / detected).resolve())
