@@ -87,6 +87,7 @@ class SupervisorCoordinator:
         self.pending_repair = None
         self.active_consultation = None
         self.last_protocol_error = ""
+        self._decision_observer = None
 
     def restore_checkpoint(self):
         data = self.state_mgr.coordinator_context if self.state_mgr else {}
@@ -172,6 +173,21 @@ class SupervisorCoordinator:
             return False, "审查后产物、需求或验证结果改变，必须重新采证审查", True
         return True, detail, False
 
+    def _observe_decision_shadow(self, last_msg: str, request_id: str, n_interaction: int) -> None:
+        """Shadow Mode (DOLORIS_DECISION_MODE=shadow): 记录 Jev 对同一决策请求的判断。
+
+        只写审计事件, 不改变 DECIDE 流程的返回值与状态; off 模式零开销且不调用 Jev。
+        """
+        try:
+            if self._decision_observer is None:
+                from afk_supervisor.decisions.shadow import ShadowDecisionObserver
+                self._decision_observer = ShadowDecisionObserver(audit_fn=self.log_audit)
+            self._decision_observer.observe(
+                last_msg=last_msg, request_id=request_id, n_interaction=n_interaction,
+            )
+        except Exception:
+            pass
+
     def handle_interaction(self, last_msg: str, n_interaction: int, driver: Any = None, session_cwd: Any = None) -> Tuple[str, str, Path, Optional[dict]]:
         """处理交互决策 (mode=DECIDE): worker 提问 / 选项 / 阻塞点。
         原任务中的确认节点作为 L2 上下文，不在本地转人工。
@@ -203,6 +219,7 @@ class SupervisorCoordinator:
         self.pending_decision = (last_msg, req_id) if verdict in ("NO-VERDICT", "NO-BRIDGE") else None
         self._end_request(verdict)
         self.log_audit("INTERACTION_RESULT", n=n_interaction, request_id=req_id, verdict=verdict, answer=answer[:200])
+        self._observe_decision_shadow(last_msg=last_msg, request_id=req_id, n_interaction=n_interaction)
         return verdict, answer, l2_log, payload
 
     def handle_repair(self, failure_detail: str, last_msg: str, n_repair: int, driver: Any = None, session_cwd: Any = None) -> Tuple[str, str, Path, Optional[dict]]:

@@ -1,0 +1,9 @@
+{
+  "model": "jev-1.13.0",
+  "answers": {
+    "can_auto_answer": {
+      "type": "noul",
+      "noul": 0.87
+    }
+  }
+}
