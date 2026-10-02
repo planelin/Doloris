@@ -223,16 +223,30 @@ runs/20260921-225037-9ffd/
 对于终端 CLI 用户，可通过参数进行细粒度控制：
 
 ```powershell
-# 语法结构
-doloris [--adopt TARGET] [--fork | --resume | --gui] [其他选项...]
+# 语法结构 (子命令须位于参数首位, 可紧跟会话序号/ID)
+doloris [app | goal | fork | resume | gui [TARGET]] [其他选项...]
+doloris [TARGET]              # 首位裸参数 = 接管目标, 默认快速 fork 托管
+doloris                       # 无参默认: fork last quick
 ```
+
+**子命令**（与旧版 `doloris.cmd fork` 等价，解析全部在 Python 侧完成；`doloris.cmd` 只做纯转发）：
+
+| 子命令 | 等价参数 | 说明 |
+|---|---|---|
+| `fork [TARGET]` | `--adopt TARGET --quick --fork` | Mode 1：保留 App，暂停原任务，无头续跑 |
+| `resume [TARGET]` | `--adopt TARGET --quick` | Mode 2：安全退出 App，原地 headless 续跑 |
+| `gui [TARGET]` | `--adopt TARGET --quick --gui` | Mode 3：双有头 GUI 注入 |
+| `goal [TARGET]` | `--adopt TARGET --quick --goal` | 目标模式（配 `--goal-target` 下发目标文本，`__LAZY__` 交给 AGY 提炼） |
+| `app [app参数...]` | `pythonw -m doloris_app.main` | 启动桌宠（转发 `--skin/--scale/--test-mode`） |
 
 | 参数项 | 默认值 | 作用说明 |
 |---|---|---|
 | `--adopt` | `last` | 指定接管目标：`last`（最新会话）、`1~8`（序号）、`codex://threads/...` 或会话 UUID |
-| `--fork` | 默认开启 | 启用 Mode 1：保留 App，原任务无限等待暂停，子任务无头续跑 |
-| `--resume` | 否 | 启用 Mode 2：安全退出 App，操作系统核查写锁释放，原任务 headless 续跑 |
-| `--gui` | 否 | 启用 Mode 3：原生双有头 GUI 注入，App 全程前台活跃 |
+| `--fork` | 关 | 启用 Fork 无头续跑；无参/裸目标启动时默认启用 |
+| `--adopt-mode` | 自动推断 | 显式指定接管模式：`resume`(默认) / `fork` / `gui` / `goal` |
+| `--goal-target` | 空 | Goal 模式目标文本；`__LAZY__` 显式启用 AGY 提炼（留空不调用 AGY） |
+| `--resume` | 空 | **兼容参数：取 session-id 值**（原地续跑指定会话），不是模式开关 |
+| `--gui` | 关 | 启用 Mode 3：原生双有头 GUI 注入，App 全程前台活跃 |
 | `--quick` | 关 | 快速交接模式：跳过交互式提问，直接选用当前上下文 |
 | `--yes` | 关 | 免确认模式：自动接受所有交接确认提示 |
 | `--work-dir` | `work` | 推导默认交付目录时的候选相对路径；不改变 `acceptance.md` 相对工作区根的解析基准 |

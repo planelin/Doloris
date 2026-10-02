@@ -48,6 +48,12 @@ python -B -X utf8 tests/run_isolated.py
 python -m unittest
 ```
 
+Static lint checks (ruff) are enforced by CI and must pass locally too:
+
+```bash
+ruff check .
+```
+
 Before submitting a Pull Request, make sure all tests pass:
 ```text
 Ran 200 tests in ~10s
