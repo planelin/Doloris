@@ -168,9 +168,25 @@ def _strip_goal_prefixes(text: str) -> str:
 
 
 def _read_rollout_events(path: Optional[Path]) -> List[Dict[str, Any]]:
+    """带单项文件状态缓存的 rollout 事件加载器。
+
+    (解析路径, size, mtime_ns) 相同的重复调用共享同一次解析结果 ——
+    历史缺陷: goal 看门狗停顿 tick 内 check_plan_status / analyze_goal_pause /
+    _read_rollout_events 各自全量重读同一 rollout (最多 5 次/3 秒)。
+    rollout 只追加, size/mtime 变化即自动失效; 单项缓存不放大内存。
+    """
     events: List[Dict[str, Any]] = []
     if not path or not Path(path).exists():
         return events
+    try:
+        p = Path(path)
+        st = p.stat()
+        cache_key = (str(p.resolve()), st.st_size, st.st_mtime_ns)
+    except OSError:
+        return events
+    global _events_cache
+    if _events_cache.get("key") == cache_key:
+        return _events_cache["events"]
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as stream:
             for line in stream:
@@ -185,7 +201,13 @@ def _read_rollout_events(path: Optional[Path]) -> List[Dict[str, Any]]:
                     events.append(obj)
     except Exception:
         pass
+    _events_cache.clear()
+    _events_cache["key"] = cache_key
+    _events_cache["events"] = events
     return events
+
+
+_events_cache: Dict[str, Any] = {}
 
 
 def _rollout_user_texts(rollout_path: Optional[Path]) -> List[str]:
@@ -521,23 +543,14 @@ def check_plan_status(rollout_path: Optional[Path]) -> str:
     - 'not_set': 目标尚未设立 (阶段 1)
     - 'planning': 计划制定与提问访谈中 (阶段 2)
     - 'executing': 计划已制定完成，进入长程任务执行 (阶段 3)
+
+    走 _read_rollout_events 的单项缓存: 同一 tick 内与 analyze_goal_pause
+    共享同一次全文解析。
     """
     if not rollout_path or not Path(rollout_path).exists():
         return "not_set"
 
-    events: List[Dict[str, Any]] = []
-    try:
-        with open(rollout_path, "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if not line or not line.startswith("{"):
-                    continue
-                try:
-                    events.append(json.loads(line))
-                except Exception:
-                    continue
-    except Exception:
-        return "not_set"
+    events = _read_rollout_events(rollout_path)
 
     if not events:
         return "not_set"
@@ -1028,19 +1041,8 @@ def analyze_goal_pause(rollout_path: Optional[Path]) -> Dict[str, Any]:
     if not rollout_path or not rollout_path.exists():
         return default_res
 
-    events: List[Dict[str, Any]] = []
-    try:
-        with open(rollout_path, "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if not line or not line.startswith("{"):
-                    continue
-                try:
-                    events.append(json.loads(line))
-                except Exception:
-                    continue
-    except Exception:
-        return default_res
+    # 走单项缓存的事件加载器: 与 check_plan_status 共享同一次解析
+    events = _read_rollout_events(rollout_path)
 
     if not events:
         return default_res

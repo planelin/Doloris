@@ -326,8 +326,32 @@ def peek_rollout_activity(rollout_path, max_bytes=65536) -> str:
     return ""
 
 
+_codex_state_cache: dict = {}
+
+
 def codex_session_state(rollout_path) -> dict:
-    """Single lifecycle contract: running / stopped / unknown, never silence."""
+    """Single lifecycle contract: running / stopped / unknown, never silence.
+
+    结果按 (路径, size, mtime_ns) 单项缓存: goal/gui 守护循环的停顿 tick 内
+    会重复调用本函数 (及经 is_codex_working 间接调用), rollout 只追加,
+    size/mtime 变化即失效 —— 同一文件状态的重复解析共享同一结果。
+    """
+    try:
+        p = Path(rollout_path)
+        st = p.stat()
+        cache_key = (str(p.resolve()), st.st_size, st.st_mtime_ns)
+    except (OSError, TypeError):
+        return _codex_session_state_uncached(rollout_path)
+    if _codex_state_cache.get("key") == cache_key:
+        return _codex_state_cache["value"]
+    value = _codex_session_state_uncached(rollout_path)
+    _codex_state_cache.clear()
+    _codex_state_cache["key"] = cache_key
+    _codex_state_cache["value"] = value
+    return value
+
+
+def _codex_session_state_uncached(rollout_path) -> dict:
     snapshot = codex_handoff_state(rollout_path)
     if snapshot["state"] == "unknown":
         status = "unknown"

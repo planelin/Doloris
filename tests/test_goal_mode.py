@@ -649,6 +649,19 @@ class TestGoalEngine(unittest.TestCase):
             self.assertEqual(autopilot_events[0]["pause_type"], "proposed_plan")
             self.assertEqual(autopilot_events[0]["choice"], "请按计划执行")
 
+    def test_rollout_events_cache_invalidates_on_append(self):
+        """性能缓存正确性: rollout 追加后 (size/mtime 变化), 事件缓存必须失效重读。"""
+        from afk_supervisor import goal_engine
+        f = self.run_dir / "rollout_cache.jsonl"
+        f.write_text(json.dumps({"type": "event_msg", "payload": {"type": "task_started"}}) + chr(10), encoding="utf-8")
+        first = goal_engine._read_rollout_events(f)
+        self.assertEqual(len(first), 1)
+        # 模拟坏缓存: 篡改缓存内容后追加事件, 重读必须拿到新数据
+        with open(f, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"type": "event_msg", "payload": {"type": "task_complete"}}) + chr(10))
+        second = goal_engine._read_rollout_events(f)
+        self.assertEqual(len(second), 2, "文件追加后缓存必须失效")
+
     def test_goal_rate_limit_has_consecutive_failure_breaker(self):
         """历史 P1: goal 限流分支没有连续失败计数 (GUI 模式有 8 连击熔断),
         配额耗尽时 sleep/注入 死循环永无出口。修复后连续 8 次限流如实 FAILED。"""

@@ -110,6 +110,26 @@ def _resolve_spec_path(base: Path, raw_path: str, label: str = "") -> Tuple[Opti
 
 _GLOB_CLASS_RE = re.compile(r"\[([^\]]*)\]")
 
+# 规范 glob 扫描的目录排除: ** 模式不再钻进依赖树与 VCS/工具目录。
+# 注意 dist/build/target 等"构建输出"目录不排除 —— 规范是用户的显式断言,
+# `dist/bundle.js` 这类目标必须可验收; 大树保护主要靠命中即早停。
+GLOB_EXCLUDE_DIRS = frozenset({
+    "node_modules", ".git", ".github", ".venv", "venv", "env", "__pycache__",
+    "runs", "afk-work", ".codex", ".gemini", ".agents",
+    ".mypy_cache", ".pytest_cache", ".tox", ".cache",
+})
+
+
+def _is_scannable_file(p: Path, base: Path) -> bool:
+    """路径必须是 base 内的真实文件, 且不在排除目录段之下。"""
+    if not _is_within(base, p):
+        return False
+    try:
+        rel_parts = p.relative_to(base).parts
+    except ValueError:
+        return False
+    return not any(part.lower() in GLOB_EXCLUDE_DIRS for part in rel_parts[:-1])
+
 
 def _glob_probe(pattern: str) -> str:
     """把 glob 模式展开为等价字面路径，供穿越预检使用。
@@ -186,19 +206,21 @@ def evaluate_acceptance_spec(spec: Path, base: Path) -> Tuple[bool, str]:
             if error:
                 problems.append(error)
                 continue
-            hits = []
+            hits = 0
             try:
                 for match in base.glob(pat):
+                    if hits >= need:
+                        break  # 已满足断言即早停, 大工作区不再整树展开
                     try:
-                        if match.is_file() and match.stat().st_size > 0 and _is_within(base, match):
-                            hits.append(match)
+                        if _is_scannable_file(match, base) and match.stat().st_size > 0:
+                            hits += 1
                     except OSError:
                         continue
             except (OSError, ValueError) as glob_error:
                 problems.append(f"{pat} 匹配失败: {glob_error}")
                 continue
-            if len(hits) < need:
-                problems.append(f"{pat} 非空文件{len(hits)}<{need}")
+            if hits < need:
+                problems.append(f"{pat} 非空文件{hits}<{need}")
 
     if assertions == 0:
         return False, f"验收规范为空或没有任何有效断言: {spec}"

@@ -283,6 +283,10 @@ def _load_state_db_session(raw_sid: str) -> Optional[Tuple[str, Path, Optional[s
     return None
 
 
+_find_session_cache: Dict[str, tuple] = {}
+_FIND_SESSION_TTL_SEC = 3.0
+
+
 def find_codex_session_by_id(raw_sid: str) -> Optional[Tuple[str, Path, Optional[str]]]:
     """根据会话 ID 查找对应的 rollout 文件与 cwd。
 
@@ -293,11 +297,27 @@ def find_codex_session_by_id(raw_sid: str) -> Optional[Tuple[str, Path, Optional
        - 未标注分页但继承了同一 session_meta 的后代独立 fork 文件降权，防止抢占主会话。
     3. 兜底识别文件名以 child_sid 结尾的 fork 子文件。
     返回 (actual_sid, rollout_path, session_cwd) 或 None。
+
+    短 TTL 结果缓存 (3s): goal/gui 守护循环每 tick 调用只为探测分页轮转,
+    而兜底路径要全树 rglob 并逐个打开匹配文件 —— 3 秒内直接复用, 轮转检测
+    延迟仍远小于 tick 间隔。
     """
     sid = clean_session_id(raw_sid)
     if not sid:
         return None
 
+    cache_key = (sid, str(get_codex_sessions_dir()))
+    now = time.time()
+    cached = _find_session_cache.get(cache_key)
+    if cached and now - cached[0] < _FIND_SESSION_TTL_SEC:
+        return cached[1]
+
+    result = _find_codex_session_by_id_uncached(sid)
+    _find_session_cache[cache_key] = (now, result)
+    return result
+
+
+def _find_codex_session_by_id_uncached(sid: str) -> Optional[Tuple[str, Path, Optional[str]]]:
     db_match = _load_state_db_session(sid)
     if db_match:
         return db_match

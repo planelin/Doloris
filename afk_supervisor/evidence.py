@@ -111,6 +111,93 @@ def calculate_reviewed_revision(
     })
 
 
+# 产物扫描排除目录 (与 collect_evidence / compute_artifact_revision_only 共用)
+SCAN_EXCLUDE_DIRS = {
+    "runs", "afk-work", "scratch", "dist", "build", "node_modules",
+    "__pycache__", ".git", ".github", ".codex", ".gemini", ".agents",
+    ".vscode", ".idea", ".venv", "venv", "env"
+}
+
+
+def _scan_artifact_files(deliv_dir: Path, mechanical_failures: List[str]):
+    """扫描交付目录, 返回 (产物文件列表, 路径->证据ID 映射)。
+
+    被 collect_evidence 与 compute_artifact_revision_only 共用, 保证两者的
+    artifact_revision 计算基于完全相同的文件选择与消歧规则。
+    """
+    scanned_files = []
+    try:
+        for root, dirs, files in os.walk(deliv_dir, onerror=lambda error: mechanical_failures.append(f"扫描交付目录发生异常: {error}")):
+            dirs[:] = [
+                d for d in dirs
+                if d.lower() not in SCAN_EXCLUDE_DIRS and not d.lower().startswith(("backup-", "afk-", "runs"))
+            ]
+            dirs.sort()
+            for f in sorted(files):
+                p = Path(root) / f
+                if p.name.lower() not in {"progress.md", "todo.md", "checklist.md"}:
+                    scanned_files.append(p)
+                    if len(scanned_files) > MAX_SCAN_FILES:
+                        raise RuntimeError(
+                            f"交付目录文件数超过采证配额 ({MAX_SCAN_FILES})，拒绝建立不完整证据链"
+                        )
+    except Exception as e:
+        if isinstance(e, RuntimeError) and "采证配额" in str(e):
+            mechanical_failures.append(str(e))
+        else:
+            mechanical_failures.append(f"扫描交付目录发生异常: {e}")
+        scanned_files = scanned_files[:MAX_SCAN_FILES]
+
+    scanned_files.sort(key=lambda p: p.relative_to(deliv_dir).as_posix())
+    # Preserve legacy readable IDs unless punctuation/separators make two paths
+    # collide; artifact and syntax entries must use the same disambiguation.
+    path_ids = {
+        p: p.relative_to(deliv_dir).as_posix().replace("/", "_").replace(".", "_")
+        for p in scanned_files
+    }
+    id_counts = {}
+    for clean_id in path_ids.values():
+        id_counts[clean_id] = id_counts.get(clean_id, 0) + 1
+    for p, clean_id in path_ids.items():
+        if id_counts[clean_id] > 1:
+            suffix = hashlib.sha256(p.relative_to(deliv_dir).as_posix().encode("utf-8")).hexdigest()
+            path_ids[p] = f"{clean_id}_{suffix}"
+    return scanned_files, path_ids
+
+
+def compute_artifact_revision_only(session_cwd: Path, task_baseline: TaskBaseline) -> str:
+    """轻量产物版本计算: 只做 walk + SHA256, 不跑语法检查子进程与规格核验。
+
+    供验证计划的变更检测使用 (历史缺陷: 变更检测 lambda 调用完整
+    collect_evidence, 每轮 REVIEW 因此多跑整套语法检查子进程)。
+    文件选择与消歧规则与 collect_evidence 完全一致。
+    """
+    cwd = Path(session_cwd).resolve()
+    target_dir_str = task_baseline.effective_delivery_dir or task_baseline.requested_delivery_dir
+    deliv_dir = Path(target_dir_str).resolve() if target_dir_str else cwd
+    failures: List[str] = []
+    scanned_files, path_ids = _scan_artifact_files(deliv_dir, failures)
+    items = []
+    for p in scanned_files:
+        try:
+            st = p.stat()
+            if st.st_size > 0:
+                sha = compute_file_sha256(p)
+                items.append(EvidenceItem(
+                    id=f"ev_file_{path_ids[p]}",
+                    category="artifact",
+                    summary=f"产物文件: {p.relative_to(deliv_dir)} ({st.st_size} 字节)",
+                    path=str(p.relative_to(deliv_dir)),
+                    mtime=st.st_mtime,
+                    size=st.st_size,
+                    sha256_short=sha[:12],
+                    sha256=sha,
+                ))
+        except (OSError, ValueError):
+            continue
+    return calculate_artifact_revision(task_baseline.task_id, deliv_dir, items)
+
+
 def collect_evidence(
     session_cwd: Path,
     last_msg: str,
@@ -169,49 +256,7 @@ def collect_evidence(
         )
 
     # 2. 扫描交付目录下的真实产物文件 (排除系统、日志与临时目录)
-    EXCLUDE_DIRS = {
-        "runs", "afk-work", "scratch", "dist", "build", "node_modules",
-        "__pycache__", ".git", ".github", ".codex", ".gemini", ".agents",
-        ".vscode", ".idea", ".venv", "venv", "env"
-    }
-
-    scanned_files = []
-    try:
-        for root, dirs, files in os.walk(deliv_dir, onerror=lambda error: mechanical_failures.append(f"扫描交付目录发生异常: {error}")):
-            dirs[:] = [
-                d for d in dirs
-                if d.lower() not in EXCLUDE_DIRS and not d.lower().startswith(("backup-", "afk-", "runs"))
-            ]
-            dirs.sort()
-            for f in sorted(files):
-                p = Path(root) / f
-                if p.name.lower() not in {"progress.md", "todo.md", "checklist.md"}:
-                    scanned_files.append(p)
-                    if len(scanned_files) > MAX_SCAN_FILES:
-                        raise RuntimeError(
-                            f"交付目录文件数超过采证配额 ({MAX_SCAN_FILES})，拒绝建立不完整证据链"
-                        )
-    except Exception as e:
-        if isinstance(e, RuntimeError) and "采证配额" in str(e):
-            mechanical_failures.append(str(e))
-        else:
-            mechanical_failures.append(f"扫描交付目录发生异常: {e}")
-        scanned_files = scanned_files[:MAX_SCAN_FILES]
-
-    scanned_files.sort(key=lambda p: p.relative_to(deliv_dir).as_posix())
-    # Preserve legacy readable IDs unless punctuation/separators make two paths
-    # collide; artifact and syntax entries must use the same disambiguation.
-    path_ids = {
-        p: p.relative_to(deliv_dir).as_posix().replace("/", "_").replace(".", "_")
-        for p in scanned_files
-    }
-    id_counts = {}
-    for clean_id in path_ids.values():
-        id_counts[clean_id] = id_counts.get(clean_id, 0) + 1
-    for p, clean_id in path_ids.items():
-        if id_counts[clean_id] > 1:
-            suffix = hashlib.sha256(p.relative_to(deliv_dir).as_posix().encode("utf-8")).hexdigest()
-            path_ids[p] = f"{clean_id}_{suffix}"
+    scanned_files, path_ids = _scan_artifact_files(deliv_dir, mechanical_failures)
     for p in scanned_files:
         try:
             st = p.stat()
@@ -426,7 +471,7 @@ def collect_evidence(
     if verification_runner is not None:
         executed, failures = verification_runner.collect(
             art_rev, task_baseline,
-            lambda: collect_evidence(session_cwd, last_msg, task_baseline, task_dir=task_dir).artifact_revision,
+            lambda: compute_artifact_revision_only(session_cwd, task_baseline),
         )
         items.extend(executed)
         mechanical_failures.extend(failures)
