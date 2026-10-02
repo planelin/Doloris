@@ -7,7 +7,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-import supervise
 from afk_supervisor import cli
 from afk_supervisor.models import DeliveryResult, L2Result
 from afk_supervisor.observations import command_accepted, read_events
@@ -336,10 +335,10 @@ class ThreeModeRepairs(LoopFixture):
             stack.enter_context(patch.object(cli, "__file__", str(self.root / "afk_supervisor" / "cli.py")))
             stack.enter_context(patch.object(cli, "backup_workspace"))
             stack.enter_context(patch.object(cli, "load_codex_thread_titles", return_value={}))
-            stack.enter_context(patch.object(supervise, "find_codex_session_by_id", return_value=("parent", self.rollout, str(self.ws))))
-            stack.enter_context(patch.object(supervise, "WorkspaceSupervisorLock", return_value=self.lock))
-            pause_mock = stack.enter_context(patch.object(supervise, "pause_codex_gui_session", side_effect=pause))
-            close = stack.enter_context(patch.object(supervise, "close_codex_app"))
+            stack.enter_context(patch.object(cli, "find_codex_session_by_id", return_value=("parent", self.rollout, str(self.ws))))
+            stack.enter_context(patch.object(cli, "WorkspaceSupervisorLock", return_value=self.lock))
+            pause_mock = stack.enter_context(patch.object(cli, "pause_codex_gui_session", side_effect=pause))
+            close = stack.enter_context(patch.object(cli, "close_codex_app"))
             worker = stack.enter_context(patch.object(cli, "run_headless_supervisor"))
             notify = stack.enter_context(patch("afk_supervisor.reporting.send_terminal_notification"))
             rc = cli.main(["--adopt", "parent", "--fork", "--quick", "--yes"])

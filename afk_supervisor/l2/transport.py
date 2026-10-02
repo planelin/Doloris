@@ -43,7 +43,6 @@ from afk_supervisor.l2.protocol import (
     extract_protocol_json,
     validate_protocol_payload,
 )
-from afk_supervisor.compat import get_sym
 
 
 def get_workspace_root() -> Path:
@@ -117,25 +116,6 @@ def clean_l2_decision_text(raw_text: str) -> str:
     cleaned_lines = [line for line in cleaned.splitlines() if not line.strip().startswith("```")]
     res = "\n".join(cleaned_lines).strip()
     return (res + "\n") if res else ""
-
-
-def get_recent_workspace_files(cwd: Path, limit: int = 8) -> List[Tuple[float, str, int]]:
-    EXCLUDE = {"afk-work", "runs", "scratch", ".git", "node_modules", "__pycache__", "dist", "build"}
-    files = []
-    try:
-        for p in cwd.rglob("*"):
-            if p.is_file():
-                try:
-                    parts = p.relative_to(cwd).parts
-                    if any(part.lower() in EXCLUDE or part.lower().startswith(("backup-", "work-", "afk-")) for part in parts):
-                        continue
-                    files.append((p.stat().st_mtime, str(p.relative_to(cwd)), p.stat().st_size))
-                except (OSError, ValueError):
-                    pass
-        files.sort(reverse=True)
-    except Exception:
-        pass
-    return files[:limit]
 
 
 def run_l2_antigravity(
@@ -501,7 +481,7 @@ def run_l2_antigravity(
             time.sleep(min(3, remaining_timeout()))
             # 轨1: 优先读取 AGY 本地转录日志落盘的 PLANNER_RESPONSE
             if active_cid:
-                read_fn = get_sym("read_agy_latest_response", read_agy_latest_response)
+                read_fn = read_agy_latest_response
                 resp_tuple = read_fn(active_cid, min_line_idx=initial_line_count, request_id=req_id)
                 if resp_tuple:
                     verdict = resp_tuple[0]

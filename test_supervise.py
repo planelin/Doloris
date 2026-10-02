@@ -9,6 +9,8 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import supervise
+from afk_supervisor.core import config
+from afk_supervisor.platform import process
 from supervise import (
     DeadlineBudget,
     WorkspaceSupervisorLock,
@@ -41,7 +43,7 @@ class TestIssue1_L2TranscriptOffsetAndRequestId(unittest.TestCase):
 
     def setUp(self):
         self.temp_dir = Path(tempfile.mkdtemp(prefix="test_issue1_"))
-        self.patcher = patch.object(supervise, "HOME", self.temp_dir)
+        self.patcher = patch.object(config, "HOME", self.temp_dir)
         self.patcher.start()
 
     def tearDown(self):
@@ -164,7 +166,7 @@ class TestIssue2_WorkerSessionDiscoveryAndResume(unittest.TestCase):
         rollout = sessions_dir / f"rollout-{target_sid}.jsonl"
         rollout.write_text(json.dumps({"type": "session_meta", "payload": {"id": target_sid, "cwd": str(self.ws)}}) + "\n", encoding="utf-8")
 
-        with patch.object(supervise, "CODEX_SESSIONS", sessions_dir):
+        with patch.object(config, "CODEX_SESSIONS", sessions_dir):
             discovered = driver.discover_session(time.time() - 10)
             self.assertTrue(discovered)
             self.assertEqual(driver.session_id, target_sid)
@@ -235,7 +237,7 @@ class TestIssue6_ForkPauseConfirmationAndWorkspaceLock(unittest.TestCase):
         self.temp_dir = Path(tempfile.mkdtemp(prefix="test_issue6_"))
         self.ws = self.temp_dir / "workspace_alpha"
         self.ws.mkdir(parents=True, exist_ok=True)
-        self.lock_patcher = patch.object(supervise, "HOME", self.temp_dir)
+        self.lock_patcher = patch.object(config, "HOME", self.temp_dir)
         self.lock_patcher.start()
 
     def tearDown(self):
@@ -270,7 +272,7 @@ class TestIssue6_ForkPauseConfirmationAndWorkspaceLock(unittest.TestCase):
             "mode": "fork"
         }), encoding="utf-8")
 
-        with patch.object(supervise, "pid_is_running", return_value=False):
+        with patch.object(process, "pid_is_running", return_value=False):
             ok, msg = lock.acquire()
             self.assertTrue(ok)
             data = json.loads(lock.lock_file.read_text(encoding="utf-8"))
@@ -375,11 +377,11 @@ class TestGuiSupervisorGates(unittest.TestCase):
             return L2Result("COMPLETED", "AGY认为已完工", Path("fake.log"))
 
         # Mock is_codex_working to simulate Codex stopped at idle (is_working=False)
-        with patch("supervise.is_codex_working", return_value=(False, "idle", "已完成阶段")):
+        with patch("afk_supervisor.gui_engine.is_codex_working", return_value=(False, "idle", "已完成阶段")):
             with patch("supervise.codex_app_running", return_value=True):
-                with patch("supervise.l2_dispatch", side_effect=dispatch):
-                    with patch("supervise.inject_into_codex_gui", side_effect=mock_inject):
-                        with patch("supervise.ensure_codex_window_restored"):
+                with patch("afk_supervisor.coordinator.l2_dispatch", side_effect=dispatch):
+                    with patch("afk_supervisor.gui_engine.inject_into_codex_gui", side_effect=mock_inject):
+                        with patch("afk_supervisor.gui_engine.ensure_codex_window_restored"):
                             with patch("time.sleep", return_value=None):
                                 # verify_fn returns False (acceptance criteria not met)
                                 mock_verify = MagicMock(return_value=(False, "缺少 ch02.md 章节"))
@@ -473,9 +475,9 @@ class TestForkPauseAndPreAdoptGate(unittest.TestCase):
             return 0
 
         with patch("sys.argv", test_args), \
-             patch("supervise.find_codex_session_by_id", return_value=("fake-session-id", self.rollout, str(self.temp_dir))), \
-             patch("supervise.pause_codex_gui_session", side_effect=pause_parent) as pause, \
-             patch("supervise.close_codex_app") as close_app, \
+             patch("afk_supervisor.cli.find_codex_session_by_id", return_value=("fake-session-id", self.rollout, str(self.temp_dir))), \
+             patch("afk_supervisor.cli.pause_codex_gui_session", side_effect=pause_parent) as pause, \
+             patch("afk_supervisor.cli.close_codex_app") as close_app, \
              patch("afk_supervisor.cli.wait_session_quiet") as wait_quiet, \
              patch("supervise.WorkspaceSupervisorLock.acquire", return_value=(True, "")), \
              patch("supervise.WorkspaceSupervisorLock.release"), \
@@ -489,9 +491,9 @@ class TestForkPauseAndPreAdoptGate(unittest.TestCase):
     def test_fork_pause_failure_never_starts_headless_worker(self):
         test_args = ["supervise.py", "--adopt", "fake-session-id", "--fork", "--quick", "--yes"]
         with patch("sys.argv", test_args), \
-             patch("supervise.find_codex_session_by_id", return_value=("fake-session-id", self.rollout, str(self.temp_dir))), \
-             patch("supervise.pause_codex_gui_session", return_value=False) as pause, \
-             patch("supervise.close_codex_app") as close_app, \
+             patch("afk_supervisor.cli.find_codex_session_by_id", return_value=("fake-session-id", self.rollout, str(self.temp_dir))), \
+             patch("afk_supervisor.cli.pause_codex_gui_session", return_value=False) as pause, \
+             patch("afk_supervisor.cli.close_codex_app") as close_app, \
              patch("supervise.WorkspaceSupervisorLock.acquire", return_value=(True, "")) as acquire, \
              patch("supervise.WorkspaceSupervisorLock.release"), \
              patch("afk_supervisor.cli.run_headless_supervisor", return_value=0) as headless:
@@ -513,13 +515,13 @@ class TestForkPauseAndPreAdoptGate(unittest.TestCase):
         ]
 
         with patch("sys.argv", test_args):
-            with patch("supervise.find_codex_session_by_id", return_value=("fake-session-id", self.rollout, str(self.temp_dir))):
-                with patch("supervise.pause_codex_gui_session", return_value=True):
+            with patch("afk_supervisor.cli.find_codex_session_by_id", return_value=("fake-session-id", self.rollout, str(self.temp_dir))):
+                with patch("afk_supervisor.cli.pause_codex_gui_session", return_value=True):
                     with patch("supervise.WorkspaceSupervisorLock.acquire", return_value=(True, "")):
                         with patch("supervise.WorkspaceSupervisorLock.release"):
                             # Simulate parent waiting for interaction decision
-                            with patch("supervise.is_codex_working", return_value=(False, "paused", "请确认是否覆盖文件？")):
-                                with patch("supervise.l2_dispatch", return_value=("DEFER", "", Path("fake.log"))) as dispatch, patch("afk_supervisor.engine.time.sleep") :
+                            with patch("afk_supervisor.engine.is_codex_working", return_value=(False, "paused", "请确认是否覆盖文件？")):
+                                with patch("afk_supervisor.coordinator.l2_dispatch", return_value=("DEFER", "", Path("fake.log"))) as dispatch, patch("afk_supervisor.engine.time.sleep") :
                                     rc = supervise.main()
                                     self.assertEqual(rc, 1)
                                     self.assertEqual(dispatch.call_count, 3)
@@ -604,7 +606,7 @@ class TestProtocolAndAcceptanceScenarios(unittest.TestCase):
             "findings": [],
             "next_action": {"action": "FINISH", "instructions": ""}
         })
-        with patch("supervise.l2_dispatch", return_value=agy_mock_pass):
+        with patch("afk_supervisor.coordinator.l2_dispatch", return_value=agy_mock_pass):
             verdict, answer, l2_log, payload = coord.handle_turn_review("全部完成", 1)
             self.assertEqual(verdict, "FAIL")
             self.assertIn("Python语法检查失败", answer)
@@ -636,7 +638,7 @@ class TestProtocolAndAcceptanceScenarios(unittest.TestCase):
             }
             return L2Result("PASS", json.dumps(payload), Path("l2.log"), payload=payload)
 
-        with patch("supervise.l2_dispatch", side_effect=mock_dispatch):
+        with patch("afk_supervisor.coordinator.l2_dispatch", side_effect=mock_dispatch):
             verdict, answer, l2_log, payload = coord.handle_turn_review(neutral_msg, 1)
             self.assertEqual(verdict, "PASS")
             self.assertIsNotNone(payload)
@@ -709,7 +711,7 @@ class TestProtocolAndAcceptanceScenarios(unittest.TestCase):
             review_payload["reviewed_revision"] = ev.reviewed_revision if ev else "rev-1"
             return L2Result("FAIL", json.dumps(review_payload), Path("l2.log"), payload=review_payload)
 
-        with patch("supervise.l2_dispatch", side_effect=mock_dispatch):
+        with patch("afk_supervisor.coordinator.l2_dispatch", side_effect=mock_dispatch):
             verdict, answer, l2_log, payload = coord.handle_turn_review("运行卡住了", 1)
             self.assertEqual(verdict, "FAIL")
             self.assertEqual(payload["next_action"]["action"], "REPAIR")
@@ -723,7 +725,7 @@ class TestProtocolAndAcceptanceScenarios(unittest.TestCase):
                 "repair_actions": [{"action_type": "patch", "target": "config.json", "details": "Fixed syntax"}],
                 "next_action": {"action": "PROCEED", "instructions": "继续跑测试"}
             }
-            with patch("supervise.l2_dispatch", return_value=L2Result("REPAIRED", json.dumps(repair_payload), Path("l2.log"), payload=repair_payload)):
+            with patch("afk_supervisor.coordinator.l2_dispatch", return_value=L2Result("REPAIRED", json.dumps(repair_payload), Path("l2.log"), payload=repair_payload)):
                 r_verdict, r_answer, r_log, r_pay = coord.handle_repair("配置文件损坏", "", 1)
                 self.assertEqual(r_verdict, "REPAIRED")
 
@@ -739,7 +741,7 @@ class TestProtocolAndAcceptanceScenarios(unittest.TestCase):
             "repair_actions": [],
             "next_action": {"action": "PROCEED", "instructions": "修复完毕，请重新验证"}
         }
-        with patch("supervise.l2_dispatch", return_value=L2Result("REPAIRED", json.dumps(repair_payload), Path("l2.log"), payload=repair_payload)):
+        with patch("afk_supervisor.coordinator.l2_dispatch", return_value=L2Result("REPAIRED", json.dumps(repair_payload), Path("l2.log"), payload=repair_payload)):
             r_verdict, r_answer, r_log, r_pay = coord.handle_repair("语法错误", "", 1)
             self.assertEqual(r_verdict, "REPAIRED")
             self.assertNotEqual(r_verdict, "SUCCESS")
@@ -763,7 +765,7 @@ class TestProtocolAndAcceptanceScenarios(unittest.TestCase):
             inconclusive_payload["reviewed_revision"] = ev.reviewed_revision if ev else "rev-1"
             return L2Result("INCONCLUSIVE", json.dumps(inconclusive_payload), Path("l2.log"), payload=inconclusive_payload)
 
-        with patch("supervise.l2_dispatch", side_effect=mock_dispatch):
+        with patch("afk_supervisor.coordinator.l2_dispatch", side_effect=mock_dispatch):
             verdict, answer, l2_log, payload = coord.handle_turn_review("部分完成", 1)
             self.assertEqual(verdict, "INCONCLUSIVE")
             self.assertNotEqual(verdict, "PASS")
@@ -782,7 +784,7 @@ class TestProtocolAndAcceptanceScenarios(unittest.TestCase):
             "verdict": "PROCEED",
             "next_action": {"action": "PROCEED", "instructions": "选择方案 B，新建库并同步数据"}
         }
-        with patch("supervise.l2_dispatch", return_value=L2Result("PROCEED", json.dumps(decide_payload), Path("l2.log"), payload=decide_payload)):
+        with patch("afk_supervisor.coordinator.l2_dispatch", return_value=L2Result("PROCEED", json.dumps(decide_payload), Path("l2.log"), payload=decide_payload)):
             verdict, answer, l2_log, payload = coord.handle_interaction(worker_question, 1)
             self.assertEqual(verdict, "PROCEED")
             cleaned = clean_l2_decision_text(answer)
@@ -811,7 +813,7 @@ class TestProtocolAndAcceptanceScenarios(unittest.TestCase):
             }
             return L2Result("PASS", json.dumps(p), Path("l2.log"), payload=p)
 
-        with patch("supervise.l2_dispatch", side_effect=mock_dispatch):
+        with patch("afk_supervisor.coordinator.l2_dispatch", side_effect=mock_dispatch):
             v1, a1, _, _ = coord_afk.handle_turn_review("阶段完成", 1)
             v2, a2, _, _ = coord_afk2.handle_turn_review("阶段完成", 1)
             v3, a3, _, _ = coord_afk3.handle_turn_review("阶段完成", 1)
@@ -842,7 +844,7 @@ class TestProtocolAndAcceptanceScenarios(unittest.TestCase):
             fail_payload["reviewed_revision"] = ev.reviewed_revision if ev else "rev-static"
             return L2Result("FAIL", json.dumps(fail_payload), Path("l2.log"), payload=fail_payload)
 
-        with patch("supervise.l2_dispatch", side_effect=mock_dispatch):
+        with patch("afk_supervisor.coordinator.l2_dispatch", side_effect=mock_dispatch):
             v1, _, _, _ = coord.handle_turn_review("未动", 1)
             self.assertEqual(v1, "FAIL")
             v2, _, _, _ = coord.handle_turn_review("未动", 2)
@@ -897,7 +899,7 @@ class TestProtocolAndAcceptanceScenarios(unittest.TestCase):
             "repairs": []
         }
 
-        with patch("supervise.l2_dispatch", return_value=L2Result("PASS", json.dumps(pass_payload), Path("l2.log"), payload=pass_payload)):
+        with patch("afk_supervisor.coordinator.l2_dispatch", return_value=L2Result("PASS", json.dumps(pass_payload), Path("l2.log"), payload=pass_payload)):
             # 传入返回 (False, "未检测到活跃的已完成清单或明确完工语义") 的 verify_fn
             mock_verify = MagicMock(return_value=(False, "未检测到活跃的已完成清单或明确完工语义"))
             verdict, answer, l2_log, payload = coord.handle_turn_review(
@@ -955,7 +957,7 @@ class TestQoderReviewImprovements(unittest.TestCase):
 
         with patch("subprocess.run") as mock_sub:
             mock_sub.return_value = MagicMock(stdout=json.dumps(mock_rows).encode("utf-8"), returncode=0)
-            with patch("supervise.pid_is_running", return_value=True):
+            with patch("afk_supervisor.platform.process.pid_is_running", return_value=True):
                 desktop_pids = supervise.get_codex_desktop_pids()
                 # 必须包含 1234 (UI) 和 5678 (app-server)
                 self.assertIn(1234, desktop_pids)
@@ -967,7 +969,7 @@ class TestQoderReviewImprovements(unittest.TestCase):
                 self.assertTrue(supervise.codex_app_running())
 
         # 验证 close_codex_app 仅按特定 PID 终止，绝不使用 taskkill /IM codex.exe /F
-        with patch("supervise.get_codex_desktop_pids", side_effect=[[1234, 5678], []]):
+        with patch("afk_supervisor.platform.process.get_codex_desktop_pids", side_effect=[[1234, 5678], []]):
             with patch("subprocess.run") as mock_run, patch("time.sleep"):
                 alive_pids = {1234, 5678}
                 def mock_alive(p):
@@ -977,7 +979,7 @@ class TestQoderReviewImprovements(unittest.TestCase):
                         alive_pids.discard(int(cmd[2]))
                     return MagicMock(returncode=0)
                 mock_run.side_effect = mock_run_call
-                with patch("supervise.pid_is_running", side_effect=mock_alive):
+                with patch("afk_supervisor.platform.process.pid_is_running", side_effect=mock_alive):
                     killed = supervise.close_codex_app(wait_boundary=False)
                     self.assertEqual(set(killed), {"1234", "5678"})
                     # 检查所有 taskkill 调用，绝不能包含 /IM codex.exe
@@ -1095,7 +1097,7 @@ class TestQoderReviewImprovements(unittest.TestCase):
         }
         res_text = f"```json\n{json.dumps(response_payload)}\n```"
 
-        with patch("supervise.read_agy_latest_response", return_value=("PROCEED", res_text, Path("fake.log"))):
+        with patch("afk_supervisor.l2.transport.read_agy_latest_response", return_value=("PROCEED", res_text, Path("fake.log"))):
             with patch("subprocess.run") as mock_sub:
                 mock_sub.return_value = MagicMock(stdout=b'{"conversationId": "cid-test"}', returncode=0)
                 l2_res = supervise.run_l2_antigravity(
@@ -1223,7 +1225,7 @@ class TestProtocolErrorFeedback(unittest.TestCase):
                 log_file.write_text("```json\n" + valid_json + "\n```", encoding="utf-8")
                 return L2Result(verdict="PASS", answer="已完成", l2_log=log_file, payload=json.loads(valid_json))
 
-        with patch("supervise.l2_dispatch", side_effect=mock_dispatch):
+        with patch("afk_supervisor.coordinator.l2_dispatch", side_effect=mock_dispatch):
             driver = MagicMock()
             driver.session_id = "test-sid"
             driver.provider_name = "test-prov"

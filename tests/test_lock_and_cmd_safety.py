@@ -56,7 +56,7 @@ class LockTakeoverSafetyTests(unittest.TestCase):
             return result
 
         with patch.object(WorkspaceSupervisorLock, "_inspect_existing", inspect_with_swap), \
-                patch("supervise.pid_is_running", side_effect=lambda pid: pid == 1):
+                patch("afk_supervisor.platform.process.pid_is_running", side_effect=lambda pid: pid == 1):
             ok, msg = lock_a.acquire()
         self.assertFalse(ok, "另一实例已持锁, 本实例绝不能接管")
         self.assertTrue(lock_a.lock_file.exists(), "新持有者的锁绝不能被删除")
@@ -71,7 +71,7 @@ class LockTakeoverSafetyTests(unittest.TestCase):
             "pid": 999999, "workspace": str(self.ws), "sid": "ghost",
             "mode": "resume", "acquired_at": "2026-01-01T00:00:00",
         }), encoding="utf-8")
-        with patch("supervise.pid_is_running", return_value=False):
+        with patch("afk_supervisor.platform.process.pid_is_running", return_value=False):
             ok, msg = lock.acquire()
         self.assertTrue(ok)
         content = json.loads(lock.lock_file.read_text(encoding="utf-8"))

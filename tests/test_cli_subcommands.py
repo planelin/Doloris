@@ -67,11 +67,11 @@ class SubcommandCLITests(unittest.TestCase):
             stack.enter_context(patch.object(cli, "load_codex_thread_titles", return_value={}))
             stack.enter_context(patch.object(cli, "list_recent_codex_sessions", return_value=sessions))
             stack.enter_context(patch.object(
-                supervise, "find_codex_session_by_id",
+                cli, "find_codex_session_by_id",
                 return_value=("target", self.rollout, str(self.root))))
-            stack.enter_context(patch.object(supervise, "pause_codex_gui_session", return_value=True))
+            stack.enter_context(patch.object(cli, "pause_codex_gui_session", return_value=True))
             # resume 子命令走 kill 接管路径, 必须模拟进程关闭与写锁探针
-            stack.enter_context(patch.object(supervise, "close_codex_app", return_value=["111"]))
+            stack.enter_context(patch.object(cli, "close_codex_app", return_value=["111"]))
             stack.enter_context(patch.object(cli, "verify_codex_writer_released", return_value="ok"))
             stack.enter_context(patch.object(supervise.WorkspaceSupervisorLock, "acquire", return_value=(True, "")))
             stack.enter_context(patch.object(supervise.WorkspaceSupervisorLock, "release"))

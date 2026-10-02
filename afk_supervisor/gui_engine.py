@@ -27,7 +27,6 @@ from afk_supervisor.reporting import generate_final_report
 from afk_supervisor.sessions.discovery import find_codex_session_by_id
 from afk_supervisor.sessions.rollout import is_codex_working, codex_session_state
 from afk_supervisor.state import SupervisorState
-from afk_supervisor.compat import get_sym
 from afk_supervisor.actions import UnattendedL2, DecisionStopped, repair_action, WORKER_ACTIONS, CHANNEL_ERRORS
 from afk_supervisor.observations import read_events, command_accepted, file_size
 
@@ -181,14 +180,14 @@ def run_gui_supervisor(
         return 0 if state == "SUCCESS" else (2 if state == "WAITING_USER" else 1)
 
     l2_gate = UnattendedL2(coordinator, driver, scwd, budget, state_mgr, ivl)
-    is_working_fn = get_sym("is_codex_working", is_codex_working)
+    is_working_fn = is_codex_working
 
     def send_pending():
         # Persist before invoking the UI. An exception after invocation is uncertain.
         state_mgr.dispatch_attempts += 1
         state_mgr.mark_delivery("SENDING")
         try:
-            result = delivery_result(get_sym("inject_into_codex_gui", inject_into_codex_gui)(
+            result = delivery_result(inject_into_codex_gui(
                 pending_injection["text"], target_sid=sid, target_title=title, rollout_path=Path(rollout)))
             status, detail = result.status, result.detail
         except Exception as error:
@@ -212,9 +211,9 @@ def run_gui_supervisor(
             time.sleep(budget.bound_timeout(3.0))
             if budget.is_expired():
                 return finish("TIMEOUT", f"已达总时长上限 {args.max_run_sec}s")
-            get_sym("ensure_codex_window_restored", ensure_codex_window_restored)()
+            ensure_codex_window_restored()
             p_roll = Path(rollout)
-            refreshed = get_sym("find_codex_session_by_id", find_codex_session_by_id)(sid)
+            refreshed = find_codex_session_by_id(sid)
             if refreshed and refreshed[1] != p_roll and refreshed[1].exists():
                 old_p_roll = p_roll
                 p_roll = refreshed[1]
@@ -291,7 +290,7 @@ def run_gui_supervisor(
                     if budget.is_expired():
                         return finish("TIMEOUT", f"已达总时长上限 {args.max_run_sec}s")
                     time.sleep(min(2.0, max(0.5, cooldown_deadline - time.monotonic())))
-                    get_sym("ensure_codex_window_restored", ensure_codex_window_restored)()
+                    ensure_codex_window_restored()
                     beat("rate_limit_cooldown")
                 pending_injection = {
                     "text": "继续",

@@ -13,13 +13,11 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from afk_supervisor.core.log import log
+from afk_supervisor.core import config
 
 
 def get_home_dir() -> Path:
-    import sys
-    if "supervise" in sys.modules and hasattr(sys.modules["supervise"], "HOME"):
-        return sys.modules["supervise"].HOME
-    return Path.home()
+    return config.HOME
 
 
 def get_codex_home() -> Path:
@@ -27,17 +25,11 @@ def get_codex_home() -> Path:
 
 
 def get_codex_sessions_dir() -> Path:
-    import sys
-    if "supervise" in sys.modules and hasattr(sys.modules["supervise"], "CODEX_SESSIONS"):
-        return sys.modules["supervise"].CODEX_SESSIONS
-    return get_codex_home() / "sessions"
+    return config.CODEX_SESSIONS
 
 
 def get_codex_locks_dir() -> Path:
-    import sys
-    if "supervise" in sys.modules and hasattr(sys.modules["supervise"], "CODEX_LOCKS"):
-        return sys.modules["supervise"].CODEX_LOCKS
-    return get_codex_home() / "thread-writer-locks"
+    return config.CODEX_LOCKS
 
 
 def _json_str(s: str) -> str:

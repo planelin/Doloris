@@ -25,7 +25,6 @@ from afk_supervisor.l2.transport import clean_l2_decision_text
 from afk_supervisor.reporting import generate_final_report
 from afk_supervisor.sessions.discovery import register_thread_for_codex_ui
 from afk_supervisor.state import SupervisorState
-from afk_supervisor.compat import get_sym
 from afk_supervisor.actions import repair_action, UnattendedL2, DecisionStopped
 from afk_supervisor.observations import file_size, observe_worker
 
@@ -135,7 +134,7 @@ def run_headless_supervisor(
         if args.driver == "codex" and args.adopt:
             if adopt_mode == "fork":
                 # CLI 已确认原任务暂停；不能让父任务与无头子任务并发运行。
-                is_working_fn = get_sym("is_codex_working", is_codex_working)
+                is_working_fn = is_codex_working
                 parent_working, parent_reason, parent_last_msg = is_working_fn(rollout) if rollout else (True, "缺少父任务轨迹", "")
                 if parent_working:
                     raise DecisionStopped("failed", "原任务仍在运行，拒绝Fork以避免并发消耗token: " + parent_reason)
@@ -236,7 +235,7 @@ def run_headless_supervisor(
 
                 age = driver.heartbeat_age(launched_at)
 
-                stale_limits = get_sym("STALE_LIMITS", STALE_LIMITS)
+                stale_limits = STALE_LIMITS
                 threshold = stale_limits[min(total_kills, len(stale_limits) - 1)]
                 if age > threshold:
                     ivl("DETECT_HANG", stale_sec=round(age), threshold_sec=round(threshold))
@@ -433,9 +432,9 @@ def run_headless_supervisor(
                         outcome, outcome_detail = "failed", f"续跑预算耗尽({resumes}次)"
                         break
 
-                backoffs = get_sym("BACKOFFS", BACKOFFS)
+                backoffs = BACKOFFS
                 wait_sec = backoffs[min(resumes, len(backoffs) - 1)]
-                switch_after = get_sym("FAILS_BEFORE_SWITCH", FAILS_BEFORE_SWITCH)
+                switch_after = FAILS_BEFORE_SWITCH
                 if (fails_on_provider >= switch_after and hasattr(driver, "has_next")
                         and driver.has_next() and hasattr(driver, "switch_provider")):
                     provider = driver.switch_provider()

@@ -87,7 +87,6 @@ def main():
                 stack.enter_context(patch.object(subprocess, "Popen", side_effect=isolated_popen))
                 stack.enter_context(patch.object(os, "kill"))
                 stack.enter_context(patch.object(socket.socket, "connect", side_effect=AssertionError("No network in isolated tests")))
-                import supervise
                 from afk_supervisor import cli, reporting
                 from afk_supervisor.l2.bridge import AntigravityManager
                 stack.enter_context(patch.object(cli, "keep_awake"))
@@ -96,12 +95,12 @@ def main():
                 stack.enter_context(patch.object(reporting, "send_terminal_notification"))
                 stack.enter_context(patch.object(AntigravityManager, "ensure_bridge", return_value=(None, [], home / "missing-bridge.exe")))
                 stack.enter_context(patch.object(AntigravityManager, "teardown"))
-                for name, value in (
-                    ("ensure_codex_window_restored", None),
-                    ("inject_into_codex_gui", (False, "GUI disabled in isolated tests")),
-                    ("pause_codex_gui_session", False),
+                for mod_name, name, value in (
+                    ("afk_supervisor.gui_engine", "ensure_codex_window_restored", None),
+                    ("afk_supervisor.gui_engine", "inject_into_codex_gui", (False, "GUI disabled in isolated tests")),
+                    ("afk_supervisor.cli", "pause_codex_gui_session", False),
                 ):
-                    stack.enter_context(patch.object(supervise, name, return_value=value))
+                    stack.enter_context(patch(f"{mod_name}.{name}", return_value=value))
                 suite = unittest.defaultTestLoader.discover(str(clone), pattern="test_*.py", top_level_dir=str(clone))
                 result = unittest.TextTestRunner(verbosity=2).run(suite)
                 print(json.dumps({

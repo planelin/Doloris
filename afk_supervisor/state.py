@@ -17,10 +17,10 @@ TERMINAL_STATES = frozenset({"SUCCESS", "FAILED", "BLOCKED", "TIMEOUT", "CANCELL
 
 
 CHECKPOINT_FIELDS = (
-    "schema_version", "run_config", "budget_elapsed_sec", "loop_context", "coordinator_context",
+    "schema_version", "coordinator_context",
     "worker_pid", "worker_rollout", "parent_rollout", "launch_at", "launch_kind", "dispatch_status",
     "dispatch_offset", "dispatch_stdout_offset", "dispatch_target", "dispatch_at", "dispatch_attempts",
-    "dispatch_context", "last_handled_event", "event_path", "verification_plan", "terminal_finalized",
+    "dispatch_context", "event_path", "terminal_finalized",
 )
 
 
@@ -67,9 +67,6 @@ class SupervisorState:
         self.event_offset = 0
         self.updated_at = datetime.now().isoformat()
         self.schema_version = 2
-        self.run_config = {}
-        self.budget_elapsed_sec = 0.0
-        self.loop_context = {}
         self.coordinator_context = {}
         self.worker_pid = 0
         self.worker_rollout = ""
@@ -83,9 +80,7 @@ class SupervisorState:
         self.dispatch_at = 0.0
         self.dispatch_attempts = 0
         self.dispatch_context = {}
-        self.last_handled_event = ""
         self.event_path = ""
-        self.verification_plan = {}
         self.terminal_finalized = False
 
         if persist_initial:

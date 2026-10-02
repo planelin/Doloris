@@ -1,17 +1,12 @@
+"""afk_supervisor.compat — 已废弃的兼容层
+========================================
+历史上本模块通过 sys.modules["supervise"] 动态反查门面符号，使旧测试对
+supervise 顶层的热补丁穿透到子模块。该机制已在分层收敛中移除 (生产代码全部
+直调本模块导入)；测试如需替换边界, 请 patch 消费模块命名空间内的符号, 例如:
+
+    patch("afk_supervisor.coordinator.l2_dispatch", ...)
+    patch("afk_supervisor.cli.pause_codex_gui_session", ...)
+    patch("afk_supervisor.platform.process.pid_is_running", ...)
+
+本模块暂时保留空壳以维持 afk_supervisor.compat 导入路径与分层注册表的稳定。
 """
-afk_supervisor.compat — 动态符号解析器与向后兼容桥接
-===================================================
-当外部测试或脚本对 supervise 顶层模块进行 monkeypatch 或 patch.object 时，
-通过动态符号解析器无缝穿透，确保子模块行为与单体架构保持 100% 行为一致。
-"""
-
-import sys
-from typing import Any
-
-
-def get_sym(name: str, default: Any = None) -> Any:
-    """动态获取 supervise 模块上的符号；若未被 patch 或不存在，回退到默认实现。"""
-    sup = sys.modules.get("supervise")
-    if sup is not None and hasattr(sup, name):
-        return getattr(sup, name)
-    return default

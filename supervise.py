@@ -84,7 +84,6 @@ from afk_supervisor.l2.bridge import (
 from afk_supervisor.l2.transport import (
     clean_l2_decision_text,
     worker_last_message,
-    get_recent_workspace_files,
     run_l2_antigravity,
     run_l2_agent,
     l2_dispatch,
@@ -120,8 +119,6 @@ from afk_supervisor.sessions.rollout import (
     rollout_tail_state,
     peek_rollout_activity,
     is_codex_working,
-    wait_for_codex_idle,
-    codex_rollout_is_turn_complete,
     read_rollout_last_message,
 )
 from afk_supervisor.sessions.discovery import (

@@ -40,7 +40,6 @@ from afk_supervisor.platform.gui import pause_codex_gui_session
 from afk_supervisor.acceptance import check_acceptance, check_acceptance_natural, worker_last_message
 from afk_supervisor.engine import run_headless_supervisor
 from afk_supervisor.gui_engine import run_gui_supervisor
-from afk_supervisor.compat import get_sym
 
 BACKUP_EXCLUDE_DIRS = {
     ".git", ".svn", ".hg", "node_modules", ".venv", "venv", "env",
@@ -506,7 +505,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                         if matched:
                             sid, rollout, scwd, title, _ = matched[0]
                         else:
-                            find_fn = get_sym("find_codex_session_by_id", find_codex_session_by_id)
+                            find_fn = find_codex_session_by_id
                             got = find_fn(cleaned_input)
                             if not got:
                                 ivl("TERMINAL", state="FAILED", detail=f"找不到指定的会话: {raw}")
@@ -518,7 +517,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 if scwd and scwd != str(ws_dir):
                     log(f"ADOPT   接管会话 cwd={scwd} (非{ws_dir}), 工作目录与验收锚点绝对对齐目标工程")
             else:
-                find_fn = get_sym("find_codex_session_by_id", find_codex_session_by_id)
+                find_fn = find_codex_session_by_id
                 got = find_fn(args.adopt)
                 if not got:
                     ivl("TERMINAL", state="FAILED", detail=f"找不到会话 {args.adopt}")
@@ -550,7 +549,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 driver.cwd = Path(scwd)
 
     ws_path = Path(session_cwd).resolve()
-    lock_cls = get_sym("WorkspaceSupervisorLock", WorkspaceSupervisorLock)
+    lock_cls = WorkspaceSupervisorLock
     ws_lock = lock_cls(ws_path, sid=getattr(driver, "session_id", "") or "new", mode=adopt_mode or "fresh")
     state_mgr = SupervisorState(run_dir, sid=getattr(driver, "session_id", "") or "", mode=adopt_mode or "fresh", ws=ws_path)
     state_mgr.transition("INIT", detail=f"Supervisor started ({adopt_mode})")
@@ -574,7 +573,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         if args.adopt and adopt_mode == "fork":
             state_mgr.transition("HANDOFF_WAIT", detail="无限等待父任务停止确认", parent_rollout=str(rollout or ""))
             ivl("FORK_PARENT_WAIT", session=sid, timeout_sec=None, until="confirmed_paused")
-            pause_fn = get_sym("pause_codex_gui_session", pause_codex_gui_session)
+            pause_fn = pause_codex_gui_session
             if not pause_fn(rollout, max_wait=None):
                 return finish_handoff("FAILED", "未确认原任务暂停，未启动 Fork")
             ivl("FORK_PARENT_PAUSED", session=sid)
@@ -593,7 +592,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.adopt and adopt_mode == "resume":
         try:
             ivl("HANDOFF_START", session=sid, mode="kill", timeout_sec=args.handoff_timeout_sec)
-            close_fn = get_sym("close_codex_app", close_codex_app)
+            close_fn = close_codex_app
             killed = [str(pid) for pid in (close_fn(rollout, max_wait=args.handoff_timeout_sec, on_event=ivl) or [])]
             # Never unlink an active OS lock: that can create a second writer.
             lock_path = get_codex_locks_dir() / f"{sid}.lock"

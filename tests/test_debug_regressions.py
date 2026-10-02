@@ -275,7 +275,7 @@ class DeliveryDirPoisoningRegressions(DebugFixture):
 class CoordinatorAndPromptRegressions(DebugFixture):
     def test_payloadless_l2_errors_return_normally_in_all_modes(self):
         coordinator = self.coordinator()
-        with patch("supervise.l2_dispatch", return_value=L2Result("NO-BRIDGE", "Not connected", self.run / "l2.log")):
+        with patch("afk_supervisor.coordinator.l2_dispatch", return_value=L2Result("NO-BRIDGE", "Not connected", self.run / "l2.log")):
             results = [
                 coordinator.handle_interaction("Which option?", 1),
                 coordinator.handle_repair("Infrastructure failed", "Details", 1),
@@ -290,7 +290,7 @@ class CoordinatorAndPromptRegressions(DebugFixture):
             return L2Result("PASS", json.dumps(payload), self.run / "l2.log", payload=payload)
         def verify(**kwargs):
             raise OSError("Cannot read acceptance file")
-        with patch("supervise.l2_dispatch", side_effect=dispatch):
+        with patch("afk_supervisor.coordinator.l2_dispatch", side_effect=dispatch):
             result = self.coordinator().handle_turn_review("Report", 1, verify_fn=verify)
         self.assertNotEqual(result[0], "PASS")
 

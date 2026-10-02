@@ -12,7 +12,8 @@
   l2.protocol/transport -> baseline (TaskBaseline)  -> 已下沉 models
   acceptance -> l2.transport (worker_last_message)  -> 已移入 sessions.rollout
   l2.transport -> drivers.claude (get_relay_pool)   -> 已改为依赖注入
-  (compat.get_sym 的 supervise 反查仍保留, 属测试热补丁机制, 不在静态规则内)
+  (compat.get_sym 反查已移除: 生产代码全部直调本模块导入, 测试 patch 消费模块命名空间;
+   路径常量收敛到 core/config, 消费者以 config.X 动态属性读取)
 """
 import ast
 import unittest

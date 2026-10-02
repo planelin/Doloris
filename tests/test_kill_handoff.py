@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 
 import supervise
 from afk_supervisor import cli
+from afk_supervisor.core import config
 from afk_supervisor.platform import process
 from afk_supervisor.sessions.rollout import codex_handoff_state, codex_session_state
 from tests.test_supervisor_loops import FakeClock
@@ -39,8 +40,8 @@ class KillFixture(unittest.TestCase):
 
     def simulated_desktop(self, survives=False):
         alive = {111, 222}
-        self.stack.enter_context(patch.object(supervise, "get_codex_desktop_pids", side_effect=lambda: sorted(alive)))
-        self.stack.enter_context(patch.object(supervise, "pid_is_running", side_effect=lambda pid: pid in alive))
+        self.stack.enter_context(patch.object(process, "get_codex_desktop_pids", side_effect=lambda: sorted(alive)))
+        self.stack.enter_context(patch.object(process, "pid_is_running", side_effect=lambda pid: pid in alive))
         def terminate(command, **kwargs):
             self.assertEqual(command[0], "taskkill")
             self.assertEqual(command[1], "/PID")
@@ -137,7 +138,7 @@ class TestAutomaticClose(KillFixture):
     def test_idle_closes_immediately_with_audit(self):
         terminate = self.simulated_desktop()
         audit = Mock()
-        with patch.object(supervise, "pause_codex_gui_session") as pause:
+        with patch.object(cli, "pause_codex_gui_session") as pause:
             self.assertEqual(process.close_codex_app(self.rollout, on_event=audit), ["111", "222"])
         pause.assert_not_called()
         self.assertEqual(terminate.call_count, 2)
@@ -149,7 +150,7 @@ class TestAutomaticClose(KillFixture):
         def complete_tool(seconds):
             self.clock.sleep(seconds)
             self.write(self.event("function_call", call_id="a"), self.event("function_call_output", call_id="a"))
-        with patch("time.sleep", side_effect=complete_tool), patch.object(supervise, "pause_codex_gui_session") as pause:
+        with patch("time.sleep", side_effect=complete_tool), patch.object(cli, "pause_codex_gui_session") as pause:
             self.assertEqual(process.close_codex_app(self.rollout), ["111", "222"])
         pause.assert_not_called()
         self.assertEqual(terminate.call_count, 2)
@@ -157,14 +158,14 @@ class TestAutomaticClose(KillFixture):
     def test_active_model_generation_closes_directly_without_gui_pause(self):
         terminate = self.simulated_desktop()
         self.write(self.event("task_started"))
-        with patch.object(supervise, "pause_codex_gui_session") as pause:
+        with patch.object(cli, "pause_codex_gui_session") as pause:
             self.assertEqual(process.close_codex_app(self.rollout), ["111", "222"])
         pause.assert_not_called()
         self.assertEqual(terminate.call_count, 2)
 
     def test_restarted_app_prevents_success(self):
         self.simulated_desktop()
-        with patch.object(supervise, "get_codex_desktop_pids", side_effect=[[111, 222], [333]]):
+        with patch.object(process, "get_codex_desktop_pids", side_effect=[[111, 222], [333]]):
             with self.assertRaisesRegex(RuntimeError, "333"):
                 process.close_codex_app(self.rollout)
 
@@ -174,7 +175,7 @@ class TestAutomaticClose(KillFixture):
             process.close_codex_app(self.rollout)
 
     def test_already_closed_needs_no_idle_wait(self):
-        with patch.object(supervise, "get_codex_desktop_pids", return_value=[]), patch.object(process.subprocess, "run") as run:
+        with patch.object(process, "get_codex_desktop_pids", return_value=[]), patch.object(process.subprocess, "run") as run:
             self.assertEqual(process.close_codex_app(self.root / "missing"), [])
         run.assert_not_called()
 
@@ -213,9 +214,9 @@ class TestKillCLI(KillFixture):
             stack.enter_context(patch.object(cli, "backup_workspace", return_value=None))
             stack.enter_context(patch.object(cli, "atexit"))
             stack.enter_context(patch.object(cli, "load_codex_thread_titles", return_value={}))
-            stack.enter_context(patch.object(supervise, "find_codex_session_by_id", return_value=("target", self.rollout, str(self.root))))
-            stack.enter_context(patch.object(supervise, "CODEX_LOCKS", locks))
-            stack.enter_context(patch.object(supervise, "close_codex_app", side_effect=close))
+            stack.enter_context(patch.object(cli, "find_codex_session_by_id", return_value=("target", self.rollout, str(self.root))))
+            stack.enter_context(patch.object(config, "CODEX_LOCKS", locks))
+            stack.enter_context(patch.object(cli, "close_codex_app", side_effect=close))
             stack.enter_context(patch.object(cli, "verify_codex_writer_released", side_effect=check))
             stack.enter_context(patch.object(supervise.WorkspaceSupervisorLock, "acquire", return_value=(not competing_supervisor, "other supervisor")))
             release = stack.enter_context(patch.object(supervise.WorkspaceSupervisorLock, "release"))

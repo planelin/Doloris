@@ -114,7 +114,7 @@ class LoopFixture(DebugFixture):
 
     def run_headless(self, mode="resume", dispatch=None, driver=None, verify=None, task_md=None, chaos=None, rollout=None):
         driver = driver or FakeDriver(self.run)
-        with patch("supervise.l2_dispatch", side_effect=dispatch or self.pass_dispatch), \
+        with patch("afk_supervisor.coordinator.l2_dispatch", side_effect=dispatch or self.pass_dispatch), \
              patch("afk_supervisor.engine.time.sleep", side_effect=self.clock.sleep), \
              patch("afk_supervisor.engine.time.monotonic", side_effect=self.clock.monotonic), \
              patch("afk_supervisor.engine.time.time", side_effect=self.clock.time), \
@@ -135,10 +135,10 @@ class LoopFixture(DebugFixture):
         if working is None:
             def working(path):
                 return False, "idle", "Neutral report"
-        with patch("supervise.l2_dispatch", side_effect=dispatch or self.pass_dispatch), \
-             patch("supervise.ensure_codex_window_restored"), \
-             patch("supervise.inject_into_codex_gui", side_effect=inject_fn) as inject, \
-             patch("supervise.is_codex_working", side_effect=working), \
+        with patch("afk_supervisor.coordinator.l2_dispatch", side_effect=dispatch or self.pass_dispatch), \
+             patch("afk_supervisor.gui_engine.ensure_codex_window_restored"), \
+             patch("afk_supervisor.gui_engine.inject_into_codex_gui", side_effect=inject_fn) as inject, \
+             patch("afk_supervisor.gui_engine.is_codex_working", side_effect=working), \
              patch("afk_supervisor.gui_engine.time.sleep", side_effect=self.clock.sleep), \
              patch("afk_supervisor.gui_engine.time.monotonic", side_effect=self.clock.monotonic), \
              patch("afk_supervisor.gui_engine.time.time", side_effect=self.clock.time), \
@@ -267,14 +267,14 @@ class SupervisorLoopRegressions(LoopFixture):
             stack.enter_context(patch("afk_supervisor.cli.load_codex_thread_titles", return_value={}))
             stack.enter_context(patch("afk_supervisor.cli.read_session_title", return_value="Handoff integration"))
             stack.enter_context(patch("afk_supervisor.cli.get_codex_locks_dir", return_value=self.root / "locks"))
-            stack.enter_context(patch("supervise.find_codex_session_by_id", return_value=("parent", parent, str(self.ws))))
-            stack.enter_context(patch("supervise.WorkspaceSupervisorLock", return_value=self.lock))
-            pause = stack.enter_context(patch("supervise.pause_codex_gui_session", side_effect=pause_codex_gui_session))
-            close_app = stack.enter_context(patch("supervise.close_codex_app"))
+            stack.enter_context(patch("afk_supervisor.cli.find_codex_session_by_id", return_value=("parent", parent, str(self.ws))))
+            stack.enter_context(patch("afk_supervisor.cli.WorkspaceSupervisorLock", return_value=self.lock))
+            pause = stack.enter_context(patch("afk_supervisor.cli.pause_codex_gui_session", side_effect=pause_codex_gui_session))
+            close_app = stack.enter_context(patch("afk_supervisor.cli.close_codex_app"))
             stack.enter_context(patch("afk_supervisor.platform.gui.find_best_codex_window", return_value=123))
             stack.enter_context(patch("afk_supervisor.platform.gui.get_workspace_root", return_value=self.root))
             pause_signal = stack.enter_context(patch("afk_supervisor.platform.gui.subprocess.run", side_effect=send_pause))
-            stack.enter_context(patch("supervise.l2_dispatch", side_effect=self.pass_dispatch))
+            stack.enter_context(patch("afk_supervisor.coordinator.l2_dispatch", side_effect=self.pass_dispatch))
             stack.enter_context(patch("afk_supervisor.engine.time.sleep", side_effect=advance_and_confirm))
             stack.enter_context(patch("afk_supervisor.engine.time.monotonic", side_effect=self.clock.monotonic))
             stack.enter_context(patch("afk_supervisor.engine.time.time", side_effect=self.clock.time))
@@ -302,7 +302,7 @@ class SupervisorLoopRegressions(LoopFixture):
             if kwargs["mode"] == "DECIDE":
                 return L2Result("PROCEED", "使用深色主题并完成交互", self.run / "l2.log")
             return self.pass_dispatch(*args, **kwargs)
-        with patch("supervise.is_codex_working", return_value=(False, "idle", "请确认主视觉方向？")):
+        with patch("afk_supervisor.engine.is_codex_working", return_value=(False, "idle", "请确认主视觉方向？")):
             rc, driver = self.run_headless(mode="fork", dispatch=dispatch, rollout=self.root / "parent.jsonl")
         self.assertEqual(rc, 0)
         self.assertEqual(modes, ["DECIDE", "REVIEW"])
@@ -331,7 +331,7 @@ class SupervisorLoopRegressions(LoopFixture):
                              for event, data in self.events))
 
     def test_fork_idle_parent_uses_continue_without_mandatory_l2_decision(self):
-        with patch("supervise.is_codex_working", return_value=(False, "task_complete", "已完成当前页面步骤")):
+        with patch("afk_supervisor.engine.is_codex_working", return_value=(False, "task_complete", "已完成当前页面步骤")):
             rc, driver = self.run_headless(mode="fork", rollout=self.root / "parent.jsonl")
         self.assertEqual(rc, 0)
         self.assertEqual(driver.calls, [("fork", "继续\n")])
@@ -340,8 +340,8 @@ class SupervisorLoopRegressions(LoopFixture):
 
     def test_fork_refuses_still_active_parent_without_starting_child(self):
         # CLI owns the pause operation; the engine must not bypass its result.
-        with patch("supervise.is_codex_working", return_value=(True, "working", "")), \
-             patch("supervise.pause_codex_gui_session") as pause:
+        with patch("afk_supervisor.engine.is_codex_working", return_value=(True, "working", "")), \
+             patch("afk_supervisor.cli.pause_codex_gui_session") as pause:
             rc, driver = self.run_headless(mode="fork", rollout=self.root / "parent.jsonl")
         self.assertEqual(rc, 1)
         self.assertEqual(self.state.state, "FAILED")
@@ -356,7 +356,7 @@ class SupervisorLoopRegressions(LoopFixture):
             self.assertEqual(kwargs["mode"], "DECIDE")
             return L2Result("PROCEED", "使用深色主题并完成交互", None)
 
-        with patch("supervise.is_codex_working", side_effect=[
+        with patch("afk_supervisor.engine.is_codex_working", side_effect=[
             (False, "task_complete", "请确认主视觉方向？"),
             (True, "parent restarted while L2 was deciding", ""),
         ]):
@@ -387,7 +387,7 @@ class SupervisorLoopRegressions(LoopFixture):
                 return L2Result("PROCEED", "继续", None)
             return self.pass_dispatch(*args, **kwargs)
 
-        with patch("supervise.is_codex_working", return_value=(False, "task_complete", "是否继续？")):
+        with patch("afk_supervisor.engine.is_codex_working", return_value=(False, "task_complete", "是否继续？")):
             rc, driver = self.run_headless(mode="fork", dispatch=dispatch, rollout=self.root / "parent.jsonl")
         self.assertEqual(rc, 0)
         self.assertEqual(modes, ["DECIDE", "REVIEW"])
@@ -396,7 +396,7 @@ class SupervisorLoopRegressions(LoopFixture):
 
     def test_fork_bridge_failure_retries_and_reports_without_starting(self):
         dispatch = Mock(return_value=L2Result("NO-BRIDGE", "Disconnected", self.run / "l2.log"))
-        with patch("supervise.is_codex_working", return_value=(False, "idle", "请确认主视觉方向？")):
+        with patch("afk_supervisor.engine.is_codex_working", return_value=(False, "idle", "请确认主视觉方向？")):
             rc, driver = self.run_headless(mode="fork", dispatch=dispatch, rollout=self.root / "parent.jsonl")
         self.assertEqual(rc, 1)
         self.assertEqual(dispatch.call_count, 3)
@@ -411,7 +411,7 @@ class SupervisorLoopRegressions(LoopFixture):
             if kwargs["mode"] == "DECIDE":
                 return replies.pop(0)
             return self.pass_dispatch(*args, **kwargs)
-        with patch("supervise.is_codex_working", return_value=(False, "idle", "请确认主视觉方向？")):
+        with patch("afk_supervisor.engine.is_codex_working", return_value=(False, "idle", "请确认主视觉方向？")):
             rc, driver = self.run_headless(mode="fork", dispatch=dispatch, rollout=self.root / "parent.jsonl")
         self.assertEqual(rc, 0)
         self.assertEqual(self.state.retries, 1)
@@ -421,7 +421,7 @@ class SupervisorLoopRegressions(LoopFixture):
         from afk_supervisor.reporting import generate_final_report
         self.report = generate_final_report
         dispatch = Mock(return_value=L2Result("NO-BRIDGE", "offline", None))
-        with patch("supervise.is_codex_working", return_value=(False, "idle", "请确认主视觉方向？")), patch("afk_supervisor.reporting.send_terminal_notification") as notify:
+        with patch("afk_supervisor.engine.is_codex_working", return_value=(False, "idle", "请确认主视觉方向？")), patch("afk_supervisor.reporting.send_terminal_notification") as notify:
             rc, _ = self.run_headless(mode="fork", dispatch=dispatch, rollout=self.root / "parent.jsonl")
         self.assertEqual(rc, 1)
         self.assertIn("FAILED", (self.run / "report.md").read_text(encoding="utf-8"))
@@ -430,7 +430,7 @@ class SupervisorLoopRegressions(LoopFixture):
     def test_fork_l2_stop_records_blocked_and_report(self):
         payload = {"blockers": ["Upstream quota exhausted"], "next_action": {"type": "terminate_blocked", "instructions": "No configured alternative provider; stop."}}
         dispatch = Mock(return_value=L2Result("STOP", "Cannot continue", None, payload=payload))
-        with patch("supervise.is_codex_working", return_value=(False, "idle", "请确认如何继续？")):
+        with patch("afk_supervisor.engine.is_codex_working", return_value=(False, "idle", "请确认如何继续？")):
             rc, driver = self.run_headless(mode="fork", dispatch=dispatch, rollout=self.root / "parent.jsonl")
         self.assertEqual(rc, 1)
         self.assertEqual(self.state.state, "BLOCKED")
@@ -670,7 +670,7 @@ class SupervisorLoopRegressions(LoopFixture):
         self.args.max_resumes = 1
         self.args.l2_max = 0
         driver = FakeDriver(self.run, exit_codes=(1,))
-        with patch("supervise.BACKOFFS", [17, 29]):
+        with patch("afk_supervisor.engine.BACKOFFS", [17, 29]):
             self.run_headless(driver=driver)
         waits = [data["backoff_sec"] for event, data in self.events if event == "RESUME_WAIT"]
         self.assertEqual(waits, [17])

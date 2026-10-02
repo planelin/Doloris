@@ -25,12 +25,8 @@ from afk_supervisor.l2.protocol import extract_protocol_json
 
 
 def get_agy_brain_dir() -> Path:
-    import sys
-    if "supervise" in sys.modules and hasattr(sys.modules["supervise"], "HOME"):
-        home = sys.modules["supervise"].HOME
-    else:
-        home = Path.home()
-    return home / ".gemini" / "antigravity" / "brain"
+    from afk_supervisor.core import config
+    return config.HOME / ".gemini" / "antigravity" / "brain"
 
 
 def get_skill_metadata(project_root: Optional[Path] = None) -> Tuple[str, str]:
@@ -384,12 +380,8 @@ def _normalize_codex_session_id(raw: Optional[str]) -> str:
 
 
 def get_codex_agy_registry_file() -> Path:
-    import sys
-    if "supervise" in sys.modules and hasattr(sys.modules["supervise"], "HOME"):
-        home = sys.modules["supervise"].HOME
-    else:
-        home = Path.home()
-    base = home / ".gemini" / "antigravity"
+    from afk_supervisor.core import config
+    base = config.HOME / ".gemini" / "antigravity"
     base.mkdir(parents=True, exist_ok=True)
     return base / "codex_agy_registry.json"
 

@@ -18,7 +18,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from afk_supervisor.compat import get_sym
 # log 下沉到 core/log; 此处保留再导出以兼容既有 `platform.process import log` 调用方
 from afk_supervisor.core.log import log  # noqa: F401
 
@@ -168,7 +167,7 @@ class WorkspaceSupervisorLock:
         if pid <= 0:
             age_state, _, _ = self._age_state()
             return age_state, 0, {}, raw
-        running_fn = get_sym("pid_is_running", pid_is_running)
+        running_fn = pid_is_running
         if running_fn(pid):
             return "busy", pid, info, raw
         return "stale", pid, info, raw
@@ -289,7 +288,7 @@ def get_codex_desktop_pids() -> List[int]:
 
 def codex_app_running() -> bool:
     """检测 Codex 桌面App是否存活。自动排除无头 CLI worker。"""
-    _pids_fn = get_sym("get_codex_desktop_pids", get_codex_desktop_pids)
+    _pids_fn = get_codex_desktop_pids
     pids = _pids_fn()
     return len(pids) > 0
 
@@ -297,7 +296,7 @@ def codex_app_running() -> bool:
 def close_codex_app(rollout_path=None, max_wait=40, wait_boundary=True, on_event=None) -> List[str]:
     """Automatically close verified desktop PIDs; wait for tool completions before kill."""
     from afk_supervisor.sessions.rollout import codex_handoff_state
-    pids_fn = get_sym("get_codex_desktop_pids", get_codex_desktop_pids)
+    pids_fn = get_codex_desktop_pids
     target_pids = pids_fn()
     if not target_pids:
         log("CLOSE    未发现 Codex 桌面进程；继续检查写锁，不以文件静默推断退出")
@@ -320,7 +319,7 @@ def close_codex_app(rollout_path=None, max_wait=40, wait_boundary=True, on_event
                 raise RuntimeError(f"安全退出检查超时，未关闭 App、未启动无头端: {snapshot['reason']}")
             time.sleep(min(1, remaining))
 
-    pid_fn = get_sym("pid_is_running", pid_is_running)
+    pid_fn = pid_is_running
     log(f"CLOSE    自动关闭已识别的桌面进程: {target_pids}")
     no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     last_error = ""

@@ -38,7 +38,7 @@ class TransportRegressions(DebugFixture):
         self.stack.enter_context(patch.object(transport.Path, "home", return_value=self.root))
         self.bridge = self.stack.enter_context(patch.object(transport.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=b'{"conversationId":"fake-agy"}', stderr=b"")))
         payload = self.payload(self.evidence)
-        self.reader = self.stack.enter_context(patch("supervise.read_agy_latest_response", return_value=AgyResponseResult("PASS", json.dumps(payload), payload=payload)))
+        self.reader = self.stack.enter_context(patch("afk_supervisor.l2.transport.read_agy_latest_response", return_value=AgyResponseResult("PASS", json.dumps(payload), payload=payload)))
 
     def call_agy(self, context="current behavior output", **kwargs):
         full, short = build_protocol_prompt("REVIEW", self.baseline, self.evidence.request_id, self.evidence, context)

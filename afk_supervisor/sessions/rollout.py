@@ -379,23 +379,6 @@ def is_codex_working(rollout_path: Path) -> Tuple[bool, str, str]:
     return not stopped, reason, snapshot.get("last_agent_message", "") if stopped else ""
 
 
-def wait_for_codex_idle(rollout_path: Path, timeout_sec: float = 60.0) -> bool:
-    """阻塞等待 Codex 退出活跃工作状态进入空闲。"""
-    deadline = time.time() + timeout_sec
-    while time.time() < deadline:
-        is_working, reason, _ = is_codex_working(rollout_path)
-        if not is_working:
-            return True
-        time.sleep(2)
-    return False
-
-
-def codex_rollout_is_turn_complete(rollout_path: Path) -> Tuple[bool, str]:
-    """向后兼容接口：判断当前回合是否真正结束。"""
-    is_working, reason, last_msg = is_codex_working(rollout_path)
-    return (not is_working), last_msg
-
-
 def read_rollout_last_message(rollout_path: Path, window_bytes: int = 262144) -> str:
     """从 rollout JSONL 中提取最新的 assistant / agent_message 文本。"""
     if not rollout_path or not Path(rollout_path).exists():

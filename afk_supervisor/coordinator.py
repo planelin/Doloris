@@ -19,13 +19,13 @@ from afk_supervisor.acceptance import NATURAL_NO_EVIDENCE_DETAIL
 from afk_supervisor.evidence import collect_evidence, calculate_reviewed_revision
 from afk_supervisor.l2.protocol import extract_protocol_json, normalize_next_action
 from afk_supervisor.l2.transport import l2_dispatch
-from afk_supervisor.compat import get_sym
 from afk_supervisor.verification import VerificationRunner
 
 
 def _dispatch_l2(*args, **kwargs):
-    fn = get_sym("l2_dispatch", l2_dispatch)
-    return fn(*args, **kwargs)
+    # 直调本模块导入 (历史: 经 compat.get_sym 反查 supervise 门面以兼容旧测试;
+    # 测试现应 patch afk_supervisor.coordinator.l2_dispatch)
+    return l2_dispatch(*args, **kwargs)
 
 
 def _unpack_result(result):
