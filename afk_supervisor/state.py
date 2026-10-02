@@ -12,6 +12,9 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from afk_supervisor.storage import atomic_json
 
+# 终态集合: transition 进入这些状态时自动置位 terminal_finalized (终局报告已生成的持久标记)
+TERMINAL_STATES = frozenset({"SUCCESS", "FAILED", "BLOCKED", "TIMEOUT", "CANCELLED", "STOPPED", "WAITING_USER"})
+
 
 CHECKPOINT_FIELDS = (
     "schema_version", "run_config", "budget_elapsed_sec", "loop_context", "coordinator_context",
@@ -103,7 +106,8 @@ class SupervisorState:
             self.save()
 
     def transition(self, new_state: str, detail: str = "", **kwargs):
-        """推进状态并持久化。"""
+        """推进状态并持久化。终态进入时自动置位 terminal_finalized 标记
+        (历史缺陷: 该字段只有初始化与读取、从无写入者, 检查点永远报 false)。"""
         self.state = new_state
         self.detail = detail
         for k, v in kwargs.items():
@@ -113,6 +117,8 @@ class SupervisorState:
             self.agy_session_id = kwargs["agy_cid"]
         if "worker_session_id" in kwargs:
             self.sid = kwargs["worker_session_id"]
+        if new_state in TERMINAL_STATES:
+            self.terminal_finalized = True
         self.updated_at = datetime.now().isoformat()
         self.save()
 

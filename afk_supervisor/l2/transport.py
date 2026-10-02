@@ -29,6 +29,7 @@ from afk_supervisor.l2.bridge import (
     check_agy_transcript_error,
     discover_antigravity_bridge,
     discover_antigravity_project_id,
+    get_agy_brain_dir,
     get_agy_conversation_for_codex,
     get_skill_metadata,
     is_agy_working,
@@ -47,6 +48,11 @@ from afk_supervisor.compat import get_sym
 
 def get_workspace_root() -> Path:
     return Path(__file__).resolve().parent.parent.parent
+
+
+# 在途挂起恢复: 旧请求绑定会话的转录停滞超过该阈值即视为会话死亡,
+# 允许解绑清理并按新请求继续 (历史缺陷: 一律硬拒导致任务永久卡死)。
+PENDING_RECOVERY_STALE_SEC = 180.0
 
 
 def clean_l2_decision_text(raw_text: str) -> str:
@@ -195,10 +201,11 @@ def run_l2_antigravity(
                 # 在途指针丢失时必须保守中止, 而不是冒并发双发的风险。
                 raise ValueError("agy_pending_request.json 不是 JSON 对象")
             pending = loaded
-        if pending and pending.get("request_id") != req_id:
-            return L2Result("NO-VERDICT", "原AGY请求仍在途，禁止并发发送或替换会话", run_dir / f"l2-{n}.log")
+        # 异主挂起 (request_id 不同) 不再在此硬拒: 无 cid 的走下方 15s 停滞清理,
+        # 带 cid 的在 cid 解析后走恢复路径 (采纳答案 / 如实报告在途 / 死亡解绑)。
         if not lifecycle:
-            lifecycle = {"request_id": req_id, "phase": "SENDING" if pending else "PREPARED",
+            lifecycle = {"request_id": req_id,
+                         "phase": "SENDING" if (pending and pending.get("request_id") == req_id) else "PREPARED",
                          "request_sha256": hashlib.sha256(full_prompt.encode("utf-8")).hexdigest()}
             atomic_json(lifecycle_file, lifecycle)
         if lifecycle.get("phase") == "COMPLETED":
@@ -299,6 +306,52 @@ def run_l2_antigravity(
 
     if pending.get("cid"):
         cid = pending["cid"]
+        if pending.get("request_id") != req_id:
+            # 恢复路径 (历史缺陷: 异主在途挂起一律硬拒, 带 cid 的过期记录会永久
+            # 卡死任务且跨进程重启存活): 1) 旧请求可能已被回答 (轮询超时后重试
+            # 的常态) -> 采纳其裁决; 2) 会话转录仍活跃 -> 如实报告在途, 绝不并发
+            # 双发; 3) 会话已死亡 (转录缺失/长期停滞) -> 解绑清理后按新请求继续。
+            old_req = pending.get("request_id")
+            old_cid = pending.get("cid")
+            resp = read_agy_latest_response(
+                old_cid, min_line_idx=int(pending.get("initial_line_count", 0) or 0), request_id=old_req)
+            if resp and resp.payload:
+                ok, reason = validate_protocol_payload(
+                    resp.payload,
+                    expected_request_id=old_req,
+                    expected_task_id=task_baseline.task_id if task_baseline else None,
+                    expected_mode=mode,
+                    expected_revision=(evidence_packet.reviewed_revision if evidence_packet else None),
+                    task_baseline=task_baseline,
+                    evidence_packet=evidence_packet,
+                )
+                if ok:
+                    pending_file.unlink(missing_ok=True)
+                    # 采纳结果写入当前请求的 lifecycle 缓存: 同 req 重派时可直接回放,
+                    # 不会对 AGY 重复咨询 (与 completed() 语义一致)。
+                    checkpoint("COMPLETED", result={"verdict": resp.verdict, "answer": resp.text, "payload": resp.payload})
+                    log(f"L2 RECOVER 上一在途请求 {old_req} 已被回答，采纳其裁决并清理在途标记")
+                    return L2Result(resp.verdict, resp.text, log_path, payload=resp.payload)
+                log(f"L2 RECOVER 旧答案协议校验未通过 ({reason})，视为过期证据")
+            t_path = get_agy_brain_dir() / old_cid / ".system_generated" / "logs" / "transcript.jsonl"
+            try:
+                stale_sec = (time.time() - t_path.stat().st_mtime) if t_path.exists() else float("inf")
+            except OSError:
+                stale_sec = float("inf")
+            if stale_sec < PENDING_RECOVERY_STALE_SEC:
+                return L2Result("NO-VERDICT", f"原AGY请求({old_req})仍在途且会话转录活跃，继续观察", log_path)
+            log(f"L2 RECOVER 旧在途请求 {old_req} 的会话已死亡 (转录停滞 {stale_sec:.0f}s)，解绑并清理后按新请求继续")
+            if codex_sid and codex_sid != "unknown":
+                unbind_agy_conversation_for_codex(codex_sid, run_dir=run_dir)
+            if conv_holder is not None and getattr(conv_holder, "_agy_cid", None) == old_cid:
+                conv_holder._agy_cid = None
+                conv_holder._agy_port = None
+            if agy_mgr is not None and agy_mgr.cid == old_cid:
+                agy_mgr.cid = None
+                agy_mgr.port = None
+            pending_file.unlink(missing_ok=True)
+            pending = {}
+            cid = None  # 死会话不得复用, 转入 new-conversation 建新会话
     polling_pending = bool(pending and pending.get("request_id") == req_id and cid)
     if pending and not pending.get("cid"):
         try:
@@ -326,6 +379,10 @@ def run_l2_antigravity(
         env["ANTIGRAVITY_PROJECT_ID"] = project_id
     last_err = ""
     active_cid = None
+    # 投递簿记 (write-ahead): 本轮是否写入过 SENDING 挂起标记、是否向既有会话
+    # 发送过消息。决定尾部清理时 pending 文件的去留 (不确定投递绝不删除标记)。
+    pending_written = False
+    sent_existing_cid = False
 
     for attempt, port in enumerate(ports, 1):
         env["ANTIGRAVITY_LS_ADDRESS"] = f"127.0.0.1:{port}"
@@ -363,6 +420,8 @@ def run_l2_antigravity(
                 r = subprocess.CompletedProcess([], 0, stdout=b"{}", stderr=b"")
             else:
                 atomic_json(pending_file, {"request_id": req_id, "cid": cid or "", "initial_line_count": initial_line_count, "phase": "SENDING"})
+                pending_written = True
+                sent_existing_cid = bool(cid)
                 no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
                 if cid:
                     r = subprocess.run(
@@ -399,6 +458,11 @@ def run_l2_antigravity(
             stale = (cid and ("not found" in out.lower() or "invalid" in out.lower() or "no such" in out.lower()))
             if stale:
                 last_err = "原AGY会话不可访问；保留绑定，不自动新建: " + out[:200]
+                # 会话已被删除 = 可证明未送达, 在途标记就地清理 (绑定保留待人工/上层处理)。
+                # 同时复位投递标记, 防止尾部清理又把它改写回 UNCERTAIN。
+                if pending_written and not polling_pending:
+                    pending_file.unlink(missing_ok=True)
+                    sent_existing_cid = False
                 break
             if not cid and transient and attempt < len(ports):
                 log(f"L2 WARN   端口 {port} 握手失败 ({last_err[:80]})，尝试备用端口...")
@@ -592,12 +656,16 @@ def run_l2_antigravity(
             last_err = "verdict超时未出现"
         break
 
-    if not active_cid and not polling_pending:
-        if pending_file.exists():
-            try:
-                pending_file.unlink()
-            except OSError:
-                pass
+    if not active_cid and not polling_pending and pending_written:
+        if sent_existing_cid:
+            # 不确定投递 (超时/发送后错误): 消息可能已进入会话, 绝不删除写前标记——
+            # 保留为 UNCERTAIN, 下一轮经异主挂起恢复路径续观察或解绑, 杜绝并发双发。
+            atomic_json(pending_file, {"request_id": req_id, "cid": cid or "",
+                                       "initial_line_count": initial_line_count, "phase": "UNCERTAIN"})
+            log("L2 WARN   投递结果不确定，在途标记保留为 UNCERTAIN，交由下一轮恢复路径续观察")
+        else:
+            # new-conversation 失败且未取得会话 ID: 未产生可观察的会话, 安全清理
+            pending_file.unlink(missing_ok=True)
 
     with open(log_path, "ab") as f:
         f.write(f"\n[L2-ANTIGRAVITY-FAIL] {last_err}\n".encode("utf-8", errors="replace"))
@@ -625,6 +693,8 @@ def run_l2_agent(l2_cmd: str, run_dir: Path, prompt: str, n: int, proxy: Optiona
             env["HTTPS_PROXY"] = proxy
             env["HTTP_PROXY"] = proxy
     args = ["cmd.exe", "/c", *parts, "-p"]
+    from afk_supervisor.platform.process import ensure_cmd_arg_safe
+    ensure_cmd_arg_safe(parts + ["-p"], context=f"l2 agent {parts[0] if parts else ''}")
     ws = get_workspace_root()
     process_error = ""
     no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)

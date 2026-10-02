@@ -93,6 +93,78 @@ class TransportRegressions(DebugFixture):
         self.assertEqual(request_file.read_bytes(), original)
         self.assertEqual(self.bridge.call_count, 1)
 
+    def test_uncertain_delivery_keeps_pending_marker_for_next_round(self):
+        """发送超时 = 投递不确定: pending 标记必须保留 (UNCERTAIN), 下一轮转入
+        续观察; 绝不能删除标记后换新 request_id 并发双发。"""
+        self.bridge.side_effect = subprocess.TimeoutExpired(cmd="agentapi", timeout=5)
+        result, _ = self.call_agy()
+        self.assertEqual(result.verdict, "NO-VERDICT")
+        pending = json.loads((self.run / "agy_pending_request.json").read_text(encoding="utf-8"))
+        self.assertEqual(pending["phase"], "UNCERTAIN")
+        self.assertEqual(pending["request_id"], "req-transport")
+        self.assertEqual(self.bridge.call_count, 1)
+
+        # 同一请求的下一轮: 转入续观察 (轮询), 绝不再向 AGY 发送任何消息
+        self.bridge.side_effect = AssertionError("uncertain delivery must never resend")
+        self.reader.return_value = None
+        result2, _ = self.call_agy()
+        self.assertEqual(result2.verdict, "NO-VERDICT")
+        self.assertEqual(self.bridge.call_count, 1, "续观察轮次不得新增任何发送 (call_count 含首轮超时那一次)")
+
+    def test_foreign_pending_with_answer_is_adopted_not_wedged(self):
+        """异主在途挂起 + 旧请求已被回答: 必须采纳裁决并清理标记 (历史缺陷: 一律
+        硬拒 NO-VERDICT, 任务被过期 pending 永久卡死且跨重启存活)。"""
+        from afk_supervisor.models import AgyResponseResult
+
+        old_payload = self.payload(self.evidence)
+        old_payload["request_id"] = "req-old-round"
+        self.evidence.request_id = "req-transport"
+        (self.run / "agy_pending_request.json").write_text(json.dumps({
+            "request_id": "req-old-round", "cid": "fake-agy",
+            "initial_line_count": 0, "phase": "SENT",
+        }), encoding="utf-8")
+        with patch.object(transport, "read_agy_latest_response",
+                          return_value=AgyResponseResult("PASS", json.dumps(old_payload), payload=old_payload)):
+            result, _ = self.call_agy()
+        self.assertEqual(result.verdict, "PASS")
+        self.assertFalse((self.run / "agy_pending_request.json").exists(), "采纳后必须清理在途标记")
+        self.assertEqual(self.bridge.call_count, 0, "采纳旧答案后绝不再发送新请求")
+
+    def test_foreign_pending_with_dead_conversation_unbinds_and_proceeds(self):
+        """异主在途挂起 + 会话转录长期停滞: 解绑清理后按新请求继续, 不卡死。"""
+        (self.run / "agy_pending_request.json").write_text(json.dumps({
+            "request_id": "req-old-round", "cid": "dead-agy",
+            "initial_line_count": 0, "phase": "SENT",
+        }), encoding="utf-8")
+        stale_brain = self.root / "stale-brain"
+        conv_dir = stale_brain / "dead-agy" / ".system_generated" / "logs"
+        conv_dir.mkdir(parents=True)
+        transcript = conv_dir / "transcript.jsonl"
+        transcript.write_text("{}", encoding="utf-8")
+        import os as _os
+        past = self.clock.time() - 10_000
+        _os.utime(transcript, (past, past))
+        with patch.object(transport, "get_agy_brain_dir", return_value=stale_brain):
+            result, _ = self.call_agy()
+        self.assertEqual(result.verdict, "PASS", "死亡会话解绑后应按新请求正常完成")
+        self.assertFalse((self.run / "agy_pending_request.json").exists())
+
+    def test_foreign_pending_with_active_transcript_reports_in_flight(self):
+        """异主在途挂起 + 会话转录仍然活跃: 如实报告在途, 绝不并发发送。"""
+        (self.run / "agy_pending_request.json").write_text(json.dumps({
+            "request_id": "req-old-round", "cid": "busy-agy",
+            "initial_line_count": 0, "phase": "SENT",
+        }), encoding="utf-8")
+        fresh_brain = self.root / "fresh-brain"
+        conv_dir = fresh_brain / "busy-agy" / ".system_generated" / "logs"
+        conv_dir.mkdir(parents=True)
+        (conv_dir / "transcript.jsonl").write_text("{}", encoding="utf-8")
+        with patch.object(transport, "get_agy_brain_dir", return_value=fresh_brain):
+            result, _ = self.call_agy()
+        self.assertEqual(result.verdict, "NO-VERDICT")
+        self.assertIn("仍在途", result.answer)
+        self.assertEqual(self.bridge.call_count, 0, "会话活跃时绝不允许并发发送")
+
     def test_corrupt_pending_pointer_never_crashes_or_double_sends(self):
         """损坏的挂起指针必须走结构化 PROTOCOL_ERROR, 绝不能 AttributeError 炸整轮 L2,
         也绝不能被当作"无在途请求"而对同一 AGY 会话并发双发。"""

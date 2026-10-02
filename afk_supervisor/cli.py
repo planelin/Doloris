@@ -426,7 +426,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         prompt_path.write_text("继续\n", encoding="utf-8")
     else:
         prompt_path.write_text(
-            task_md.read_text(encoding="utf-8") +
+            # errors="replace": GBK/ANSI 编码的任务书 (记事本旧默认) 在此处直接
+            # UnicodeDecodeError 会裸崩启动, 降级可读远好于起不来。
+            task_md.read_text(encoding="utf-8", errors="replace") +
             "\n\n[运行约束] 产物改动只通过文件读取/创建/编辑工具完成；需要自测时可执行只读的"
             "构建/测试/语法检查命令, 严禁破坏性命令与改动用户环境。"
             "遇到需要用户决策的问题时, 结束回合并在最终消息以【决策请求】开头, "
@@ -651,6 +653,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     # 供应商 relay 池在组合根一次性读取, 依赖注入给 coordinator/l2 (避免 l2 反向依赖 drivers)
     relay_pool = (get_relay_pool("claude-desktop")
                   if (args.l2_cmd or "").strip().lower().startswith("claude") else None)
+    supervision_started_at = time.time()  # 验收新鲜度兜底锚点 (driver 未 spawn 时)
     coordinator = SupervisorCoordinator(
         run_dir=run_dir,
         workspace_root=ws_path,
@@ -672,7 +675,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                                     selftest_12ch=args.selftest_12ch)
         last_msg = custom_last_msg if custom_last_msg is not None else worker_last_message(run_dir)
         if not min_mtime and getattr(driver, "jsonl", None) and driver.jsonl.exists():
-            min_mtime = driver.jsonl.stat().st_ctime - 120
+            # 新鲜度锚点用"本回合起点" (最近一次 spawn), 严禁用 st_ctime —— NTFS 上
+            # 那是创建时间, 旧会话的历史清单会全部绕过新鲜度门槛。
+            turn_anchor = getattr(driver, "turn_started_at", 0.0) or supervision_started_at
+            min_mtime = turn_anchor
         return check_acceptance_natural(ws_path, last_msg, min_mtime=min_mtime, title=title_str or title)
 
     if adopt_mode == "goal":

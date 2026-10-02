@@ -92,7 +92,12 @@ def generate_final_report(
     lines.append("")
 
     report_content = "\n".join(lines)
-    report_file.write_text(report_content, encoding="utf-8")
-    log(f"REPORT   {report_file}")
-    send_terminal_notification(state, detail, report_file, title=title)
+    try:
+        report_file.write_text(report_content, encoding="utf-8")
+        log(f"REPORT   {report_file}")
+    except OSError as exc:
+        # 终态已经落盘 (state transition), 报告写失败 (文件被占用/磁盘满) 绝不能
+        # 把进程带崩成 traceback + 非零退出; 通知仍要送达。
+        log(f"WARN    报告写盘失败: {type(exc).__name__}: {exc}")
+    send_terminal_notification(state, detail, report_file if report_file.exists() else None, title=title)
     return report_file

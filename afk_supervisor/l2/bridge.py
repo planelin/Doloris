@@ -243,6 +243,11 @@ def parse_verdict_from_text(
 def read_agy_latest_response(cid: str, min_line_idx: int = 0, request_id: Optional[str] = None) -> Optional[AgyResponseResult]:
     """直接从 AGY 本地转录日志 (transcript.jsonl) 中读取最新的 PLANNER_RESPONSE。
     仅检索大于等于 min_line_idx 偏移量的新增记录，并根据 request_id 校验匹配。
+
+    旧轮响应拒绝 (position binding): 我们的请求注入会以 USER_INPUT/USER_EXPLICIT
+    或 SYSTEM_MESSAGE 落盘且携带 request_id; 只有出现在该输入行**之后**的
+    PLANNER_RESPONSE 才可能是对本请求的回答。否则上一轮迟到完成的回答会被
+    误认成当前轮裁决。无法定位输入行时, 退化为要求响应内容回带 request_id。
     """
     if not cid:
         return None
@@ -256,15 +261,17 @@ def read_agy_latest_response(cid: str, min_line_idx: int = 0, request_id: Option
             return None
         new_lines = lines[min_line_idx:]
 
-        has_req_input = True
+        our_input_idx = -1
         if request_id:
-            has_req_input = any(
-                request_id in line for line in new_lines
-                if ('"USER_INPUT"' in line or '"USER_EXPLICIT"' in line)
-            )
+            for idx, line in enumerate(new_lines):
+                if request_id in line and any(
+                    marker in line for marker in ('"USER_INPUT"', '"USER_EXPLICIT"', '"SYSTEM_MESSAGE"')
+                ):
+                    our_input_idx = idx
+                    break
 
-        for line in reversed(new_lines):
-            line = line.strip()
+        for idx in range(len(new_lines) - 1, -1, -1):
+            line = new_lines[idx].strip()
             if not line.startswith("{"):
                 continue
             try:
@@ -276,12 +283,20 @@ def read_agy_latest_response(cid: str, min_line_idx: int = 0, request_id: Option
                 and obj.get("content", "").strip()
                 and not obj.get("tool_calls")):
                 content = obj.get("content", "").strip()
-                if request_id and not has_req_input and request_id not in content:
-                    continue
+                if request_id:
+                    if our_input_idx >= 0 and idx <= our_input_idx:
+                        # 输入行之前(含)的响应属于更早的轮次, 不可采信
+                        continue
+                    if our_input_idx < 0 and request_id not in content:
+                        continue
                 payload = extract_protocol_json(content)
                 if payload:
                     v = str(payload.get("verdict", "NO-VERDICT")).upper()
                     return AgyResponseResult(v, content, payload=payload)
+                # 非协议裁决: 位置绑定成功 (响应严格位于我们输入行之后) 时直接采信;
+                # 仅在无法定位输入行的回退模式下才要求 request_id 回声 (fail-closed)。
+                if request_id and our_input_idx < 0 and request_id not in content:
+                    continue
                 v = parse_verdict_from_text(content)
                 if v != "NO-VERDICT":
                     return AgyResponseResult(v, content, payload=None)

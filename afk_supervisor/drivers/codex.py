@@ -34,6 +34,7 @@ class CodexDriver:
         self._last_activity_time: float = 0.0
         self._last_rollout_size: int = -1
         self._last_stdout_size: int = -1
+        self.turn_started_at: float = 0.0  # 最近一次 spawn 的时刻 (验收新鲜度锚点)
 
     def _close_handles(self):
         for h in getattr(self, "_open_handles", []):
@@ -63,6 +64,9 @@ class CodexDriver:
         return True
 
     def _spawn_once(self, args: List[str], stdin_path: Path):
+        from afk_supervisor.platform.process import ensure_cmd_arg_safe
+        ensure_cmd_arg_safe(["codex", *args], context="codex worker")
+        self.turn_started_at = time.time()  # 本回合起点: 验收新鲜度锚点 (min_mtime)
         self._close_handles()
         stdout_file = self.run_dir / "worker-stdout.log"
         self.last_stdout_offset = stdout_file.stat().st_size if stdout_file.exists() else 0

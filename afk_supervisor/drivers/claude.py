@@ -125,6 +125,7 @@ class ClaudeDriver:
         self._last_activity_time: float = 0.0
         self._last_rollout_size: int = -1
         self._last_stdout_size: int = -1
+        self.turn_started_at: float = 0.0  # 最近一次 spawn 的时刻 (验收新鲜度锚点)
 
     def _close_handles(self):
         for h in getattr(self, "_open_handles", []):
@@ -152,6 +153,9 @@ class ClaudeDriver:
         return self.provider_name
 
     def _spawn(self, args: List[str], stdin_path: Path):
+        from afk_supervisor.platform.process import ensure_cmd_arg_safe
+        ensure_cmd_arg_safe(["claude", *args], context="claude worker")
+        self.turn_started_at = time.time()  # 本回合起点: 验收新鲜度锚点 (min_mtime)
         self._close_handles()
         self._last_activity_time = 0.0
         self._last_rollout_size = -1

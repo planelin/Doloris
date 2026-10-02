@@ -568,8 +568,7 @@ class TestGoalEngine(unittest.TestCase):
         with patch("afk_supervisor.goal_engine.set_keep_awake"), \
              patch("afk_supervisor.goal_engine.extract_clean_goal_with_reason") as extract, \
              patch("afk_supervisor.goal_engine.find_best_codex_window") as window, \
-             patch("afk_supervisor.goal_engine.generate_final_report", return_value=self.run_dir / "report.md"), \
-             patch("afk_supervisor.goal_engine.send_terminal_notification"):
+             patch("afk_supervisor.goal_engine.generate_final_report", return_value=self.run_dir / "report.md"):
             result = run_goal_supervisor(
                 sid="sess-empty", rollout=rollout_file, scwd=str(self.run_dir),
                 title="空目标", args=args, run_dir=self.run_dir, goal_target="",
@@ -586,8 +585,7 @@ class TestGoalEngine(unittest.TestCase):
         with patch("afk_supervisor.goal_engine.set_keep_awake"), \
              patch("afk_supervisor.goal_engine.extract_goal_via_agy_agent", return_value=None), \
              patch("afk_supervisor.goal_engine.find_best_codex_window") as window, \
-             patch("afk_supervisor.goal_engine.generate_final_report", return_value=self.run_dir / "report.md"), \
-             patch("afk_supervisor.goal_engine.send_terminal_notification"):
+             patch("afk_supervisor.goal_engine.generate_final_report", return_value=self.run_dir / "report.md"):
             result = run_goal_supervisor(
                 sid="sess-agy-failed", rollout=rollout_file, scwd=str(self.run_dir),
                 title="简单了解本项目doloris作为一个长任务托管系统，目前我们暂时只改进goal模式，首先启动goal模式托管时，若未设定",
@@ -624,7 +622,9 @@ class TestGoalEngine(unittest.TestCase):
                         "type": "response_item",
                         "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "已全部完成所有需求与测试"}]}
                     }) + "\n")
-                    f.write(json.dumps({"type": "event_msg", "payload": {"type": "task_complete"}}) + "\n")
+                    # task_complete 必须按生产契约携带 last_agent_message (rollout.py:147);
+                    # 完工信号判定读取该字段而非正文, 夹具缺省曾掩盖阶段门短路 bug
+                    f.write(json.dumps({"type": "event_msg", "payload": {"type": "task_complete", "last_agent_message": "已全部完成所有需求与测试"}}) + "\n")
 
         with patch("afk_supervisor.goal_engine.find_best_codex_window", return_value=0), \
              patch("afk_supervisor.goal_engine.set_keep_awake"), \
@@ -648,6 +648,79 @@ class TestGoalEngine(unittest.TestCase):
             self.assertEqual(len(autopilot_events), 1)
             self.assertEqual(autopilot_events[0]["pause_type"], "proposed_plan")
             self.assertEqual(autopilot_events[0]["choice"], "请按计划执行")
+
+    def test_goal_rate_limit_has_consecutive_failure_breaker(self):
+        """历史 P1: goal 限流分支没有连续失败计数 (GUI 模式有 8 连击熔断),
+        配额耗尽时 sleep/注入 死循环永无出口。修复后连续 8 次限流如实 FAILED。"""
+        rollout_file = self.run_dir / "rollout_rl.jsonl"
+        rollout_file.write_text("", encoding="utf-8")
+
+        args = MagicMock()
+        args.max_run_sec = 0
+
+        tick = [0]
+        def append_rate_limited(*a, **kw):
+            tick[0] += 1
+            with open(rollout_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"type": "event_msg", "payload": {
+                    "type": "task_complete",
+                    "error": "unexpected status 429 rate limit exceeded"}}) + chr(10))
+
+        with patch("afk_supervisor.goal_engine.find_best_codex_window", return_value=0),              patch("afk_supervisor.goal_engine.set_keep_awake"),              patch("time.sleep", side_effect=append_rate_limited):
+            res = run_goal_supervisor(
+                sid="sess-rl",
+                rollout=rollout_file,
+                scwd=str(self.run_dir),
+                title="限流任务",
+                args=args,
+                run_dir=self.run_dir,
+                goal_target="__ALREADY_SET__",
+            )
+        self.assertNotEqual(res, 0)
+        report_content = (self.run_dir / "report.md").read_text(encoding="utf-8")
+        self.assertNotIn("SUCCESS", report_content)
+        self.assertIn("连续 8 次", report_content)
+        records = [json.loads(line) for line in
+                   (self.run_dir / "interventions.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+        backoffs = [r for r in records if r.get("event") == "RATE_LIMIT_BACKOFF"]
+        self.assertEqual(len(backoffs), 8, "8 连击熔断, 少一次都不该放弃")
+
+    def test_quiet_settle_in_non_executing_phase_never_succeeds(self):
+        """历史 P1: 谓词尾部 `or settle_quiet` 短路了阶段门 —— planning/not_set
+        阶段静默 8 秒即被判 SUCCESS。修复后: 非执行阶段静默完工必须注入"继续"
+        推进 (受 autopilot 上限约束), 达到上限时如实 FAILED, 绝不误报完成。"""
+        rollout_file = self.run_dir / "rollout_quiet.jsonl"
+        rollout_file.write_text(
+            json.dumps({"type": "event_msg", "payload": {"type": "task_complete",
+                                                          "last_agent_message": "正在继续推进任务。"}}) + "\n",
+            encoding="utf-8")
+
+        args = MagicMock()
+        args.max_run_sec = 0
+        args.max_interactions = 2  # autopilot 上限: 两次静默推进后如实失败
+
+        with patch("afk_supervisor.goal_engine.find_best_codex_window", return_value=0), \
+             patch("afk_supervisor.goal_engine.set_keep_awake"), \
+             patch("time.sleep"), \
+             patch("time.monotonic", side_effect=[100.0 + i * 5.0 for i in range(400)]):
+            res = run_goal_supervisor(
+                sid="sess-quiet",
+                rollout=rollout_file,
+                scwd=str(self.run_dir),
+                title="静默任务",
+                args=args,
+                run_dir=self.run_dir,
+                goal_target="__ALREADY_SET__",
+            )
+            self.assertNotEqual(res, 0)
+            report_content = (self.run_dir / "report.md").read_text(encoding="utf-8")
+            self.assertNotIn("SUCCESS", report_content)
+            self.assertIn("需人工介入", report_content)
+            records = [json.loads(line) for line in
+                       (self.run_dir / "interventions.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+            settles = [r for r in records if r.get("event") == "GOAL_AUTOPILOT"
+                       and r.get("pause_type") == "quiet_settle"]
+            self.assertEqual(len(settles), 2, "静默完工应被推进而非判成功")
 
     def test_paused_session_does_not_falsely_succeed(self):
         """核心防护测试：接管已暂停/打断的会话时，绝不误判为完成！"""
@@ -993,7 +1066,7 @@ class TestGoalEngine(unittest.TestCase):
                         "type": "response_item",
                         "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "已按深色科技感全部完成界面与单测"}]}
                     }) + "\n")
-                    f.write(json.dumps({"type": "event_msg", "payload": {"type": "task_complete"}}) + "\n")
+                    f.write(json.dumps({"type": "event_msg", "payload": {"type": "task_complete", "last_agent_message": "已按深色科技感全部完成界面与单测"}}) + "\n")
 
         with patch("afk_supervisor.goal_engine.find_best_codex_window", return_value=0), \
              patch("afk_supervisor.goal_engine.set_keep_awake"), \

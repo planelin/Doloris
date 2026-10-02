@@ -28,6 +28,30 @@ def munged_cwd(cwd: Path) -> str:
     return str(cwd).replace(":", "").replace("\\", "-").replace("_", "-")
 
 
+# cmd.exe /c 透传的危险元字符。& | < > ^ 在未加引号时是命令分隔符/转义符
+# (路径含 & 即命令注入); %VAR% 与 !var! (延迟展开开启时) 在引号内也会展开;
+# 双引号会被 list2cmdline 的反斜杠转义规则与 cmd 重解析歧义化 (NTFS 文件名本就禁用)。
+# 括号在普通 /c 命令行中无害 ("Program Files (x86)"), 不在防线内。
+_CMD_DANGEROUS_CHARS = set('&|<>^%!"')
+
+
+def ensure_cmd_arg_safe(args: List[str], context: str = "") -> None:
+    """cmd.exe /c 透传前的元字符防线: 命中即结构化快速失败。
+
+    经 cmd.exe 转发的参数会被 cmd 二次解析 (subprocess 只负责 list2cmdline 加
+    引号, 引不住 cmd 自身的展开/分隔语义)。合法却含这些字符的路径极其罕见,
+    宁可显式拒绝, 也绝不静默注入或损坏命令行。
+    """
+    for arg in args:
+        text = str(arg)
+        hit = "".join(sorted(set(text) & _CMD_DANGEROUS_CHARS))
+        if hit:
+            raise RuntimeError(
+                f"参数包含 cmd.exe 元字符 '{hit}'，拒绝经 cmd 转发以避免命令注入/损坏 "
+                f"(context={context or 'unspecified'}; arg={text[:80]})"
+            )
+
+
 STALE_LOCK_AGE_SEC = 30.0
 
 
@@ -117,32 +141,37 @@ class WorkspaceSupervisorLock:
             return "stale", 0, {}
         return "unknown", 0, {}
 
-    def _inspect_existing(self) -> Tuple[str, int, Dict[str, Any]]:
-        """返回 busy / stale / unknown / absent；只有能确认 pid 已死或文件足够旧才算 stale。"""
+    def _inspect_existing(self) -> Tuple[str, int, Dict[str, Any], str]:
+        """返回 (busy/stale/unknown/absent, pid, info, 原始文本)；只有能确认 pid 已死才算 stale。"""
         try:
             raw = self.lock_file.read_text(encoding="utf-8", errors="replace")
         except FileNotFoundError:
-            return "absent", 0, {}
+            return "absent", 0, {}, ""
         except OSError:
-            return "unknown", 0, {}
+            return "unknown", 0, {}, ""
         if not raw.strip():
-            return self._age_state()
+            age_state, _, _ = self._age_state()
+            return age_state, 0, {}, raw
         try:
             info = json.loads(raw)
         except ValueError:
-            return self._age_state()
+            age_state, _, _ = self._age_state()
+            return age_state, 0, {}, raw
         if not isinstance(info, dict):
-            return self._age_state()
+            age_state, _, _ = self._age_state()
+            return age_state, 0, {}, raw
         try:
             pid = int(info.get("pid") or 0)
         except (TypeError, ValueError):
-            return self._age_state()
+            age_state, _, _ = self._age_state()
+            return age_state, 0, {}, raw
         if pid <= 0:
-            return self._age_state()
+            age_state, _, _ = self._age_state()
+            return age_state, 0, {}, raw
         running_fn = get_sym("pid_is_running", pid_is_running)
         if running_fn(pid):
-            return "busy", pid, info
-        return "stale", pid, info
+            return "busy", pid, info, raw
+        return "stale", pid, info, raw
 
     def acquire(self) -> Tuple[bool, str]:
         self.lock_dir.mkdir(parents=True, exist_ok=True)
@@ -161,13 +190,26 @@ class WorkspaceSupervisorLock:
                 self.acquired = True
                 return True, ""
             except FileExistsError:
-                state, pid, info = self._inspect_existing()
+                state, pid, info, raw_snapshot = self._inspect_existing()
                 if state == "busy":
                     return False, (
                         f"工作区 {self.ws} 当前正被另一监管器实例占用 "
                         f"(PID {pid}, 模式 {info.get('mode')}, 会话 {str(info.get('sid', ''))[:8]})"
                     )
                 if state == "stale":
+                    # TOCTOU 防护: inspect 与 unlink 之间, 另一监管者可能已用
+                    # 自己的新锁替换了这份残留锁。删除前必须复核内容仍与快照
+                    # 一致 (同一死 PID 的同一份残留), 否则重新走检查流程。
+                    try:
+                        current = self.lock_file.read_text(encoding="utf-8", errors="replace")
+                    except FileNotFoundError:
+                        continue
+                    except OSError:
+                        time.sleep(0.15 * (attempt + 1))
+                        continue
+                    if current != raw_snapshot:
+                        log("LOCK     残留锁内容已变化 (另一实例可能已接管)，重新检查")
+                        continue
                     log(f"LOCK     检测到工作区残留废弃锁 (PID {pid or '?'} 已退出)，自动清理并接管")
                     try:
                         self.lock_file.unlink()

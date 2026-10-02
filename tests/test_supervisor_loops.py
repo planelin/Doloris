@@ -617,6 +617,45 @@ class SupervisorLoopRegressions(LoopFixture):
         self.assertEqual(self.state.retries, 3)
         inject.assert_not_called()
 
+    def test_gui_review_rounds_do_not_consume_interaction_budget(self):
+        """历史 P1: GUI 引擎把每个 REVIEW 轮次也计入交互预算 (无头引擎只对真实
+        交互计数) —— max_interactions=0 时第一个审查轮次就被误判 FAILED。
+        修复后审查轮次走独立计数, 交互预算只被 is_interaction_request 消耗。"""
+        self.args.max_interactions = 0
+        dispatch = Mock(return_value=L2Result("NO-VERDICT", "Bridge not connected", self.run / "l2.log"))
+        rc, inject = self.run_gui(dispatch=dispatch)
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.state.detail, "AGY主管通道连续三次异常 (NO-VERDICT)；不是等待人工决策")
+        self.assertEqual(self.state.interactions, 0, "审查轮次不得消耗交互预算")
+
+    def test_repair_channel_failure_resumes_worker_instead_of_orphan_outcome(self):
+        """REPAIR 咨询遇传输错误 (retry 路由) 时, outcome="repair" 必须进入有界恢复续跑。
+
+        历史 P0: 主循环恢复元组只认 ("crash","hang","early_exit"), 而 "early_exit"
+        从未被赋值 —— 一旦 outcome="repair" 无人消费, 循环带着已死 worker 空转,
+        直到总预算超时被误报为 TIMEOUT。"""
+        from afk_supervisor.actions import UnattendedL2
+
+        modes = []
+
+        def dispatch(*args, **kwargs):
+            modes.append(kwargs["mode"])
+            if len(modes) == 1:
+                payload = self.payload(kwargs["evidence_packet"], "FAIL", "switch_to_repair")
+                return L2Result("FAIL", json.dumps(payload), self.run / "l2.log", payload=payload)
+            return self.pass_dispatch(*args, **kwargs)
+
+        # consult_repair 直接返回传输错误结果 (NO-VERDICT -> repair_action -> "retry")
+        with patch.object(UnattendedL2, "consult_repair",
+                          return_value=("NO-VERDICT", "channel down", self.run / "l2.log", None)):
+            rc, driver = self.run_headless(dispatch=dispatch)
+        self.assertEqual(rc, 0)
+        self.assertEqual(modes, ["REVIEW", "REVIEW"])
+        self.assertEqual(len(driver.calls), 2, "repair 通道故障后必须恢复续跑 worker")
+        self.assertEqual(self.state.resumes, 1)
+        resume_waits = [e for e in self.events if e[0] == "RESUME_WAIT"]
+        self.assertTrue(resume_waits and resume_waits[0][1].get("reason") == "repair")
+
     def test_headless_callback_exception_reports_failure_and_releases_resources(self):
         def dispatch(*args, **kwargs):
             raise OSError("Simulated dispatch exception")

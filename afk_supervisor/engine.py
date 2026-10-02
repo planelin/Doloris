@@ -398,7 +398,9 @@ def run_headless_supervisor(
                 continue
 
             # --- 异常续跑与供应商轮换 ---
-            if outcome in ("crash", "hang", "early_exit"):
+            # "repair": REPAIR 咨询遇传输失败 (retry 路由) 时 worker 已死, 必须走
+            # 有界恢复续跑, 否则 outcome 无人消费会空转到总超时 (历史 P0)。
+            if outcome in ("crash", "hang", "repair"):
                 if resumes >= recovery_limit:
                     l2_enabled = l2_cmd and l2_cmd.lower() not in ("off", "none")
                     if l2_enabled and l2_calls < getattr(args, "l2_max", 2):

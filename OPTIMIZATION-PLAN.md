@@ -5,12 +5,12 @@
 
 ## Batch 0 — 卫生与提交基线
 - [x] 写入本计划文档
-- [ ] 删除 build/ dist/ doloris.egg-info/（陈旧构建副本）
-- [ ] 删除根目录遗留测试副本 work-livetest/（保留 work/work-livetest/ 运行证据）
-- [ ] 提交 1: feat: core/log 第0层包（inert）
-- [ ] 提交 2: fix+refactor: P0/P1 正确性批次与分层重构（含全部测试，508/508 状态）
-- [ ] 提交 3: chore: 移除跟踪的运行产物 + .gitignore 补全
-- [ ] 提交后全量沙箱确认绿
+- [x] 删除 build/ dist/ doloris.egg-info/（陈旧构建副本）
+- [x] 删除根目录遗留测试副本 work-livetest/（保留 work/work-livetest/ 运行证据）
+- [x] 提交 1: feat: core/log 第0层包（inert）
+- [x] 提交 2: fix+refactor: P0/P1 正确性批次与分层重构（含全部测试，508/508 状态；计划中的 a/b 合并——两者在 cli/coordinator/transport 内交织，拆分会产生不可导入的中间提交）
+- [x] 提交 3: chore: 移除跟踪的运行产物 + .gitignore 补全（+livetest 夹具入库、work*/ 忽略）
+- [x] 提交后全量沙箱确认绿（508/508 + ruff 通过）
 
 ## Batch 1 — 正确性修复 10 项（逐项先写回归测试）
 - [ ] 1. engine.py:401 恢复元组加 "repair"，移除死值 "early_exit"（L2 抖动 → 死循环的 P0）

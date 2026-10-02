@@ -69,6 +69,7 @@ def run_gui_supervisor(
     l2_cmd = None if args.l2_cmd.strip().lower() in ("off", "none") else args.l2_cmd
     max_interactions = args.max_interactions
     interactions = 0
+    review_rounds = 0
     injections = 0
     l2_channel_failures = 0
     consecutive_rate_limits = 0
@@ -121,6 +122,7 @@ def run_gui_supervisor(
 
     heartbeat_path = Path(rollout) if rollout else None
     loop_start = time.monotonic()
+    supervision_started_wall = time.time()  # 验收新鲜度锚点 (wall clock)
     last_heartbeat = loop_start
     # 最近一次注入回执 (含身份探针结论)：心跳与终局报告都要带上它，
     # 否则权限/可访问性树这类基础设施失败只能表现为"接管后无反应"。
@@ -310,16 +312,21 @@ def run_gui_supervisor(
             inject_kind = "Worker continuation"
             action_type = ActionType.WORKER_INSTRUCTION
             if l2_cmd:
-                interactions += 1
-                if interactions > max_interactions:
-                    return finish("FAILED", f"交互请示超过上限({interactions}次)")
                 from afk_supervisor.acceptance import is_interaction_request
                 if is_interaction_request(last_msg):
+                    # 交互预算只对真实交互请求计数 (与无头引擎语义对齐): 历史缺陷
+                    # 是每个 REVIEW 轮次也 +1, 健康任务跑满 30 轮即被误判 FAILED。
+                    interactions += 1
+                    if interactions > max_interactions:
+                        return finish("FAILED", f"交互请示超过上限({interactions}次)")
+                    consult_round = interactions
                     inject_text, payload, action_type = l2_gate.decide(last_msg, interactions)
                     inject_kind = "AGY主管决策"
                 else:
+                    review_rounds += 1
+                    consult_round = review_rounds
                     verdict, answer, l2_log, payload = coordinator.handle_turn_review(
-                        last_msg, interactions, driver=driver, session_cwd=scwd, verify_fn=verify_fn)
+                        last_msg, review_rounds, driver=driver, session_cwd=scwd, verify_fn=verify_fn)
                     if budget.is_expired():
                         return finish("TIMEOUT", "L2审查期间达到总时长上限")
                     ivl("L2_ANSWER", verdict=verdict, answer=answer[:150], log=str(l2_log))
@@ -347,11 +354,11 @@ def run_gui_supervisor(
                             inject_text = clean_l2_decision_text(text)
                             action_type = payload["next_action"]["type"]
                         else:
-                            inject_text, payload, action_type = l2_gate.decide(text, interactions)
+                            inject_text, payload, action_type = l2_gate.decide(text, consult_round)
                         inject_kind = "AGY修复替代方案"
                     elif verdict == "DEFER" or action_type == ActionType.REQUEST_USER:
                         inject_text, payload, action_type = l2_gate.decide(
-                            "审查返回旧式转人工结果，请决定可执行步骤或有依据地停止。\n" + answer, interactions)
+                            "审查返回旧式转人工结果，请决定可执行步骤或有依据地停止。\n" + answer, consult_round)
                         inject_kind = "AGY重新决策"
                     elif verdict in ("PASS", "COMPLETED"):
                         ok, detail, review_again = coordinator.check_completion(last_msg, payload, verify_fn)
@@ -371,9 +378,12 @@ def run_gui_supervisor(
                         inject_text = clean_l2_decision_text(action.get("instructions") or answer)
                     else:
                         inject_text, payload, action_type = l2_gate.decide(
-                            "审查未提供有效工作指令，请决定后续步骤。\n" + answer, interactions)
+                            "审查未提供有效工作指令，请决定后续步骤。\n" + answer, consult_round)
             else:
-                ok, detail = verify_fn(custom_last_msg=last_msg, min_mtime=p_roll.stat().st_ctime - 120)
+                # 新鲜度锚点用监管启动时刻 (GUI 模式 driver 不 spawn, 无回合起点):
+                # 严禁用 st_ctime —— NTFS 上是创建时间, 被接管的旧会话历史清单
+                # 会全部绕过新鲜度门槛。
+                ok, detail = verify_fn(custom_last_msg=last_msg, min_mtime=supervision_started_wall)
                 if is_working_fn(p_roll)[0] or file_size(p_roll) != observed_offset:
                     continue
                 if ok:

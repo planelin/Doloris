@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from afk_supervisor.platform.gui import find_best_codex_window, inject_into_codex_gui
 from afk_supervisor.platform.process import WorkspaceSupervisorLock, log
 from afk_supervisor.platform.windows import set_keep_awake
-from afk_supervisor.reporting import generate_final_report, send_terminal_notification
+from afk_supervisor.reporting import generate_final_report
 from afk_supervisor.sessions.rollout import (
     codex_session_state,
     is_codex_working,
@@ -1321,7 +1321,7 @@ def run_goal_supervisor(
         set_keep_awake(enable=False)
         ivl("TERMINAL", state=status, detail=detail)
         state_mgr.transition(status, detail=detail)
-        report_path = generate_final_report(
+        generate_final_report(
             run_dir=run_dir,
             state=status,
             detail=detail,
@@ -1334,7 +1334,8 @@ def run_goal_supervisor(
             ivl_path=ivl_path,
             title=title,
         )
-        send_terminal_notification(status, detail, report_path, title=title)
+        # generate_final_report 内部已发送终态 webhook; 此前这里再次显式发送,
+        # 造成 goal 模式每个终态收到两条通知 (其余引擎均只发一次)。
         if ws_lock:
             try:
                 ws_lock.release()
@@ -1455,6 +1456,7 @@ def run_goal_supervisor(
 
     last_autopilot_choice = ""
     last_autopilot_time = 0.0
+    consecutive_rate_limits = 0
     autopilot_count = 0
     raw_mi = getattr(args, "max_interactions", 30)
     try:
@@ -1542,10 +1544,23 @@ def run_goal_supervisor(
                 if snapshot.get("is_rate_limited"):
                     err_msg = snapshot.get("turn_error_message") or "Codex API 速率受限或网络偶发异常"
                     retry_wait = max(5.0, snapshot.get("retry_delay_sec") or 25.0)
-                    log(f"[WARN] GOAL RATE_LIMIT 检测到 Codex API 速率受限/偶发网络故障: {err_msg}")
+                    # 熔断: 连续 8 次限流 (对齐 GUI 模式) 说明配额/网络实质性故障,
+                    # sleep→注入 死循环只会空转烧日志; 如实失败保存现场。
+                    consecutive_rate_limits += 1
+                    log(f"[WARN] GOAL RATE_LIMIT 检测到 Codex API 速率受限/偶发网络故障 ({consecutive_rate_limits}/8): {err_msg}")
+                    ivl("RATE_LIMIT_BACKOFF", error=err_msg[:200], retry_wait_sec=retry_wait,
+                        consecutive=consecutive_rate_limits)
+                    if consecutive_rate_limits >= 8:
+                        return finish_goal("FAILED", f"速率受限/网络故障连续 {consecutive_rate_limits} 次未恢复: {err_msg[:120]}")
                     log(f"[WAIT] 触发防雪崩熔断避让，冷却等待 {retry_wait:.0f}s 后自动注入恢复指令...")
-                    ivl("RATE_LIMIT_BACKOFF", error=err_msg[:200], retry_wait_sec=retry_wait)
-                    time.sleep(retry_wait)
+                    # 有界睡眠: 与总预算对账, 不允许一次 sleep 绕过 max_run_sec 检查
+                    remaining_wait = retry_wait
+                    while remaining_wait > 0:
+                        if max_run_sec > 0 and (time.monotonic() - start_time) > max_run_sec:
+                            return finish_goal("TIMEOUT", "限流避让期间达到总时长上限")
+                        slice_sec = min(remaining_wait, 10.0)
+                        time.sleep(slice_sec)
+                        remaining_wait -= slice_sec
                     target_hwnd = target_hwnd or find_best_codex_window()
                     if target_hwnd > 0:
                         inject_res = inject_into_codex_gui(
@@ -1559,6 +1574,8 @@ def run_goal_supervisor(
                     time.sleep(check_interval)
                     continue
 
+                # 本 tick 未限流 = 已恢复, 熔断计数清零 (放在限流分支之后)
+                consecutive_rate_limits = 0
                 pause_info = analyze_goal_pause(rollout)
 
                 # 分支 1：模型暂停需要审批计划或选择推荐项 -> 自动注入决策推进
@@ -1647,11 +1664,41 @@ def run_goal_supervisor(
                     is_done_signal = any(sig in (last_msg or "") for sig in DONE_SIGNALS)
                     settle_quiet = (time.monotonic() - last_change_time) >= 8.0
 
-                    # 在 executing 阶段或有明确完工信号时，判定 Goal 顺利达成
-                    if is_done_signal or (current_phase == "executing" and settle_quiet) or settle_quiet:
+                    # 严密闸门: 只有明确完工信号, 或 executing 阶段静默确认才判 SUCCESS。
+                    # 历史缺陷: 旧谓词末尾的 `or settle_quiet` 短路了阶段门, planning
+                    # 阶段安静 8 秒即被误判目标达成 (P1 回归: goal SUCCESS 谓词)。
+                    if is_done_signal or (current_phase == "executing" and settle_quiet):
                         log("GOAL_COMPLETED 确认 Goal 目标任务已顺利完成！")
                         ivl("GOAL_COMPLETED", reason=reason, phase=current_phase, last_message=(last_msg[:100] if last_msg else ""))
                         return finish_goal("SUCCESS", f"Goal 目标任务已圆满完成 ({reason})")
+                    elif current_phase != "executing" and settle_quiet and (now_mono - last_autopilot_time) >= 15.0:
+                        # 非执行阶段的静默完工绝不等于完成: 注入续跑指令推进阶段,
+                        # 受 autopilot 冷却与上限约束, 与分支 1 同一套护栏。
+                        if autopilot_count >= max_autopilot:
+                            return finish_goal("FAILED", f"自主决策跟进已达上限 ({max_autopilot} 次)，需人工介入")
+                        log(f"GOAL_AUTOPILOT [{current_phase}] 回合静默完工但未达执行阶段，注入续跑推进...")
+                        ivl("GOAL_AUTOPILOT", phase=current_phase, pause_type="quiet_settle", choice="继续")
+                        target_hwnd = target_hwnd or find_best_codex_window()
+                        if target_hwnd > 0:
+                            inject_res = inject_into_codex_gui(
+                                target_hwnd=target_hwnd,
+                                target_sid=sid,
+                                target_title=title,
+                                text="继续",
+                                rollout_path=rollout,
+                            )
+                            ivl("GOAL_INJECT_DECISION", status=inject_res.status, detail=inject_res.detail, choice="继续")
+                            log(f"GOAL_INJECT_DECISION 注入回执: {inject_res.status} ({inject_res.detail})")
+                        else:
+                            log("GOAL_AUTOPILOT [模拟/未激活窗口] 记录续跑决策: 继续")
+                            ivl("GOAL_INJECT_DECISION", status="RECORDED", detail="桌面端窗口未激活", choice="继续")
+                        last_autopilot_choice = "继续"
+                        last_autopilot_time = time.monotonic()
+                        autopilot_count += 1
+                        last_change_time = time.monotonic()
+                        settle_logged = False
+                        time.sleep(check_interval)
+                        continue
                     else:
                         if not settle_logged:
                             log(f"GOAL_SETTLE [{current_phase}] 回合已停止，等待静默确认以杜绝中间状态误判...")

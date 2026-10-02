@@ -341,7 +341,7 @@ class StorageDurabilityRegressions(unittest.TestCase):
             with self.assertRaises(PermissionError):
                 atomic_json(self.target, {"state": "SUCCESS"})
 
-        self.assertEqual(replace.call_count, 4)
+        self.assertEqual(replace.call_count, 8)
         self.assertFalse(self.target.exists())
         self.assertEqual(list(self.root.glob("*.tmp.*")), [], "重试失败后不得残留临时文件")
 

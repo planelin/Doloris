@@ -81,6 +81,8 @@ def command_accepted(events, command, *, allow_turn_start=False):
 
 def observe_worker(state, driver):
     path = getattr(driver, "jsonl", None)
+    prev_snapshot = (state.event_path, state.event_offset,
+                     state.dispatch_stdout_offset, state.worker_rollout)
     if path:
         target = str(Path(path).resolve())
         if state.event_path != target:
@@ -103,6 +105,14 @@ def observe_worker(state, driver):
         accepted = True
     if accepted:
         state.acknowledge_command()
-    else:
-        state.save()
+    elif prev_snapshot != (state.event_path, state.event_offset,
+                           state.dispatch_stdout_offset, state.worker_rollout):
+        # 仅在偏移真实推进时落盘 (历史缺陷: 每 5s 无条件保存, 与杀毒扫描撞锁
+        # 即把健康 run 打成 FAILED)。保存失败为 best-effort: 保留内存偏移继续,
+        # 崩溃后重放的事件由 dispatch 去重兜底, 绝不会重复下发指令。
+        try:
+            state.save()
+        except OSError as exc:
+            from afk_supervisor.core.log import log
+            log(f"WARN    检查点保存失败 (保留内存偏移继续): {type(exc).__name__}: {exc}")
     return accepted

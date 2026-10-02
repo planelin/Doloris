@@ -80,5 +80,85 @@ class AgyBusyDetectionTests(unittest.TestCase):
         self.assertIn("视为工作中", reason)
 
 
+class ResponsePositionBindingTests(unittest.TestCase):
+    """read_agy_latest_response 的旧轮响应拒绝 (position binding)。
+
+    历史缺陷: 只要窗口内存在携带 request_id 的 USER_INPUT, 任何 DONE
+    PLANNER_RESPONSE 都会被采信 —— 包括上一轮迟到的回答。修复后只有
+    出现在我们输入行之后的响应才有效, 且非协议裁决必须回带 request_id。
+    """
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="afk-pos-test-")
+        self.addCleanup(self.temporary.cleanup)
+        self.brain = Path(self.temporary.name) / "brain"
+        self.cid = "cid-pos"
+        log_dir = self.brain / self.cid / ".system_generated" / "logs"
+        log_dir.mkdir(parents=True)
+        self.transcript = log_dir / "transcript.jsonl"
+
+    def write(self, *objs):
+        self.transcript.write_text(
+            "".join(json.dumps(o) + "\n" for o in objs), encoding="utf-8")
+        import os
+        past = time.time() - 30
+        os.utime(self.transcript, (past, past))
+
+    def read(self, request_id="req-cur", min_line_idx=0):
+        with patch.object(bridge, "get_agy_brain_dir", return_value=self.brain):
+            return bridge.read_agy_latest_response(self.cid, min_line_idx=min_line_idx, request_id=request_id)
+
+    def test_late_previous_round_answer_before_our_input_is_rejected(self):
+        """上一轮迟到的 DONE 回答位于我们的 USER_INPUT 之前: 绝不可采信。"""
+        self.write(
+            {"type": "PLANNER_RESPONSE", "status": "DONE", "content": "旧轮 PASS 裁决文本"},
+            {"type": "USER_INPUT", "status": "DONE", "content": "【本次请求ID: req-cur】新请求"},
+        )
+        self.assertIsNone(self.read(), "输入行之前的响应属于旧轮, 不可采信")
+
+    def test_response_after_our_input_is_accepted(self):
+        self.write(
+            {"type": "USER_INPUT", "status": "DONE", "content": "【本次请求ID: req-cur】新请求"},
+            {"type": "PLANNER_RESPONSE", "status": "DONE", "content": "已按指令完成本轮审查: PASS (req-cur)"},
+        )
+        result = self.read()
+        self.assertIsNotNone(result)
+
+    def test_system_message_injection_counts_as_our_input_marker(self):
+        """send-message 注入以 SYSTEM_MESSAGE 落盘 (实测 2026-10), 同样构成输入边界。"""
+        self.write(
+            {"type": "PLANNER_RESPONSE", "status": "DONE", "content": "旧轮裁决"},
+            {"type": "SYSTEM_MESSAGE", "status": "DONE", "content": "【本次请求ID: req-cur】注入请求"},
+        )
+        self.assertIsNone(self.read())
+
+    def test_nonprotocol_response_echo_required_only_in_fallback_mode(self):
+        """无法定位输入行 (回退模式) 时, 非协议裁决必须回带 request_id;
+        位置绑定成功时纯文本裁决无需回声 (位置即信任边界)。"""
+        # 回退模式: 窗口内没有我们的输入行
+        self.write({"type": "PLANNER_RESPONSE", "status": "DONE", "content": "PASS"})
+        self.assertIsNone(self.read(), "回退模式下无回声的非协议裁决不可采信")
+        self.write({"type": "PLANNER_RESPONSE", "status": "DONE", "content": "PASS (req-cur)"})
+        self.assertIsNotNone(self.read(), "带回声的非协议裁决应被接受")
+        # 位置绑定模式: 响应在输入行之后, 纯文本 PASS 无需回声
+        self.write(
+            {"type": "USER_INPUT", "status": "DONE", "content": "【本次请求ID: req-cur】新请求"},
+            {"type": "PLANNER_RESPONSE", "status": "DONE", "content": "PASS"},
+        )
+        self.assertIsNotNone(self.read(), "位置绑定成功后纯文本裁决无需回声")
+
+    def test_protocol_response_after_input_accepted_even_without_echo(self):
+        """协议载荷即使未回声也可接受 (下游有 expected_request_id 硬校验兜底)。"""
+        payload = {"protocol": "afk_agy_protocol_v1", "request_id": "req-other",
+                   "task_id": "t", "mode": "REVIEW", "reviewed_revision": "r",
+                   "verdict": "PASS", "criteria": [], "blockers": [],
+                   "next_action": {"type": "terminate_success", "instructions": ""}, "repairs": []}
+        self.write(
+            {"type": "USER_INPUT", "status": "DONE", "content": "【本次请求ID: req-cur】新请求"},
+            {"type": "PLANNER_RESPONSE", "status": "DONE", "content": "```json\n" + json.dumps(payload) + "\n```"},
+        )
+        self.assertIsNotNone(self.read())
+
+
 if __name__ == "__main__":
     unittest.main()
