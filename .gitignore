@@ -80,3 +80,7 @@ test_*.ps1
 
 .DS_Store
 Thumbs.db
+
+# Worker delivery dirs (runtime output of supervised runs)
+/work/
+/work-*/
