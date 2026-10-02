@@ -31,13 +31,13 @@
 - [x] 审查代理复核 diff → 全绿 → 提交
 
 ## Batch 2 — 验收门对抗性加固
-- [ ] 否定词全文优先扫描（acceptance.py:356-371）
-- [ ] checklist 逐行解析（剥围栏代码块）替换 5 处子串计数，统一 helper
-- [ ] evidence.py:386 status 由检查分支直接给
-- [ ] 协议收紧：PASS 须引显式 PASS 证据项 / REVIEW 空 revision 拒绝 / FAIL 须引 FAIL 判据 / blockers+repairs 过 FORBIDDEN / 删重复死检查
-- [ ] extract_protocol_json 多候选 fail-closed
-- [ ] redaction.py 补 ghp_/github_pat_/AKIA/AIza/连字符键名/Cookie/C:/Users
-- [ ] 审查代理复核 → 全绿 → 提交
+- [x] 否定词全文优先扫描（acceptance.py:356-371）
+- [x] checklist 逐行解析（剥围栏代码块）替换 5 处子串计数，统一 helper
+- [x] evidence.py:386 status 由检查分支直接给
+- [x] 协议收紧：PASS 须引显式 PASS 证据项 / REVIEW 空 revision 拒绝 / FAIL 须引 FAIL 判据 / blockers+repairs 过 FORBIDDEN / 删重复死检查
+- [x] extract_protocol_json 多候选 fail-closed
+- [x] redaction.py 补 ghp_/github_pat_/AKIA/AIza/连字符键名/Cookie/C:/Users
+- [x] 审查代理复核 → 全绿 → 提交
 
 ## Batch 3 — 性能
 - [ ] rollout 快照缓存 load_events(path,size,mtime_ns)；goal 4 个 loader 吃快照
