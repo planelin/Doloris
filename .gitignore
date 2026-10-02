@@ -18,8 +18,6 @@ __pycache__/
 *$py.class
 dist/
 build/
-*.egg-info/
-.venv/
 venv/
 env/
 
@@ -41,7 +39,6 @@ Desktop.ini
 *.sqlite-wal
 
 # Test caches & coverage
-.pytest_cache/
 .coverage
 htmlcov/
 
@@ -73,3 +70,13 @@ test_*.ps1
 *.bmp
 # Whitelist app assets
 !doloris_app/assets/*
+
+# Packaging & tooling caches
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+
+.DS_Store
+Thumbs.db
