@@ -257,8 +257,11 @@ class CoordinatorShadowIntegrationTests(unittest.TestCase):
 
     def test_shadow_mode_without_token_does_not_break_decide_flow(self):
         """未配置 Token 时 Jev 返回 CONFIG_ERROR; DECIDE 流程照常返回 AGY 结果。"""
-        with decision_mode("shadow"), patch("afk_supervisor.coordinator._dispatch_l2",
-                                            return_value=("PROCEED", "选择主题乙", self.run_dir / "l.log", None)):
+        env = dict(os.environ)
+        env.pop("DOLORIS_JEV_TOKEN", None)  # 宿主机可能全局配置了真实 Token, 测试必须显式隔离
+        with patch.dict(os.environ, env, clear=True), decision_mode("shadow"), \
+                patch("afk_supervisor.coordinator._dispatch_l2",
+                      return_value=("PROCEED", "选择主题乙", self.run_dir / "l.log", None)):
             result = self.make_coordinator().handle_interaction("【决策请求】选择主题", 3)
         self.assertEqual(result[0], "PROCEED")
         events = [e for e in self.audit_events() if e["event"] == "DECISION_HEAD_SHADOW"]

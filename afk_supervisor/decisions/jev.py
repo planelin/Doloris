@@ -15,6 +15,7 @@ import os
 import socket
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Tuple
@@ -95,15 +96,38 @@ class JevConfig:
         )
 
 
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
 def _endpoint_is_allowed(endpoint: str) -> bool:
-    lowered = endpoint.lower()
-    if lowered.startswith("https://"):
+    """端点白名单: https 一律允许; 明文 http 仅允许本地回环主机 (精确匹配)。
+
+    必须做结构化解析后比对主机名, 严禁前缀匹配——否则
+    http://localhost.attacker.com 或 http://localhost@attacker.com/
+    (userinfo 注入) 都能通过校验, 导致 Bearer Token 外泄。
+    """
+    if not isinstance(endpoint, str) or not endpoint.strip():
+        return False
+    try:
+        parts = urllib.parse.urlsplit(endpoint.strip())
+    except ValueError:
+        return False
+    if parts.scheme == "https":
         return True
-    # 明文 http 仅允许本地回环，便于未来本地模拟桥调试
-    for host in ("http://localhost", "http://127.0.0.1", "http://[::1]"):
-        if lowered.startswith(host):
-            return True
-    return False
+    if parts.scheme != "http" or not parts.hostname:
+        return False
+    # 回环端点绝无携带凭据的正当理由, 含 userinfo (localhost@attacker.com) 一律拒绝
+    if "@" in parts.netloc:
+        return False
+    # 畸形 netloc 防御: urlsplit 会把 [::1].evil.com 的主机名解析成 ::1,
+    # 因此要求 ']' 之后只能是空或 ':数字端口', 其余一律视为恶意/损坏。
+    if "]" in parts.netloc:
+        tail = parts.netloc.rsplit("]", 1)[1]
+        if tail and not (tail.startswith(":") and tail[1:].isdigit()):
+            return False
+    # urlsplit 已剥去 IPv6 方括号; 尾部根点 (localhost.) 归一化
+    hostname = parts.hostname.lower().rstrip(".")
+    return hostname in _LOOPBACK_HOSTS
 
 
 class JevProvider:

@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Tuple
 
 from afk_supervisor.models import ActionType, DeadlineBudget, delivery_result
+from afk_supervisor.drivers.dummy import DummyDriver
 from afk_supervisor.platform.gui import (
-    DummyDriver,
     ensure_codex_window_restored,
     inject_into_codex_gui,
 )
@@ -268,7 +268,13 @@ def run_gui_supervisor(
                 continue
 
             snapshot = codex_session_state(p_roll)
-            if snapshot.get("is_rate_limited"):
+            # 带错误结束且没有产出留言的回合不是合法审查点 (2026-09-27 教训:
+            # 402 配额耗尽把 turn 杀成 last_agent_message=null, 引擎却照常
+            # 发起 REVIEW)。与限流同路处理: 熔断避让后注入恢复指令。
+            errored_blank_turn = bool(
+                (snapshot.get("turn_error_message") or "").strip()
+            ) and not (snapshot.get("last_agent_message") or "").strip()
+            if snapshot.get("is_rate_limited") or errored_blank_turn:
                 err_msg = snapshot.get("turn_error_message") or "Codex API 速率受限或网络偶发异常"
                 retry_wait = max(5.0, snapshot.get("retry_delay_sec") or 25.0)
                 consecutive_rate_limits += 1

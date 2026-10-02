@@ -12,7 +12,6 @@ import json
 import os
 import re
 import subprocess
-import sys
 import time
 import uuid
 from datetime import datetime
@@ -20,15 +19,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from afk_supervisor.compat import get_sym
-
-
-def log(msg: str):
-    try:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
-    except (UnicodeEncodeError, OSError):
-        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
-        safe = msg.encode(enc, errors="replace").decode(enc, errors="replace")
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] {safe}", flush=True)
+# log 下沉到 core/log; 此处保留再导出以兼容既有 `platform.process import log` 调用方
+from afk_supervisor.core.log import log  # noqa: F401
 
 
 def munged_cwd(cwd: Path) -> str:

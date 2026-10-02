@@ -45,6 +45,7 @@ def probe_pool(pool: List[Tuple[str, dict]], proxy: Optional[str], keep: int = 3
         proc = subprocess.Popen(
             ["cmd.exe", "/c", "claude", "-p", "Reply with exactly one word: PONG"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            encoding="utf-8", errors="replace",  # CLI 输出 UTF-8; 缺省编码 (cp936) 会在中文 Windows 上 UnicodeDecodeError
             env=e, cwd=str(ws),
             creationflags=no_win
         )
@@ -191,24 +192,38 @@ class ClaudeDriver:
             prompt_path,
         )
 
-    def kill_tree(self, timeout: float = 5):
+    def kill_tree(self, timeout: float = 5) -> bool:
+        """终止进程树并如实汇报结果; 返回进程是否确认退出 (绝不谎报成功)。"""
+        exited = True
         if self.proc and self.proc.poll() is None:
+            exited = False
             try:
                 self.interrupt()
                 if self.wait_exit(timeout):
                     log(f"KILL    进程树 pid={self.proc.pid} 已优雅退出")
                     self._close_handles()
-                    return
+                    return True
             except Exception:
                 pass
             no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            subprocess.run(["taskkill", "/PID", str(self.proc.pid), "/T", "/F"], capture_output=True, creationflags=no_win)
+            try:
+                result = subprocess.run(["taskkill", "/PID", str(self.proc.pid), "/T", "/F"],
+                                        capture_output=True, creationflags=no_win)
+                if result.returncode != 0:
+                    log(f"KILL    WARN taskkill 返回非零 ({result.returncode}), 终止结果未确认")
+            except OSError as exc:
+                log(f"KILL    WARN taskkill 执行失败: {exc}")
             try:
                 self.proc.wait(timeout=3)
+                exited = True
             except Exception:
-                pass
-            log(f"KILL    进程树 pid={self.proc.pid} 已强制终止")
+                exited = False
+            if exited:
+                log(f"KILL    进程树 pid={self.proc.pid} 已强制终止")
+            else:
+                log(f"KILL    WARN 进程树 pid={self.proc.pid} 强制终止后仍未确认退出")
         self._close_handles()
+        return exited
 
     def note_activity(self, t: Optional[float] = None) -> None:
         """记录最新的 Worker 活跃时间戳（例如发现新的工具调用/输出/思维链/写盘），防止长耗时任务误报假死。"""

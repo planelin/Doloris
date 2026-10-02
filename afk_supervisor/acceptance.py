@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import List, Optional, Set, Tuple
 
 # cli.py 从本模块再导出该符号；保留以免破坏既有调用方。
-from afk_supervisor.l2.transport import worker_last_message  # noqa: F401
+# (worker_last_message 定义在 sessions.rollout, 此处不再经 l2.transport 中转)
+from afk_supervisor.sessions.rollout import worker_last_message  # noqa: F401
 
 ASK_MARKERS = (
     "【决策请求】", "【需要决策】", "[决策请求]",
@@ -25,6 +26,11 @@ DONE_SIGNALS = [
     "all tasks completed", "all done", "work complete", "finished all tasks",
     "everything is complete", "all requirements completed"
 ]
+
+# 自然验收"零证据"失败的固定文案。coordinator.check_completion 依赖与该常量的
+# 精确匹配来判定"仅缺完工措辞"并可被 AGY 客观审查放行; 严禁改成模糊子串匹配,
+# 否则任何含"未检测到/未发现"字样的真实缺陷文案都会被误判为达标。
+NATURAL_NO_EVIDENCE_DETAIL = "未检测到活跃的已完成清单或明确完工语义"
 
 
 def is_interaction_request(last_msg: str) -> bool:
@@ -409,7 +415,7 @@ def check_acceptance_natural(
     if signal_reason:
         return False, signal_reason
 
-    return False, "未检测到活跃的已完成清单或明确完工语义"
+    return False, NATURAL_NO_EVIDENCE_DETAIL
 
 
 def check_acceptance_quick(work_dir: Path, last_msg: str = "") -> Tuple[bool, str]:

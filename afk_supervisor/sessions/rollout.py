@@ -16,10 +16,33 @@ RATE_LIMIT_KEYWORDS = (
     "rate limit", "rate_limit", "ratelimit", "429",
     "exceeded rate limit", "tpm", "rpm", "token limit",
     "quota exceeded", "insufficient_quota",
+    # 配额耗尽的其余表述 (2026-09-27 实测: "unexpected status 402 Payment
+    # Required: Budget pool quota has been exhausted" 此前不在匹配范围,
+    # 导致配额耗尽的空回合被误判为正常完工并发起 REVIEW)。
+    "quota has been exhausted", "budget pool", "payment required",
     "server overloaded", "overloaded", "503", "502", "504",
     "bad gateway", "gateway timeout",
     "connection error", "network error", "timed out",
 )
+
+
+def worker_last_message(run_dir: Path) -> str:
+    """获取 Worker 最后留言 (先看 codex-last-message.txt, 回退 stdout 日志)。
+
+    原 l2.transport 中转定义已移入本模块: 本函数只依赖 run_dir 产物文件,
+    属于会话轨迹感知职责, 供 acceptance/上层复用而不引入对 l2 层的依赖。
+    """
+    lm = Path(run_dir) / "codex-last-message.txt"
+    try:
+        if lm.exists():
+            return lm.read_text(encoding="utf-8", errors="replace")[-1500:]
+    except OSError:
+        pass
+    try:
+        out = Path(run_dir) / "worker-stdout.log"
+        return out.read_text(encoding="utf-8", errors="replace")[-1500:] if out.exists() else ""
+    except OSError:
+        return ""
 
 
 def is_rate_limit_error(error_info: Any) -> bool:
@@ -121,7 +144,9 @@ def codex_handoff_state(path) -> dict:
                 if kind == "event_msg" and event in ("task_complete", "turn_aborted"):
                     known = True
                     turn_ended = True
-                    last_agent_message = payload.get("last_agent_message", "") if event == "task_complete" else ""
+                    raw_last = payload.get("last_agent_message") if event == "task_complete" else None
+                    # rollout 里 last_agent_message 可为 null, 统一归一化为空串
+                    last_agent_message = raw_last if isinstance(raw_last, str) else ""
                     err_val = payload.get("error")
                     if err_val:
                         last_turn_error = err_val

@@ -142,9 +142,12 @@ class CodexDriver:
         thread_id_from_stdout = None
         if stdout_file.exists():
             try:
-                with open(stdout_file, "r", encoding="utf-8", errors="replace") as f:
+                # last_stdout_offset 记录的是 st_size (字节), 必须二进制读取再解码;
+                # 文本模式 seek 用字符 cookie, stdout 含多字节字符时会错位漏检。
+                with open(stdout_file, "rb") as f:
                     f.seek(self.last_stdout_offset)
-                    for line in f:
+                    chunk = f.read().decode("utf-8", errors="replace")
+                    for line in chunk.splitlines():
                         if '"thread.started"' in line:
                             m = re.search(r'"thread_id"\s*:\s*"([^"]+)"', line)
                             if m:

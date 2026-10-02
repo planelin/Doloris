@@ -5,8 +5,10 @@ afk_supervisor.platform.windows — Windows 系统级交互与防睡眠/网络�
 """
 
 import os
+import queue
 import subprocess
 import sys
+import threading
 import urllib.request
 from typing import Optional, Tuple
 
@@ -18,37 +20,80 @@ ES_CONTINUOUS = 0x80000000
 ES_SYSTEM_REQUIRED = 0x00000001
 ES_DISPLAY_REQUIRED = 0x00000002
 
+# SetThreadExecutionState(ES_CONTINUOUS) 是线程亲和的: 设置与清除必须发生在
+# 同一个线程, 否则跨线程清除无效、防熄屏永不解除 (桌宠主线程 set / worker
+# 线程 clear 的真实场景)。因此所有请求都排队到这个专属 owner 线程执行。
+_ka_lock = threading.Lock()
+_ka_thread: Optional[threading.Thread] = None
+_ka_commands: Optional["queue.Queue"] = None
+_ka_ready: Optional[threading.Event] = None
+_ka_result = [False]
+
+
+def _keep_awake_owner() -> None:
+    """防熄屏 owner 线程: 同一线程内执行全部 set/clear, 退出前负责解除。"""
+    import ctypes
+    while True:
+        cmd, flags = _ka_commands.get()
+        if cmd == "stop":
+            break
+        _ka_result[0] = False
+        try:
+            res = ctypes.windll.kernel32.SetThreadExecutionState(flags)
+            if res == 0:
+                print("[WARN] SetThreadExecutionState 返回 0，防熄屏可能未生效", file=sys.stderr)
+            else:
+                _ka_result[0] = True
+                tag = "系统+显示器不熄屏" if flags & ES_DISPLAY_REQUIRED else "仅系统不休眠(允许熄屏)"
+                print(f"[INFO] KEEP-AWAKE 电源状态更新: {tag}")
+        except Exception as e:
+            print(f"[WARN] 睡眠抑制设置失败: {e}", file=sys.stderr)
+        finally:
+            _ka_ready.set()
+    # 线程退出前必须在自己身上解除执行状态
+    try:
+        ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS)
+    except Exception:
+        pass
+
 
 def set_keep_awake(enable: bool = True, keep_display: bool = True) -> bool:
-    """设置 Windows 系统及显示器防休眠/防熄屏状态。
+    """设置 Windows 系统及显示器防休眠/防熄屏状态 (线程安全)。
 
     :param enable: True 为保持活跃，False 为恢复系统默认电源设置
     :param keep_display: True 时同时阻止显示器熄屏 (ES_DISPLAY_REQUIRED)，False 允许熄屏
     :return: 是否设置成功
     """
+    global _ka_thread, _ka_commands, _ka_ready
     if sys.platform != "win32":
         return False
-    try:
-        import ctypes
+    with _ka_lock:
         if enable:
             flags = ES_CONTINUOUS | ES_SYSTEM_REQUIRED
             if keep_display:
                 flags |= ES_DISPLAY_REQUIRED
-            tag = "系统+显示器不熄屏" if keep_display else "仅系统不休眠(允许熄屏)"
-        else:
-            flags = ES_CONTINUOUS
-            tag = "恢复系统默认电源策略"
-
-        res = ctypes.windll.kernel32.SetThreadExecutionState(flags)
-        if res == 0:
-            print(f"[WARN] SetThreadExecutionState 返回 0，{tag} 可能未生效", file=sys.stderr)
-            return False
-        else:
-            print(f"[INFO] KEEP-AWAKE 电源状态更新: {tag}")
+            if _ka_thread is None or not _ka_thread.is_alive():
+                _ka_commands = queue.Queue()
+                _ka_ready = threading.Event()
+                _ka_thread = threading.Thread(target=_keep_awake_owner,
+                                              name="doloris-keep-awake", daemon=True)
+                _ka_thread.start()
+            _ka_ready.clear()
+            _ka_commands.put(("set", flags))
+            if not _ka_ready.wait(3.0):
+                return False
+            return _ka_result[0]
+        # disable: 幂等——无活跃请求时直接成功
+        if _ka_thread is None or not _ka_thread.is_alive():
             return True
-    except Exception as e:
-        print(f"[WARN] 睡眠抑制设置失败: {e}", file=sys.stderr)
-        return False
+        _ka_commands.put(("stop", None))
+        _ka_thread.join(timeout=3.0)
+        if _ka_thread.is_alive():
+            return False
+        _ka_thread = None
+        _ka_commands = None
+        _ka_ready = None
+        return True
 
 
 def keep_awake(keep_display: bool = True):

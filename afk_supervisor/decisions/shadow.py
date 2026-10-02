@@ -17,6 +17,7 @@ import json
 from typing import Any, Callable, Dict, Optional
 
 from afk_supervisor.decisions.jev import JevProvider, resolve_decision_mode
+from afk_supervisor.decisions.errors import ProviderError
 from afk_supervisor.decisions.models import DECISION_SCHEMA, DecisionRequest, DecisionResult
 from afk_supervisor.decisions.redaction import redact_text
 
@@ -80,6 +81,9 @@ class ShadowDecisionObserver:
     def enabled(self) -> bool:
         return self._mode == "shadow"
 
+    def _provider_name(self) -> str:
+        return getattr(self._provider, "provider_name", "jev")
+
     def observe(self, last_msg: str, request_id: str, n_interaction: int = 0) -> Optional[DecisionResult]:
         """观察一次决策请求; 返回值仅供测试诊断, 监管流程不得使用。"""
         if not self.enabled:
@@ -98,10 +102,27 @@ class ShadowDecisionObserver:
             if provider is None:
                 provider = JevProvider()
             result = provider.decide(request)
+        except ProviderError as error:  # Provider 结构化错误按固定 result_status 归档
+            self._audit(
+                "DECISION_HEAD_SHADOW",
+                provider=self._provider_name(),
+                model="",
+                schema=DECISION_SCHEMA,
+                request_id=request_id,
+                question_keys=question_keys,
+                top_actions={},
+                answers={},
+                latency_ms=0,
+                status=error.result_status,
+                error_code=error.error_code,
+                request_hash=self.request_hash(state, questions),
+                n=n_interaction,
+            )
+            return None
         except Exception as error:  # 决策层任何异常都不允许影响监管流程
             self._audit(
                 "DECISION_HEAD_SHADOW",
-                provider="jev",
+                provider=self._provider_name(),
                 model="",
                 schema=DECISION_SCHEMA,
                 request_id=request_id,

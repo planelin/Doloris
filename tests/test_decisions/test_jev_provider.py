@@ -239,6 +239,39 @@ class JevProviderConfigTests(unittest.TestCase):
         provider2, _ = make_provider(urlopen, endpoint="http://evil.example.com/decisions")
         self.assertEqual(provider2.decide(make_request()).status, "CONFIG_ERROR")
 
+    def test_endpoint_prefix_bypasses_are_rejected(self):
+        """前缀匹配白名单可被绕过 (子域 / userinfo 注入), Token 绝不能发往外部主机。"""
+        bypasses = (
+            "http://localhost.attacker.com/decisions",
+            "http://localhost:80@attacker.com/decisions",
+            "http://127.0.0.199.evil.com/decisions",
+            "http://127.0.0.1@evil.example.com/decisions",
+            "http://[::1].evil.example.com/decisions",
+            "http://localhost.example.org/decisions",
+        )
+        for endpoint in bypasses:
+            with self.subTest(endpoint=endpoint):
+                urlopen = make_urlopen(FakeResponse(ok_body()))
+                provider, _ = make_provider(urlopen, endpoint=endpoint)
+                result = provider.decide(make_request())
+                self.assertEqual(result.status, "CONFIG_ERROR")
+                self.assertEqual(len(urlopen.calls), 0)
+
+    def test_exact_loopback_http_endpoints_still_allowed(self):
+        """修复不得误伤合法的本地回环调试端点。"""
+        allowed = (
+            "http://localhost:8099/decisions",
+            "http://LOCALHOST/decisions",
+            "http://127.0.0.1:8099/decisions",
+            "http://[::1]:8099/decisions",
+            "http://localhost./decisions",
+        )
+        for endpoint in allowed:
+            with self.subTest(endpoint=endpoint):
+                urlopen = make_urlopen(FakeResponse(ok_body()))
+                provider, _ = make_provider(urlopen, endpoint=endpoint)
+                self.assertEqual(provider.decide(make_request()).status, "OK")
+
     def test_non_positive_timeout_returns_config_error(self):
         urlopen = make_urlopen(FakeResponse(ok_body()))
         provider, _ = make_provider(urlopen, timeout_sec=0)

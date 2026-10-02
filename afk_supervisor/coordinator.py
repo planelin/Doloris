@@ -15,6 +15,7 @@ from typing import Any, Callable, Optional, Tuple
 
 from afk_supervisor.models import ActionType, DeadlineBudget, EvidencePacket
 from afk_supervisor.baseline import TaskBaseline
+from afk_supervisor.acceptance import NATURAL_NO_EVIDENCE_DETAIL
 from afk_supervisor.evidence import collect_evidence, calculate_reviewed_revision
 from afk_supervisor.l2.protocol import extract_protocol_json, normalize_next_action
 from afk_supervisor.l2.transport import l2_dispatch
@@ -56,6 +57,7 @@ class SupervisorCoordinator:
         budget: Optional[DeadlineBudget] = None,
         ivl_fn: Optional[Callable[..., None]] = None,
         task_dir: Optional[Path] = None,
+        relay_pool: Optional[list] = None,
     ):
         self.run_dir = Path(run_dir).resolve()
         self.workspace_root = Path(workspace_root).resolve()
@@ -67,6 +69,8 @@ class SupervisorCoordinator:
         self.proxy = proxy
         self.budget = budget
         self.ivl = ivl_fn or (lambda event, **kw: None)
+        # 供应商 relay 池由组合根注入 (DI): l2 层不反向依赖 drivers 层
+        self.relay_pool = relay_pool
         self.task_dir = Path(task_dir) if task_dir else None
         self.audit_log_path = self.run_dir / "l2_audit.jsonl"
         self.consecutive_no_progress = 0
@@ -151,7 +155,9 @@ class SupervisorCoordinator:
         l2_enabled = bool(self.l2_cmd and self.l2_cmd.lower() not in ("off", "none"))
         if not ok and l2_enabled and not self.task_dir:
             # Preserve natural-mode semantics: wording alone is not a defect.
-            if "未检测到" in detail or "未发现" in detail:
+            # 结构化判定: 只对"零证据"这一种固定失败放行, 绝不做子串模糊匹配,
+            # 防止含"未检测到/未发现"字样的真实缺陷文案被翻转成 PASS。
+            if detail == NATURAL_NO_EVIDENCE_DETAIL:
                 ok, detail = True, "AGY主管客观审查达标（无需固定完工措辞）"
         if not ok:
             return False, detail, False
@@ -208,6 +214,7 @@ class SupervisorCoordinator:
             mode="DECIDE", agy_mgr=self.agy_mgr, title=getattr(driver, "title", ""),
             budget=self.budget, task_baseline=self.task_baseline,
             protocol_error_feedback=self.last_protocol_error,
+            relay_pool=self.relay_pool,
         )
         self._sync_agy_session(driver)
         verdict, answer, l2_log, payload = _unpack_result(res)
@@ -244,6 +251,7 @@ class SupervisorCoordinator:
             request_id=req_id, kind="repair", mode="REPAIR", agy_mgr=self.agy_mgr, title=getattr(driver, "title", ""),
             budget=self.budget, task_baseline=self.task_baseline,
             protocol_error_feedback=self.last_protocol_error,
+            relay_pool=self.relay_pool,
         )
         self._sync_agy_session(driver)
         verdict, answer, l2_log, payload = _unpack_result(res)
@@ -318,6 +326,7 @@ class SupervisorCoordinator:
             budget=self.budget, task_baseline=self.task_baseline,
             evidence_packet=evidence, request_id=evidence.request_id,
             protocol_error_feedback=self.last_protocol_error,
+            relay_pool=self.relay_pool,
         )
         self._sync_agy_session(driver)
         verdict, answer, l2_log, payload = _unpack_result(res)

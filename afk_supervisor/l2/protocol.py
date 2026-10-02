@@ -9,8 +9,7 @@ import json
 import re
 from typing import Any, Dict, Optional, Tuple
 
-from afk_supervisor.models import ActionType, EvidencePacket
-from afk_supervisor.baseline import TaskBaseline
+from afk_supervisor.models import ActionType, EvidencePacket, TaskBaseline
 
 PROTOCOL_VERSION = "afk_agy_protocol_v1"
 

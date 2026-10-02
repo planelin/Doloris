@@ -459,6 +459,13 @@ DUMMY_GOAL_MARKERS = {
     "__ALREADY_SET__",
 }
 
+# 懒人模式显式委托 AGY (require_agy=True) 时的提炼等待上限。
+# 无人值守系统绝不允许无限等待: 超时后按 GoalExtractionError 有据失败,
+# 由调用方决定重试或降级, 而不是把整个 Goal 监管线程挂死。
+AGY_REQUIRED_EXTRACT_TIMEOUT_SEC = 120.0
+# extract_goal_via_agy_agent 的兜底默认超时 (含 timeout_sec=None/非法值时)。
+AGY_EXTRACT_DEFAULT_TIMEOUT_SEC = 30.0
+
 
 def get_existing_thread_goal(rollout_path: Optional[Path]) -> Optional[str]:
     """检测会话中是否已由用户或系统设立了活跃 Goal 目标。过滤占位符与内部标记。"""
@@ -640,7 +647,10 @@ def extract_goal_via_agy_agent(
 ) -> Optional[str]:
     """尝试通过 Antigravity 语言服务提炼简洁目标。
     严格复用与 Codex 任务 1:1 绑定的专属 AGY 会话。
+    timeout_sec 必须有界: None/非正数一律收敛为默认值, 无人值守禁止无限等待。
     """
+    if not isinstance(timeout_sec, (int, float)) or isinstance(timeout_sec, bool) or timeout_sec <= 0:
+        timeout_sec = AGY_EXTRACT_DEFAULT_TIMEOUT_SEC
     try:
         if agy_mgr is not None and hasattr(agy_mgr, "ensure_bridge"):
             csrf, ports, agexe = agy_mgr.ensure_bridge(timeout=5)
@@ -704,7 +714,7 @@ def extract_goal_via_agy_agent(
             env["ANTIGRAVITY_LS_ADDRESS"] = f"127.0.0.1:{port}"
             if project_id:
                 env["ANTIGRAVITY_PROJECT_ID"] = project_id
-            res = subprocess.run(cmd, capture_output=True, timeout=min(timeout_sec, 12) if timeout_sec is not None else None,
+            res = subprocess.run(cmd, capture_output=True, timeout=min(timeout_sec, 12),
                                  env=env, creationflags=no_win)
             out = (res.stdout or b"").decode("utf-8", errors="replace")
             if not existing_cid:
@@ -727,8 +737,8 @@ def extract_goal_via_agy_agent(
 
     try:
         t_path = brain_dir / cid / ".system_generated" / "logs" / "transcript.jsonl"
-        deadline = time.monotonic() + timeout_sec if timeout_sec is not None else None
-        while deadline is None or time.monotonic() < deadline:
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
             if cancel_event is not None and cancel_event.is_set():
                 raise GoalExtractionError("目标提炼已取消")
             if t_path.exists():
@@ -930,7 +940,8 @@ def extract_clean_goal_with_reason(
         title=title,
         agy_mgr=agy_mgr,
         run_dir=run_dir,
-        timeout_sec=None if require_agy else 25.0,
+        # require_agy 也必须有界: 超时按 GoalExtractionError 有据失败, 不挂死监管线程
+        timeout_sec=AGY_REQUIRED_EXTRACT_TIMEOUT_SEC if require_agy else 25.0,
         codex_session_id=codex_session_id,
         cancel_event=cancel_event,
     )

@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from afk_supervisor.goal_engine import GoalExtractionError
+from afk_supervisor.goal_engine import AGY_REQUIRED_EXTRACT_TIMEOUT_SEC, GoalExtractionError
 from doloris_app.mascot import resolve_lazy_goal
 
 
@@ -27,7 +27,7 @@ class LazyGoalResolutionTests(unittest.TestCase):
             title="优化数据库",
             agy_mgr=None,
             run_dir=None,
-            timeout_sec=None,
+            timeout_sec=AGY_REQUIRED_EXTRACT_TIMEOUT_SEC,  # 懒人模式等待必须有界
             codex_session_id="session-123",
             cancel_event=None,
         )

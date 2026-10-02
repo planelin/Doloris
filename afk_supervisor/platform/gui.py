@@ -159,16 +159,23 @@ def reveal_codex_session_in_ui(session_id: str, target_hwnd: int = 0) -> bool:
             user32.SetForegroundWindow(target_hwnd)
             time.sleep(0.1)
 
-            VK_CONTROL = 0x11
-            VK_R = 0x52
-            KEYEVENTF_KEYUP = 0x0002
+            # keybd_event 是全局键盘事件: 若前台锁被 Windows 拒绝 (调用方不满足
+            # 前台转移条件), Ctrl+R 会落进用户正在使用的任意窗口 (刷新页面/编辑器)。
+            # 必须核实目标窗口确实拿到前台后才允许发送, 否则只走深链导航。
+            if user32.GetForegroundWindow() == target_hwnd:
+                VK_CONTROL = 0x11
+                VK_R = 0x52
+                KEYEVENTF_KEYUP = 0x0002
 
-            user32.keybd_event(VK_CONTROL, 0, 0, 0)
-            user32.keybd_event(VK_R, 0, 0, 0)
-            time.sleep(0.05)
-            user32.keybd_event(VK_R, 0, KEYEVENTF_KEYUP, 0)
-            user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
-            log(f"UI_SYNC  已向桌面端 (HWND {target_hwnd}) 发送 Ctrl+R 刷新侧边栏")
+                user32.keybd_event(VK_CONTROL, 0, 0, 0)
+                user32.keybd_event(VK_R, 0, 0, 0)
+                time.sleep(0.05)
+                user32.keybd_event(VK_R, 0, KEYEVENTF_KEYUP, 0)
+                user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
+                log(f"UI_SYNC  已向桌面端 (HWND {target_hwnd}) 发送 Ctrl+R 刷新侧边栏")
+            else:
+                log(f"UI_SYNC WARN 前台锁未生效 (前台窗口非目标 HWND {target_hwnd})，"
+                    "跳过 Ctrl+R 全局按键，避免落入用户窗口；仅通过深链导航")
 
         try:
             os.startfile(f"codex://threads/{session_id}")
@@ -471,7 +478,3 @@ def ensure_codex_window_restored() -> int:
     except Exception:
         pass
     return 0
-
-
-# 兼容导出
-from afk_supervisor.drivers.dummy import DummyDriver  # noqa: E402,F401

@@ -291,7 +291,12 @@ def read_agy_latest_response(cid: str, min_line_idx: int = 0, request_id: Option
 
 
 def is_agy_working(cid: str) -> Tuple[bool, str]:
-    """严格检测 AGY L2 会话当前是否处于活跃工作状态。"""
+    """严格检测 AGY L2 会话当前是否处于活跃工作状态。
+
+    失败安全方向: 只要"转录存在但无法确认空闲" (stat/读取失败、末行被截断或
+    非 JSON 对象——典型于 AGY 流式追加写盘途中), 一律按工作中处理, 避免向
+    正在工作中的会话注入消息; 仅在明确的空闲信号上判空闲。
+    """
     if not cid:
         return False, "cid 为空"
     brain_dir = get_agy_brain_dir()
@@ -300,34 +305,42 @@ def is_agy_working(cid: str) -> Tuple[bool, str]:
         return False, "转录日志不存在 (视为新建空闲)"
     try:
         st = t_path.stat()
-        stale_sec = time.time() - st.st_mtime
-        if stale_sec < 2.0:
-            return True, f"AGY 正在活跃写盘 (静默仅 {stale_sec:.1f}s < 2.0s)"
+    except OSError as e:
+        return True, f"转录 stat 失败 ({e}), 视为工作中"
+    stale_sec = time.time() - st.st_mtime
+    if stale_sec < 2.0:
+        return True, f"AGY 正在活跃写盘 (静默仅 {stale_sec:.1f}s < 2.0s)"
+    try:
         lines = [line.strip() for line in t_path.read_text(encoding="utf-8", errors="replace").splitlines()
                  if line.strip().startswith("{")]
-        if not lines:
-            return False, "转录日志为空"
+    except OSError as e:
+        return True, f"转录读取失败 ({e}), 视为工作中"
+    if not lines:
+        return False, "转录日志为空"
 
+    try:
         last_obj = json.loads(lines[-1])
-        stype = last_obj.get("type")
-        status = last_obj.get("status")
-        tool_calls = last_obj.get("tool_calls") or []
+    except ValueError:
+        return True, "转录最后一行损坏/不完整 (疑似正在写盘), 视为工作中"
+    if not isinstance(last_obj, dict):
+        return True, "转录最后一行非 JSON 对象, 视为工作中"
+    stype = last_obj.get("type")
+    status = last_obj.get("status")
+    tool_calls = last_obj.get("tool_calls") or []
 
-        if status in ("RUNNING", "IN_PROGRESS"):
-            return True, f"步骤执行中 (status={status})"
-        if stype == "USER_INPUT":
-            return True, "用户输入已进入，等待 AGY 开始响应"
-        if stype == "PLANNER_RESPONSE":
-            if tool_calls:
-                return True, f"AGY 已发起 {len(tool_calls)} 个工具调用，正在执行/等待结果"
-            if status == "DONE":
-                return False, "AGY 当前回合已全部完成 (DONE 待命)"
-        if stype in ("GENERIC", "TOOL_OUTPUT"):
-            return True, "工具执行完毕，AGY 正在处理输出继续推理"
+    if status in ("RUNNING", "IN_PROGRESS"):
+        return True, f"步骤执行中 (status={status})"
+    if stype == "USER_INPUT":
+        return True, "用户输入已进入，等待 AGY 开始响应"
+    if stype == "PLANNER_RESPONSE":
+        if tool_calls:
+            return True, f"AGY 已发起 {len(tool_calls)} 个工具调用，正在执行/等待结果"
+        if status == "DONE":
+            return False, "AGY 当前回合已全部完成 (DONE 待命)"
+    if stype in ("GENERIC", "TOOL_OUTPUT"):
+        return True, "工具执行完毕，AGY 正在处理输出继续推理"
 
-        return False, f"最后步骤类型为 {stype} (status={status})"
-    except Exception as e:
-        return False, f"检测异常: {e}"
+    return False, f"最后步骤类型为 {stype} (status={status})"
 
 
 def wait_for_agy_idle(cid: str, timeout_sec: float = 60.0) -> bool:
@@ -447,6 +460,112 @@ def bind_agy_conversation_for_codex(codex_session_id: Optional[str], agy_cid: st
             tmp_sf.replace(sf)
         except Exception as e:
             log(f"WARN      写入 run_dir/agy_session.json 失败: {e}")
+
+
+def unbind_agy_conversation_for_codex(codex_session_id: Optional[str], run_dir: Optional[Path] = None) -> None:
+    """解除 1 Codex Task <-> 1 AGY Conversation 绑定 (会话被判死后调用)。
+
+    只清映射，不动 AGY 侧会话数据；映射清空后下一轮请求将创建全新会话，
+    避免继续向已停止生成的死会话投递消息。
+    """
+    sid = _normalize_codex_session_id(codex_session_id)
+    if not sid or sid == "unknown":
+        return
+
+    reg_file = get_codex_agy_registry_file()
+    try:
+        reg = {}
+        if reg_file.exists():
+            try:
+                reg = json.loads(reg_file.read_text(encoding="utf-8"))
+                if not isinstance(reg, dict):
+                    reg = {}
+            except Exception:
+                reg = {}
+        if reg.pop(sid, None) is not None:
+            tmp_file = reg_file.with_suffix(".tmp")
+            tmp_file.write_text(json.dumps(reg, indent=2, ensure_ascii=False), encoding="utf-8")
+            tmp_file.replace(reg_file)
+    except Exception as e:
+        log(f"WARN      清理全局 Codex-AGY 会话注册表失败: {e}")
+
+    if run_dir:
+        try:
+            sf = Path(run_dir) / "agy_session.json"
+            if sf.exists():
+                data = {}
+                try:
+                    data = json.loads(sf.read_text(encoding="utf-8"))
+                except Exception:
+                    data = {}
+                # 该文件只保存单一绑定: 仅当文件记录的就是要解绑的会话时才清空,
+                # 避免误伤其它 Codex 会话写入的绑定。
+                file_sid = _normalize_codex_session_id(data.get("codex_session_id", ""))
+                if file_sid == sid and data.get("agy_conversation_id"):
+                    data["agy_conversation_id"] = ""
+                    data["updated_at"] = datetime.now().isoformat(timespec="seconds")
+                    tmp_sf = sf.with_suffix(".tmp")
+                    tmp_sf.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+                    tmp_sf.replace(sf)
+        except Exception as e:
+            log(f"WARN      清理 run_dir/agy_session.json 绑定失败: {e}")
+
+
+_AGY_BACKEND_ERROR_RE = re.compile(
+    r"FAILED_PRECONDITION|\(code 4\d\d\)|User location is not supported", re.I
+)
+
+
+def get_language_server_log_path() -> Path:
+    """定位桌面端 language_server 的本地日志 (AGY 后端错误只落在这里与会话 DB)。"""
+    appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+    return Path(appdata) / "Antigravity" / "logs" / "language_server.log"
+
+
+class AgyBackendErrorWatcher:
+    """监视 language_server.log 自标记点之后新增的后端 4xx/FAILED_PRECONDITION 记录。
+
+    AGY 生成失败 (如地区限制 400) 不会写入 transcript.jsonl，等待方只能空等到
+    超时；在发送前 mark()、等待中周期性 check()，即可在首个错误出现时立即感知。
+    """
+
+    TAIL_LIMIT = 256 * 1024
+
+    def __init__(self, log_path: Optional[Path] = None):
+        self.log_path = Path(log_path) if log_path else get_language_server_log_path()
+        self._mark: Optional[int] = None
+
+    def mark(self) -> None:
+        try:
+            self._mark = self.log_path.stat().st_size
+        except OSError:
+            self._mark = None
+
+    def check(self) -> Optional[str]:
+        """返回标记点之后首条后端错误行；日志轮转/缺失时视为无新错误。
+
+        偏移量基准是 st_size (字节), 因此必须以二进制模式 seek/read 再解码;
+        文本模式的 seek 参数是字符 cookie, 含多字节字符的日志会错位漏检。
+        """
+        if self._mark is None:
+            return None
+        try:
+            size = self.log_path.stat().st_size
+            if size < self._mark:
+                self._mark = size  # 语言服务重启导致日志重建，重置基线
+                return None
+            start = max(0, self._mark)
+            with self.log_path.open("rb") as stream:
+                stream.seek(start)
+                data = stream.read(self.TAIL_LIMIT)
+            text = data.decode("utf-8", errors="replace")
+            self._mark = size
+            for line in text.splitlines():
+                if _AGY_BACKEND_ERROR_RE.search(line):
+                    return line.strip()[:300]
+        except OSError:
+            return None
+        return None
 
 
 class AntigravityManager:

@@ -14,15 +14,16 @@ import re
 import subprocess
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
 from afk_supervisor.storage import atomic_json
-from afk_supervisor.models import DeadlineBudget, EvidencePacket, L2Result
+from afk_supervisor.models import DeadlineBudget, EvidencePacket, L2Result, TaskBaseline
 from afk_supervisor.platform.process import log
-from afk_supervisor.baseline import TaskBaseline
-from afk_supervisor.drivers.claude import get_relay_pool
+from afk_supervisor.sessions.rollout import worker_last_message  # noqa: F401  (再导出兼容)
 from afk_supervisor.l2.bridge import (
+    AgyBackendErrorWatcher,
     AntigravityManager,
     bind_agy_conversation_for_codex,
     check_agy_transcript_error,
@@ -33,6 +34,7 @@ from afk_supervisor.l2.bridge import (
     is_agy_working,
     parse_verdict_from_text,
     read_agy_latest_response,
+    unbind_agy_conversation_for_codex,
     wait_for_agy_idle,
 )
 from afk_supervisor.l2.protocol import (
@@ -111,21 +113,6 @@ def clean_l2_decision_text(raw_text: str) -> str:
     return (res + "\n") if res else ""
 
 
-def worker_last_message(run_dir: Path) -> str:
-    """获取 Worker 最后留言。"""
-    lm = Path(run_dir) / "codex-last-message.txt"
-    try:
-        if lm.exists():
-            return lm.read_text(encoding="utf-8", errors="replace")[-1500:]
-    except OSError:
-        pass
-    try:
-        out = Path(run_dir) / "worker-stdout.log"
-        return out.read_text(encoding="utf-8", errors="replace")[-1500:] if out.exists() else ""
-    except OSError:
-        return ""
-
-
 def get_recent_workspace_files(cwd: Path, limit: int = 8) -> List[Tuple[float, str, int]]:
     EXCLUDE = {"afk-work", "runs", "scratch", ".git", "node_modules", "__pycache__", "dist", "build"}
     files = []
@@ -202,7 +189,12 @@ def run_l2_antigravity(
         if lifecycle_file.exists():
             lifecycle = json.loads(lifecycle_file.read_text(encoding="utf-8"))
         if pending_file.exists():
-            pending = json.loads(pending_file.read_text(encoding="utf-8"))
+            loaded = json.loads(pending_file.read_text(encoding="utf-8"))
+            if not isinstance(loaded, dict):
+                # 损坏/被截断的挂起记录 (如半写盘产生的 null) 不能当作"无在途请求":
+                # 在途指针丢失时必须保守中止, 而不是冒并发双发的风险。
+                raise ValueError("agy_pending_request.json 不是 JSON 对象")
+            pending = loaded
         if pending and pending.get("request_id") != req_id:
             return L2Result("NO-VERDICT", "原AGY请求仍在途，禁止并发发送或替换会话", run_dir / f"l2-{n}.log")
         if not lifecycle:
@@ -263,6 +255,10 @@ def run_l2_antigravity(
             f.write("NO-BRIDGE: 未发现运行中的Antigravity language_server".encode("utf-8"))
         return L2Result("NO-BRIDGE", "NO-BRIDGE", log_path, payload=None)
 
+    # AGY 后端错误 (如地区限制 400) 不落 transcript，等待方只能空等超时；
+    # 以发送时刻为基线监视本地 language_server 日志，首个错误即感知。
+    backend_err_watcher = AgyBackendErrorWatcher()
+
     pending_file = run_dir / "agy_pending_request.json"
     round_vfile.parent.mkdir(parents=True, exist_ok=True)
     for vf in (() if pending_file.exists() else (round_vfile, legacy_vfile)):
@@ -275,7 +271,16 @@ def run_l2_antigravity(
     pending_file = run_dir / "agy_pending_request.json"
     pending = {}
     if pending_file.exists():
-        pending = json.loads(pending_file.read_text(encoding="utf-8"))
+        # 防御性重读: 与上方主读取保持同一语义。损坏或非 dict 的挂起记录
+        # 绝不允许按"无在途请求"继续, 否则可能对同一 AGY 会话并发双发。
+        try:
+            loaded = json.loads(pending_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            loaded = None
+        if isinstance(loaded, dict):
+            pending = loaded
+        else:
+            return L2Result("PROTOCOL_ERROR", "无法读取/归档本轮请求状态: agy_pending_request.json 损坏", run_dir / f"l2-{n}.log")
     cid = getattr(conv_holder, "_agy_cid", None) if conv_holder else None
     if not cid and agy_mgr is not None:
         cid = agy_mgr.cid
@@ -352,6 +357,7 @@ def run_l2_antigravity(
             sent_prompt = wire_text(full_prompt if task_baseline or evidence_packet or not cid else short_prompt)
             prompt_req_file.write_bytes(sent_prompt.encode("utf-8"))
             (run_dir / f"prompt-{req_id}-attempt-{attempt}.txt").write_bytes(sent_prompt.encode("utf-8"))
+            backend_err_watcher.mark()
             if polling_pending:
                 # Resume observation of the original request, never inject it again.
                 r = subprocess.CompletedProcess([], 0, stdout=b"{}", stderr=b"")
@@ -533,6 +539,55 @@ def run_l2_antigravity(
                     interrupted = True
                     break
 
+            # AGY 后端 4xx/FAILED_PRECONDITION 只落本地日志，不进 transcript；
+            # 检测到即暂停告警，避免反复触发 400 或对着死会话空等到超时。
+            backend_400 = backend_err_watcher.check()
+            if backend_400:
+                try:
+                    pause_sec = max(30.0, float(os.environ.get("DOLORIS_AGY_400_COOLDOWN_SEC") or 90))
+                except ValueError:
+                    pause_sec = 90.0
+                log("L2 ALERT  ══════════════════════════════════════════════════")
+                log(f"L2 ALERT  AGY后端返回400 (疑似地区限制/代理出口异常)，请求 {req_id} 立即暂停等待")
+                log(f"L2 ALERT  原始错误: {backend_400[:160]}")
+                log(f"L2 ALERT  已解绑AGY会话并挂起 {pause_sec:.0f}s；请将代理出口切换至 Gemini 支持地区，恢复后将新建会话有界重试")
+                log("L2 ALERT  ══════════════════════════════════════════════════")
+                try:
+                    atomic_json(run_dir / "agy_400_alert.json", {
+                        "ts": datetime.now().isoformat(timespec="seconds"),
+                        "request_id": req_id,
+                        "cid": active_cid or "",
+                        "matched": backend_400,
+                        "action": f"paused {pause_sec:.0f}s + unbound conversation",
+                    })
+                except Exception:
+                    pass
+                with open(log_path, "ab") as f:
+                    f.write(f"\n[AGY-BACKEND-400] {backend_400}\n".encode("utf-8", errors="replace"))
+                checkpoint("BACKEND_400", backend_error=backend_400[:200], cid=active_cid or "")
+                unbind_agy_conversation_for_codex(codex_sid if codex_sid and codex_sid != "unknown" else None, run_dir)
+                if conv_holder is not None and hasattr(conv_holder, "_agy_cid"):
+                    conv_holder._agy_cid = None
+                if agy_mgr is not None:
+                    agy_mgr.cid = None
+                active_cid = None
+                try:
+                    pending_file.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                pause_deadline = time.monotonic() + pause_sec
+                while pause_deadline - time.monotonic() > 0 and remaining_timeout() > 0:
+                    time.sleep(min(5.0, max(0.5, pause_deadline - time.monotonic())))
+                    if time.monotonic() - last_hb_t >= 15.0:
+                        log(f"L2 ALERT  400暂停中，剩余 {int(pause_deadline - time.monotonic())}s ...")
+                        last_hb_t = time.monotonic()
+                log("L2 ALERT  400暂停结束，本轮以 NO-VERDICT 返回，交由监管循环有界重试 (连续3次通道异常即停止)")
+                return L2Result(
+                    "NO-VERDICT",
+                    f"AGY后端400(地区/代理出口受限)，已暂停{pause_sec:.0f}s并解绑AGY会话: {backend_400[:160]}",
+                    log_path,
+                )
+
         if not interrupted:
             last_err = "verdict超时未出现"
         break
@@ -549,8 +604,12 @@ def run_l2_antigravity(
     return L2Result("NO-VERDICT", last_err, log_path, payload=None)
 
 
-def run_l2_agent(l2_cmd: str, run_dir: Path, prompt: str, n: int, proxy: Optional[str], timeout_sec: float = 900) -> L2Result:
-    """以无头模式调用 L2 agent (claude 等)。"""
+def run_l2_agent(l2_cmd: str, run_dir: Path, prompt: str, n: int, proxy: Optional[str], timeout_sec: float = 900,
+                 relay_pool: Optional[List[Tuple[str, dict]]] = None) -> L2Result:
+    """以无头模式调用 L2 agent (claude 等)。
+
+    relay_pool 由组合根注入 (依赖注入): l2 层不得反向 import drivers 层。
+    """
     log_path = run_dir / f"l2-{n}.log"
     prompt_file = run_dir / f"l2-{n}-prompt.txt"
     prompt_file.write_text(prompt, encoding="utf-8")
@@ -560,11 +619,9 @@ def run_l2_agent(l2_cmd: str, run_dir: Path, prompt: str, n: int, proxy: Optiona
     if timeout_sec <= 0:
         return L2Result("NO-VERDICT", "L2 deadline exhausted", log_path)
     env = dict(os.environ)
-    if parts[0].lower() == "claude":
-        pool = get_relay_pool("claude-desktop")
-        if pool:
-            env.update(pool[0][1])
-        if proxy:
+    if parts[0].lower() == "claude" and relay_pool:
+        env.update(relay_pool[0][1])
+    if proxy:
             env["HTTPS_PROXY"] = proxy
             env["HTTP_PROXY"] = proxy
     args = ["cmd.exe", "/c", *parts, "-p"]
@@ -620,8 +677,9 @@ def l2_dispatch(
     evidence_packet: Optional[EvidencePacket] = None,
     request_id: Optional[str] = None,
     protocol_error_feedback: str = "",
+    relay_pool: Optional[List[Tuple[str, dict]]] = None,
 ) -> L2Result:
-    """按通道与种类路由调用 L2 agent。"""
+    """按通道与种类路由调用 L2 agent。relay_pool 由组合根注入 (DI)。"""
     task_title = title or getattr(driver, "title", "") or "(未提供标题)"
     req_id = request_id or f"req-{n}-{uuid.uuid4().hex[:8]}"
     context_text = errors_text or outcome_detail or ""
@@ -701,7 +759,7 @@ def l2_dispatch(
         timeout = getattr(args, "timeout_sec", 900)
         if budget:
             timeout = budget.bound_timeout(timeout)
-        result = run_l2_agent(l2_cmd, run_dir, full, n, proxy, timeout_sec=timeout)
+        result = run_l2_agent(l2_cmd, run_dir, full, n, proxy, timeout_sec=timeout, relay_pool=relay_pool)
         if result.payload:
             valid, reason = validate_protocol_payload(
                 result.payload, expected_request_id=req_id, expected_task_id=baseline.task_id,

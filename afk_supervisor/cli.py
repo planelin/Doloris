@@ -230,7 +230,59 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--proxy", default="", help="显式指定网络代理 (若不指定则自动探测系统代理)")
     ap.add_argument("--timeout-sec", type=int, default=1800, help="L2单次等待预算(秒)，超时保留同一AGY会话和请求")
     ap.add_argument("--resume", default="", help="兼容参数: 原地续跑指定的 session-id")
+    ap.epilog = (
+        "子命令 (须位于参数首位): fork | goal | resume | gui | app, 可紧跟会话序号/ID;\n"
+        "例: doloris fork 3  等价于  --adopt 3 --quick --fork;  无参默认 fork last quick"
+    )
     return ap
+
+
+# 支持的子命令集合; resume 即默认 adopt_mode, 无需额外开关
+SUBCOMMANDS = ("app", "goal", "fork", "resume", "gui")
+
+
+def _extract_subcommand(raw_argv: List[str]) -> Tuple[List[str], str, str]:
+    """从 argv 头部提取子命令与可选接管目标, 返回 (剩余argv, 子命令, 目标)。
+
+    位置约定: 子命令必须位于 argv[0], 接管目标 (会话序号/ID) 紧随其后;
+    其余位置请使用 --adopt——这样避免与 argparse 选项值 (如 --adopt 3) 产生歧义。
+    首位裸参数 (非 - 开头) 沿用旧版 doloris.cmd 语义, 视为接管目标。
+    """
+    rest = list(raw_argv)
+    sub = target = ""
+    if rest and rest[0].strip().lower() in SUBCOMMANDS:
+        sub = rest.pop(0).strip().lower()
+        if rest and not rest[0].startswith("-"):
+            target = rest.pop(0)
+    elif rest and not rest[0].startswith("-"):
+        target = rest.pop(0)
+    return rest, sub, target
+
+
+def _launch_desktop_app(extra_args: List[str]) -> int:
+    """分离进程启动桌宠 GUI (doloris_app); 等价于旧版 `start "" pythonw -m doloris_app.main`。"""
+    app_main = Path(__file__).resolve().parent.parent / "doloris_app" / "main.py"
+    if not app_main.exists():
+        log("APP     未找到 doloris_app 模块, 无法启动桌宠")
+        return 1
+    exe = Path(sys.executable)
+    pythonw = exe.with_name("pythonw.exe")
+    target_exe = pythonw if pythonw.exists() else exe
+    flags = 0
+    if sys.platform == "win32":
+        flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    try:
+        subprocess.Popen(
+            [str(target_exe), "-m", "doloris_app.main", *extra_args],
+            cwd=str(app_main.parent.parent),
+            creationflags=flags,
+            close_fds=True,
+        )
+    except OSError as exc:
+        log(f"APP     桌宠启动失败: {exc}")
+        return 1
+    log("APP     桌宠已启动 (doloris_app)")
+    return 0
 
 
 def inspect_run(run_dir: Path) -> Tuple[int, str]:
@@ -274,7 +326,40 @@ def inspect_run(run_dir: Path) -> Tuple[int, str]:
 def main(argv: Optional[List[str]] = None) -> int:
     """CLI 主入口函数。"""
     ap = build_arg_parser()
-    args = ap.parse_args(argv)
+    raw_argv = list(sys.argv[1:]) if argv is None else list(argv or [])
+    # 子命令/接管目标在 argparse 之前从 argv 头部提取; doloris.cmd 只转发 %*。
+    # 兼容历史行为: `fork/goal/resume/gui [目标]`、裸目标=快速fork、无参=fork last quick。
+    rest_argv, sub, sub_target = _extract_subcommand(raw_argv)
+    if sub == "app":
+        # app 之后的参数属于桌宠应用 (--skin/--scale/--test-mode), 不经过监管器 parser
+        return _launch_desktop_app(rest_argv)
+    args = ap.parse_args(rest_argv)
+
+    if sub:
+        if args.adopt and sub_target:
+            ap.error(f"--adopt 与位置参数接管目标同时指定: {args.adopt} / {sub_target}")
+        if sub == "goal":
+            args.goal = True
+        elif sub == "fork":
+            args.fork = True
+        elif sub == "gui":
+            args.gui = True
+        if not args.adopt:
+            args.adopt = sub_target or "last"
+        args.quick = True
+    elif sub_target:
+        # 旧版 doloris.cmd 语义: 首位裸参数视为接管目标, 默认快速 fork 托管
+        if args.adopt and args.adopt != sub_target:
+            ap.error(f"--adopt 与位置参数接管目标同时指定: {args.adopt} / {sub_target}")
+        args.adopt = sub_target
+        args.quick = True
+        if not (args.goal or args.fork or args.gui or args.adopt_mode):
+            args.fork = True
+    elif not raw_argv:
+        # 无任何参数: 与 doloris.cmd 无参默认一致 (fork last quick)
+        args.adopt = "last"
+        args.quick = True
+        args.fork = True
 
     if args.inspect_run:
         code, text = inspect_run(Path(args.inspect_run))
@@ -563,6 +648,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         ivl("VERIFICATION_PLAN", source=pinned["source"], sha256=pinned["sha256"][:12],
             pinned=pinned["path"])
 
+    # 供应商 relay 池在组合根一次性读取, 依赖注入给 coordinator/l2 (避免 l2 反向依赖 drivers)
+    relay_pool = (get_relay_pool("claude-desktop")
+                  if (args.l2_cmd or "").strip().lower().startswith("claude") else None)
     coordinator = SupervisorCoordinator(
         run_dir=run_dir,
         workspace_root=ws_path,
@@ -574,7 +662,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         proxy=proxy,
         budget=budget,
         ivl_fn=ivl,
-        task_dir=task_md.parent if task_md else None
+        task_dir=task_md.parent if task_md else None,
+        relay_pool=relay_pool,
     )
 
     def verify(custom_last_msg: Optional[str] = None, min_mtime: float = 0.0, title_str: str = "") -> Tuple[bool, str]:

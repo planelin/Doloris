@@ -93,6 +93,16 @@ class TransportRegressions(DebugFixture):
         self.assertEqual(request_file.read_bytes(), original)
         self.assertEqual(self.bridge.call_count, 1)
 
+    def test_corrupt_pending_pointer_never_crashes_or_double_sends(self):
+        """损坏的挂起指针必须走结构化 PROTOCOL_ERROR, 绝不能 AttributeError 炸整轮 L2,
+        也绝不能被当作"无在途请求"而对同一 AGY 会话并发双发。"""
+        for garbage in ("null", "[]", "{oops", ""):
+            with self.subTest(garbage=garbage):
+                (self.run / "agy_pending_request.json").write_text(garbage, encoding="utf-8")
+                result, _ = self.call_agy()
+                self.assertEqual(result.verdict, "PROTOCOL_ERROR")
+        self.assertEqual(self.bridge.call_count, 0, "挂起指针损坏时禁止向 AGY 发送任何消息")
+
     def test_payloadless_legacy_review_cannot_crash_or_become_pass(self):
         self.reader.return_value = AgyResponseResult("PASS", "PASS", payload=None)
         result, _ = self.call_agy()

@@ -26,6 +26,7 @@ except ImportError:
 from afk_supervisor.cli import build_arg_parser
 from afk_supervisor.goal_engine import (
     GOAL_GUARDRAIL_FALLBACK,
+    GoalExtractionError,
     analyze_goal_pause,
     check_plan_status,
     extract_clean_goal,
@@ -44,6 +45,7 @@ from afk_supervisor.platform.windows import (
     keep_awake,
     set_keep_awake,
 )
+from tests.test_supervisor_loops import FakeClock
 
 
 class TestScreenSleepKeepAwake(unittest.TestCase):
@@ -74,6 +76,45 @@ class TestScreenSleepKeepAwake(unittest.TestCase):
         with patch("sys.platform", "win32"), patch("afk_supervisor.platform.windows.set_keep_awake") as mock_set:
             keep_awake()
             mock_set.assert_called_with(enable=True, keep_display=True)
+
+    def test_keep_awake_clear_reaches_owner_thread_from_another_thread(self):
+        """SetThreadExecutionState 线程亲和: 从任意线程调用清除也必须落到 owner 线程执行。"""
+        import threading
+        with patch("sys.platform", "win32"), patch("ctypes.windll") as mock_windll:
+            mock_windll.kernel32.SetThreadExecutionState.return_value = 1
+            self.addCleanup(lambda: set_keep_awake(enable=False))
+            self.assertTrue(set_keep_awake(enable=True, keep_display=True))
+            clearer = threading.Thread(target=set_keep_awake, kwargs={"enable": False})
+            clearer.start()
+            clearer.join(timeout=5)
+            self.assertFalse(clearer.is_alive())
+            calls = [c.args[0] for c in mock_windll.kernel32.SetThreadExecutionState.call_args_list]
+            self.assertEqual(calls, [
+                ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED,
+                ES_CONTINUOUS,
+            ])
+
+    def test_keep_awake_repeated_enable_is_idempotent_owner_thread(self):
+        """重复 enable 复用同一 owner 线程 (幂等/flag 升级), disable 后可再次启用。"""
+        from afk_supervisor.platform import windows as win
+        with patch("sys.platform", "win32"), patch("ctypes.windll") as mock_windll:
+            mock_windll.kernel32.SetThreadExecutionState.return_value = 1
+            self.addCleanup(lambda: set_keep_awake(enable=False))
+            self.assertTrue(set_keep_awake(enable=True, keep_display=False))
+            first_owner = win._ka_thread
+            self.assertTrue(set_keep_awake(enable=True, keep_display=True))
+            self.assertIs(win._ka_thread, first_owner, "重复 enable 不应新建 owner 线程")
+            self.assertTrue(set_keep_awake(enable=False))
+            self.assertIsNone(win._ka_thread)
+            self.assertTrue(set_keep_awake(enable=True, keep_display=True))
+            self.assertIsNot(win._ka_thread, first_owner, "disable 后再 enable 应重建 owner 线程")
+            calls = [c.args[0] for c in mock_windll.kernel32.SetThreadExecutionState.call_args_list]
+            self.assertEqual(calls, [
+                ES_CONTINUOUS | ES_SYSTEM_REQUIRED,
+                ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED,
+                ES_CONTINUOUS,
+                ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED,
+            ])
 
 
 class TestGoalModeCli(unittest.TestCase):
@@ -1091,7 +1132,58 @@ class TestGoalEngine(unittest.TestCase):
             )
         self.assertEqual(goal, "落实后续建议并完成健壮性验收")
         self.assertEqual(poll_count[0], 2)
-        self.assertIsNone(send.call_args.kwargs["timeout"])
+        # require_agy 允许等待更久, 但必须有界: 无人值守禁止无限等待
+        self.assertEqual(send.call_args.kwargs["timeout"], 12)
+
+    def test_lazy_goal_extraction_timeout_is_bounded_and_reported(self):
+        """require_agy=True 时 AGY 迟迟不返回, 必须在有限时间内有据失败, 而非无限轮询。"""
+        brain = self.run_dir / "never_brain"
+        transcript = brain / "never-cid" / ".system_generated" / "logs" / "transcript.jsonl"
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text("", encoding="utf-8")
+
+        response = MagicMock(returncode=0, stdout=b'{"response":{}}')
+        clock = FakeClock()
+        start = clock.now
+        with patch("afk_supervisor.goal_engine.get_agy_conversation_for_codex", return_value="never-cid"), \
+             patch("afk_supervisor.goal_engine.get_agy_brain_dir", return_value=brain), \
+             patch("afk_supervisor.goal_engine.discover_antigravity_bridge",
+                   return_value=("csrf", ["5555"], Path(sys.executable))), \
+             patch("afk_supervisor.goal_engine.subprocess.run", return_value=response), \
+             patch("afk_supervisor.goal_engine.time.monotonic", side_effect=clock.monotonic), \
+             patch("afk_supervisor.goal_engine.time.sleep", side_effect=clock.sleep), \
+             patch("afk_supervisor.goal_engine.AGY_REQUIRED_EXTRACT_TIMEOUT_SEC", 1.0):
+            with self.assertRaises(GoalExtractionError):
+                extract_clean_goal(
+                    None, title="长任务审查", codex_session_id="codex-never",
+                    require_agy=True,
+                )
+        self.assertLess(clock.now - start, 30.0, "提炼必须在有界时间内放弃, 不能无限轮询")
+
+    def test_extract_goal_via_agy_agent_coerces_none_timeout(self):
+        """timeout_sec=None 必须收敛为有限默认, 子进程超时也必须有界。"""
+        brain = self.run_dir / "none_brain"
+        transcript = brain / "none-cid" / ".system_generated" / "logs" / "transcript.jsonl"
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text("", encoding="utf-8")
+
+        def append_done(_seconds):
+            with transcript.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps({"type": "PLANNER_RESPONSE", "status": "DONE",
+                                         "content": "构建可靠交付管线并进行端到端验证"}) + "\n")
+
+        response = MagicMock(returncode=0, stdout=b'{"response":{}}')
+        with patch("afk_supervisor.goal_engine.get_agy_conversation_for_codex", return_value="none-cid"), \
+             patch("afk_supervisor.goal_engine.get_agy_brain_dir", return_value=brain), \
+             patch("afk_supervisor.goal_engine.discover_antigravity_bridge",
+                   return_value=("csrf", ["5555"], Path(sys.executable))), \
+             patch("afk_supervisor.goal_engine.subprocess.run", return_value=response) as send, \
+             patch("afk_supervisor.goal_engine.time.sleep", side_effect=append_done):
+            goal = extract_goal_via_agy_agent(
+                None, title="任意", timeout_sec=None, codex_session_id="codex-none",
+            )
+        self.assertEqual(goal, "构建可靠交付管线并进行端到端验证")
+        self.assertEqual(send.call_args.kwargs["timeout"], 12)
 
     def test_resolve_stalled_goal_reuses_existing_agy_conversation(self):
         """测试已绑定 AGY 会话时，目标破局调用 send-message 进行决断。"""

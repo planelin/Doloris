@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from afk_supervisor.platform.process import log
+from afk_supervisor.core.log import log
 
 
 def get_home_dir() -> Path:

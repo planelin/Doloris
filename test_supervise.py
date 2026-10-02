@@ -905,6 +905,24 @@ class TestProtocolAndAcceptanceScenarios(unittest.TestCase):
             )
             self.assertEqual(verdict, "PASS")
 
+    # 13b. 结构化验收门: 只有"零证据"固定文案可被 AGY 客观审查放行;
+    # 含"未发现/未检测到"字样的真实缺陷文案绝不能被翻转为 PASS。
+    def test_scenario_13b_real_defect_wording_is_never_pardoned(self):
+        coord = self._create_coordinator()
+
+        defect_detail = "交付目录未发现 calc.py, 缺少必需产物"
+        mock_verify = MagicMock(return_value=(False, defect_detail))
+        ok, detail, review_again = coord.check_completion("汇报", None, mock_verify)
+        self.assertFalse(ok, "含'未发现'的真实缺陷不得翻转成 PASS")
+        self.assertEqual(detail, defect_detail)
+        self.assertFalse(review_again)
+
+        defect_detail2 = "未检测到可运行的测试命令结果, 功能项不得判为通过"
+        mock_verify2 = MagicMock(return_value=(False, defect_detail2))
+        ok2, detail2, _ = coord.check_completion("汇报", None, mock_verify2)
+        self.assertFalse(ok2, "含'未检测到'的真实缺陷不得翻转成 PASS")
+        self.assertEqual(detail2, defect_detail2)
+
 
 class TestQoderReviewImprovements(unittest.TestCase):
     """验证吸收 Qoder 审查建议后的所有关键增强特性"""

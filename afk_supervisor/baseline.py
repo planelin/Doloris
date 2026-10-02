@@ -8,115 +8,13 @@ afk_supervisor.baseline — 任务基线与路径/授权管理
 import json
 import os
 import re
-from dataclasses import dataclass, field, asdict
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Optional
 
 
-@dataclass
-class TaskBaseline:
-    task_id: str
-    original_requirements: str
-    subsequent_changes: List[Dict[str, Any]] = field(default_factory=list)
-    session_cwd: str = ""
-    requested_delivery_dir: str = ""
-    effective_delivery_dir: str = ""
-    writable_roots: List[str] = field(default_factory=list)
-    delivery_dir: str = ""
-    _delivery_dir: str = ""
-    required_criteria: List[Dict[str, Any]] = field(default_factory=list)
-    authorized_delegation_scope: str = "技术方向/方案选择/参数决策/依赖取舍/故障诊断，不涉及资金、删除数据、对外发布"
-    human_confirmation_required: List[str] = field(default_factory=list)
-    delegated_topics: List[str] = field(default_factory=lambda: [
-        "技术方向", "方案选择", "参数决策", "依赖取舍", "故障诊断"
-    ])
-    unconfirmed_requirements: List[str] = field(default_factory=list)
-    blockers: List[str] = field(default_factory=list)
-    path_blockers: List[str] = field(default_factory=list)
-    baseline_version: int = 1
-    has_full_spec: bool = True
-
-    def __post_init__(self):
-        target = self.delivery_dir or self._delivery_dir
-        if target:
-            self.delivery_dir = target
-            self._delivery_dir = target
-            if not self.requested_delivery_dir:
-                self.requested_delivery_dir = target
-            if not self.effective_delivery_dir and not self.blockers:
-                self.effective_delivery_dir = target
-        else:
-            self.delivery_dir = self.effective_delivery_dir or self.requested_delivery_dir or self.session_cwd
-            self._delivery_dir = self.delivery_dir
-
-    def add_authorized_change(self, source: str, change_description: str):
-        """记录来自可信来源的用户授权变更，并更新基线版本。"""
-        self.baseline_version += 1
-        self.subsequent_changes.append({
-            "version": self.baseline_version,
-            "ts": datetime.now().isoformat(),
-            "source": source,
-            "change": change_description,
-        })
-
-    def requires_human_confirmation(self, question_or_context: str) -> Tuple[bool, str]:
-        """检查 Worker 的问题是否命中必须由用户本人确认的事项。"""
-        if not question_or_context:
-            return False, ""
-        q_low = question_or_context.lower()
-        for item in self.human_confirmation_required:
-            it_low = item.lower()
-            # 提取核心关键词 (去掉'向用户确认'等前缀)
-            clean_kw = re.sub(r'^(?:向用户确认|请示用户|需用户确认|确认)\s*', '', it_low).strip()
-            if clean_kw and clean_kw in q_low:
-                return True, f"命中用户明确指定的本人确认项: '{item}'"
-        return False, ""
-
-    def to_dict(self) -> Dict[str, Any]:
-        d = asdict(self)
-        d["delivery_dir"] = self.delivery_dir
-        return d
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "TaskBaseline":
-        raw_deliv = data.get("delivery_dir", "")
-        req_deliv = data.get("requested_delivery_dir", "") or raw_deliv
-        eff_deliv = data.get("effective_delivery_dir", "") or raw_deliv
-        scwd = data.get("session_cwd", "")
-
-        # 兼容旧格式中的 subsequent_changes 为字符串列表
-        changes = data.get("subsequent_changes", [])
-        norm_changes = []
-        for c in changes:
-            if isinstance(c, dict):
-                norm_changes.append(c)
-            else:
-                norm_changes.append({"version": 1, "source": "legacy", "change": str(c)})
-
-        return cls(
-            task_id=data.get("task_id", "unknown"),
-            original_requirements=data.get("original_requirements", ""),
-            subsequent_changes=norm_changes,
-            session_cwd=scwd,
-            requested_delivery_dir=req_deliv,
-            effective_delivery_dir=eff_deliv,
-            writable_roots=data.get("writable_roots", [scwd] if scwd else []),
-            _delivery_dir=raw_deliv,
-            required_criteria=data.get("required_criteria", []),
-            authorized_delegation_scope=data.get("authorized_delegation_scope", ""),
-            human_confirmation_required=data.get("human_confirmation_required", []),
-            delegated_topics=data.get("delegated_topics", []),
-            unconfirmed_requirements=data.get("unconfirmed_requirements", []),
-            blockers=data.get("blockers", []),
-            path_blockers=data.get("path_blockers", []),
-            baseline_version=data.get("baseline_version", 1),
-            has_full_spec=data.get("has_full_spec", True),
-        )
-
-    def persist(self, path: Path):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(self.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
+# TaskBaseline 类定义已下沉到 afk_supervisor.models (第 1 层), 供 l2 等下层
+# 做类型标注而不反向依赖本模块; 此处保留再导出以兼容既有调用方。
+from afk_supervisor.models import TaskBaseline  # noqa: E402,F401
 
 
 def _is_path_within_roots(path_str: str, roots: List[str]) -> bool:
