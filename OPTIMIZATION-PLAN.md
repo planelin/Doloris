@@ -13,22 +13,22 @@
 - [x] 提交后全量沙箱确认绿（508/508 + ruff 通过）
 
 ## Batch 1 — 正确性修复 10 项（逐项先写回归测试）
-- [ ] 1. engine.py:401 恢复元组加 "repair"，移除死值 "early_exit"（L2 抖动 → 死循环的 P0）
-- [ ] 2. goal_engine.py:1651 删除尾部 `or settle_quiet`（planning 阶段安静 8 秒误判成功的 P1）
-- [ ] 3. L2 不确定投递保留 pending 标记 phase=UNCERTAIN（transport.py:380-407,595-600）
-- [ ] 4. 带 cid 的过期 pending 恢复路径：转录找答案→采纳/清理；死亡→解绑（transport.py:198-199）
-- [ ] 5. 旧轮响应不可采信：USER_INPUT 行号之后的 PLANNER_RESPONSE 才有效；非协议响应须回带 request_id（bridge.py:259-287）
-- [ ] 6. 工作区锁 TOCTOU：unlink 前复检内容快照（process.py:170-176）
-- [ ] 7. cmd.exe /c 元字符启动前检测、快速失败（codex.py:79 / claude.py:170）
-- [ ] 8. gui_engine.py:313 交互预算只对 is_interaction_request 计数
-- [ ] 9. goal 限流熔断：连续失败计数（对齐 gui 8 连击）+ 有界 sleep（goal_engine.py:1541-1560）
-- [ ] 10. min_mtime 用回合起点时间替代 st_ctime（gui_engine.py:376, cli.py:674）
-- [ ] 附带: storage.py 重试放宽 ~2s + observations.py best-effort 跳过无变化
-- [ ] 附带: task.md 读取 errors="replace"（cli.py:429）
-- [ ] 附带: reporting.py 报告写盘保护 + detail 单行化
-- [ ] 附带: goal 终态 webhook 去重（goal_engine.py finish_goal）
-- [ ] 附带: terminal_finalized 在 4 处终态路径真正置位
-- [ ] 审查代理复核 diff → 全绿 → 提交
+- [x] 1. engine.py:401 恢复元组加 "repair"，移除死值 "early_exit"（L2 抖动 → 死循环的 P0）
+- [x] 2. goal_engine.py:1651 删除尾部 `or settle_quiet`（planning 阶段安静 8 秒误判成功的 P1）
+- [x] 3. L2 不确定投递保留 pending 标记 phase=UNCERTAIN（transport.py:380-407,595-600）
+- [x] 4. 带 cid 的过期 pending 恢复路径：转录找答案→采纳/清理；死亡→解绑（transport.py:198-199）
+- [x] 5. 旧轮响应不可采信：USER_INPUT 行号之后的 PLANNER_RESPONSE 才有效；非协议响应须回带 request_id（bridge.py:259-287）
+- [x] 6. 工作区锁 TOCTOU：unlink 前复检内容快照（process.py:170-176）
+- [x] 7. cmd.exe /c 元字符启动前检测、快速失败（codex.py:79 / claude.py:170）
+- [x] 8. gui_engine.py:313 交互预算只对 is_interaction_request 计数
+- [x] 9. goal 限流熔断：连续失败计数（对齐 gui 8 连击）+ 有界 sleep（goal_engine.py:1541-1560）
+- [x] 10. min_mtime 用回合起点时间替代 st_ctime（gui_engine.py:376, cli.py:674）
+- [x] 附带: storage.py 重试放宽 ~2s + observations.py best-effort 跳过无变化
+- [x] 附带: task.md 读取 errors="replace"（cli.py:429）
+- [x] 附带: reporting.py 报告写盘保护 + detail 单行化
+- [x] 附带: goal 终态 webhook 去重（goal_engine.py finish_goal）
+- [x] 附带: terminal_finalized 在 4 处终态路径真正置位
+- [x] 审查代理复核 diff → 全绿 → 提交
 
 ## Batch 2 — 验收门对抗性加固
 - [ ] 否定词全文优先扫描（acceptance.py:356-371）
@@ -59,4 +59,7 @@
 - [ ] 更新本文档勾选与遗留项；输出最终变更报告
 
 ## 遗留项（风险超预期或时间不足时记录于此）
-- （空）
+- 遗留自 Batch 1 审查 (设计取舍, 已记录):
+  - goal 静默推进在无窗口主机上会消耗 autopilot 预算至 FAILED (~7.5min); 可考虑注入 RECORDED (未送达) 时不计数
+  - DECIDE/REPAIR 采纳路径不校验 revision (无 evidence_packet); 现依赖重试同问语义
+  - observations 无变化跳过保存: 若未来有字段只在 observe_worker 周期保存, 需重新评估
