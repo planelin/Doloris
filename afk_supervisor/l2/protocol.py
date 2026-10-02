@@ -7,7 +7,7 @@ afk_supervisor.l2.protocol — 结构化协议引擎与严格校验器 (afk_agy_
 
 import json
 import re
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from afk_supervisor.models import ActionType, EvidencePacket, TaskBaseline
 
@@ -33,37 +33,46 @@ FORBIDDEN_INSTRUCTION_PATTERNS = [
 def extract_protocol_json(raw_text: str) -> Optional[Dict[str, Any]]:
     """从 AGY 回复中鲁棒提取符合 JSON 规范的协议字典。
     支持 ```json ... ``` 围栏块与裸 JSON 对象提取，严禁在任意非结构化文本中随意搜索关键字。
+
+    多候选 fail-closed (历史缺陷: 永远取第一个围栏, worker 可诱导 AGY 把伪造的
+    协议 JSON 放进回复, 先出现的伪造块会压过真实裁决): 收集全部协议候选,
+    存在多个互相不同的载荷时拒绝提取, 由上层按无协议处理。
     """
     if not raw_text or not raw_text.strip():
         return None
 
-    # 1. 尝试匹配 ```json ... ``` 代码块
-    json_block_match = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", raw_text, re.DOTALL)
-    if json_block_match:
-        try:
-            parsed = json.loads(json_block_match.group(1).strip())
-            if isinstance(parsed, dict) and (
-                parsed.get("protocol") == PROTOCOL_VERSION or parsed.get("protocol_version") == PROTOCOL_VERSION
-            ):
-                return parsed
-        except Exception:
-            pass
+    candidates: List[Dict[str, Any]] = []
 
-    # 2. 尝试提取最外层大括号对象
+    def _protocol_dict(obj) -> bool:
+        return isinstance(obj, dict) and (
+            obj.get("protocol") == PROTOCOL_VERSION or obj.get("protocol_version") == PROTOCOL_VERSION
+        )
+
+    # 1. 全部 ```json ... ``` 围栏块
+    for m in re.finditer(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", raw_text, re.DOTALL):
+        try:
+            parsed = json.loads(m.group(1).strip())
+        except Exception:
+            continue
+        if _protocol_dict(parsed) and parsed not in candidates:
+            candidates.append(parsed)
+
+    # 2. 最外层大括号对象
     start = raw_text.find("{")
     end = raw_text.rfind("}")
     if start != -1 and end > start:
-        candidate = raw_text[start : end + 1].strip()
         try:
-            parsed = json.loads(candidate)
-            if isinstance(parsed, dict) and (
-                parsed.get("protocol") == PROTOCOL_VERSION or parsed.get("protocol_version") == PROTOCOL_VERSION
-            ):
-                return parsed
+            parsed = json.loads(raw_text[start : end + 1].strip())
         except Exception:
-            pass
+            parsed = None
+        if _protocol_dict(parsed) and parsed not in candidates:
+            candidates.append(parsed)
 
-    return None
+    if not candidates:
+        return None
+    if len(candidates) > 1:
+        return None  # 多个互相不同的协议载荷 = 无法确定真实裁决, 拒绝提取
+    return candidates[0]
 
 
 def normalize_next_action(next_action: Any) -> Dict[str, Any]:
@@ -133,6 +142,16 @@ def validate_protocol_payload(
     if expected_mode and mode != expected_mode.upper():
         return False, f"mode mismatch: 期望 {expected_mode}, 收到 {mode}"
 
+    # REVIEW 必须绑定证据版本 (历史缺陷: 证据包 revision 为空时绑定静默消失)
+    if mode == "REVIEW" and evidence_packet is not None:
+        if not evidence_packet.reviewed_revision:
+            return False, "REVIEW 证据包缺少 reviewed_revision，拒绝在无版本绑定的证据上审查"
+        if not expected_revision:
+            expected_revision = evidence_packet.reviewed_revision
+            rev = str(payload.get("reviewed_revision", ""))
+            if rev != expected_revision:
+                return False, f"reviewed_revision mismatch (reviewed_revision 版本失效或不匹配): 期望 {expected_revision}, 收到 {rev}"
+
     # 3. 基础必填字段存在性检查
     req_fields = [
         "request_id",
@@ -172,9 +191,19 @@ def validate_protocol_payload(
         blockers = payload.get("blockers")
         if not isinstance(blockers, list) or not blockers or not all(isinstance(b, str) and b.strip() for b in blockers) or not isinstance(instructions, str) or not instructions.strip():
             return False, "STOP 必须提供阻塞证据、已尝试措施及不能继续的理由"
+    # 违规指令防御: 扫描 instructions + blockers + repairs 全部自由文本
+    # (历史缺陷: 只扫 instructions, 伪造/诱导内容可藏进 blockers/repairs)。
+    forbidden_texts = [instructions] if isinstance(instructions, str) else []
+    for b in (payload.get("blockers") or []):
+        if isinstance(b, str):
+            forbidden_texts.append(b)
+    for rep in (payload.get("repairs") or []):
+        if isinstance(rep, dict):
+            forbidden_texts.extend(str(v) for v in rep.values() if isinstance(v, str))
     for pattern, desc in FORBIDDEN_INSTRUCTION_PATTERNS:
-        if re.search(pattern, instructions, re.IGNORECASE):
-            return False, f"违规指令拦截: {desc} (检测到匹配: '{pattern}')"
+        for text in forbidden_texts:
+            if text and re.search(pattern, text, re.IGNORECASE):
+                return False, f"违规指令拦截: {desc} (检测到匹配: '{pattern}')"
 
     # 6. DECIDE 模式专项规则
     if mode == "DECIDE":
@@ -200,11 +229,6 @@ def validate_protocol_payload(
     elif mode == "REVIEW":
         if payload.get("repairs"):
             return False, "REVIEW 模式禁止修改成果或包含 repairs 动作 (需修复应结束审查并转入 switch_to_repair)"
-
-        # 校验 reviewed_revision
-        rev = str(payload.get("reviewed_revision", ""))
-        if expected_revision and rev != expected_revision:
-            return False, f"reviewed_revision 版本失效或不匹配: 期望 {expected_revision}, 收到 {rev}"
 
         # 本地机械检查一票否决
         if evidence_packet and evidence_packet.mechanical_failures and verdict == "PASS":
@@ -269,6 +293,18 @@ def validate_protocol_payload(
                 crit_spec = spec_map.get(cid, {})
                 c_type = crit_spec.get("type", "")
                 cats = [ev_category_map.get(eid, "") for eid in ev_ids]
+                cited_items = [ev_item_map[eid] for eid in ev_ids if eid in ev_item_map]
+
+                # (0) PASS 不得仅建立在自述之上 (历史缺陷: 空 status 跳过检查,
+                # 未知 type 的判据可只引用 worker_statement 就 PASS)
+                if ev_ids and not any(
+                    it.category in {"verification_result", "runtime_check", "artifact", "progress_doc"}
+                    for it in cited_items
+                ):
+                    return False, f"验收项 {cid} 仅引用自述证据 (worker_statement)，不可判定为 PASS"
+                for it in cited_items:
+                    if it.category == "verification_result" and it.status and it.status != "PASS":
+                        return False, f"验收项 {cid} 引用了未通过的验证结果: {it.id} ({it.status})"
 
                 # (1) 功能性验收项必须具备客观行为/执行验证证据
                 if c_type == "functional" or "functional" in cid:
@@ -334,6 +370,8 @@ def validate_protocol_payload(
         has_fail = any(cverdict == "FAIL" for cverdict, _, _ in crit_map.values())
         if has_fail and verdict == "PASS":
             return False, "存在 FAIL 验收项，总决议不能为 PASS"
+        if verdict == "FAIL" and not has_fail:
+            return False, "总决议为 FAIL，但没有任何 FAIL 验收项 (必须引用具体失败判据，不可凭空打回)"
 
         has_unknown = any(cverdict == "UNKNOWN" or not ev_ids for cverdict, ev_ids, _ in crit_map.values())
         if has_unknown and verdict == "PASS":

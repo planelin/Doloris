@@ -36,17 +36,24 @@ SENSITIVE_KEY_MARKERS = (
     "auth_header",
 )
 
-_BEARER_RE = re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]+")
+_BEARER_RE = re.compile(r"(?i)bearer\s*:?\s*[A-Za-z0-9._~+/=-]+")
 _AUTH_HEADER_RE = re.compile(r"(?i)(authorization\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|\S+)")
 _ASSIGNMENT_RE = re.compile(
-    r"(?i)\b((?:api_?key|access_?key|secret|token|password|passwd|private_?key)\s*[:=]\s*)"
+    r"(?i)\b((?:api[_-]?key|access[_-]?key|secret|token|password|passwd|private[_-]?key)\s*[:=]\s*)"
     r"(?:\"[^\"]*\"|'[^']*'|\S+)"
 )
 _PRIVATE_KEY_RE = re.compile(
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.DOTALL
 )
 _URL_CREDENTIALS_RE = re.compile(r"(?i)((?:https?|ssh|git)://)([^/\s:@]+):([^/\s@]+)@")
-_USER_PATH_RE = re.compile(r"(?i)((?:C:\\Users\\|/home/|/Users/))([^\\/\s\"']+)")
+_USER_PATH_RE = re.compile(r"(?i)((?:C:\\Users\\|C:/Users/|/home/|/Users/|/root/))([^\\/\s\"']+)")
+# 常见令牌前缀 (无赋值上下文的高熵凭据): GitHub PAT / AWS AccessKey / Google API key / Slack / npm
+_PREFIXED_TOKEN_RE = re.compile(
+    r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|"
+    r"AIza[0-9A-Za-z_-]{30,}|xox[baprs]-[A-Za-z0-9-]{10,}|npm_[A-Za-z0-9]{30,})\b"
+)
+# Cookie / Set-Cookie 头值
+_COOKIE_RE = re.compile(r"(?i)((?:set-)?cookie\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|\S+)")
 
 
 def is_sensitive_key(key: Any) -> bool:
@@ -62,11 +69,13 @@ def redact_text(text: str, secrets: Iterable[str] = ()) -> str:
     for secret in secrets:
         if secret:
             out = out.replace(secret, REDACTED)
+    out = _PRIVATE_KEY_RE.sub(REDACTED, out)
     out = _BEARER_RE.sub("Bearer " + REDACTED, out)
     out = _AUTH_HEADER_RE.sub(r"\1" + REDACTED, out)
-    out = _PRIVATE_KEY_RE.sub(REDACTED, out)
+    out = _COOKIE_RE.sub(r"\1" + REDACTED, out)
     out = _URL_CREDENTIALS_RE.sub(r"\1" + REDACTED + ":" + REDACTED + "@", out)
     out = _ASSIGNMENT_RE.sub(r"\1" + REDACTED, out)
+    out = _PREFIXED_TOKEN_RE.sub(REDACTED, out)
     out = _USER_PATH_RE.sub(r"\1[USER]", out)
     if len(out) > MAX_STR_LEN:
         out = out[:MAX_STR_LEN] + TRUNCATED

@@ -12,6 +12,7 @@ from typing import List, Optional, Set, Tuple
 
 # cli.py 从本模块再导出该符号；保留以免破坏既有调用方。
 # (worker_last_message 定义在 sessions.rollout, 此处不再经 l2.transport 中转)
+from afk_supervisor.evidence import count_checklist_items
 from afk_supervisor.sessions.rollout import worker_last_message  # noqa: F401
 
 ASK_MARKERS = (
@@ -71,7 +72,7 @@ def _acceptance_selftest(work_dir: Path) -> Tuple[bool, str]:
         text = prog.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return False, "PROGRESS.md 不可读"
-    done = text.count("- [x]") + text.count("- [X]")
+    done, _todo = count_checklist_items(text)
     missing = [
         f"ch{i:02d}" for i in range(1, 13)
         if not (work_dir / "chapters" / f"ch{i:02d}.md").exists()
@@ -169,7 +170,7 @@ def evaluate_acceptance_spec(spec: Path, base: Path) -> Tuple[bool, str]:
             except OSError as read_error:
                 problems.append(f"{path_text} 不可读: {read_error}")
                 continue
-            done = txt.count("- [x]") + txt.count("- [X]")
+            done, _todo = count_checklist_items(txt)
             if done < need:
                 problems.append(f"{path_text} 勾选{done}<{need}")
         else:
@@ -219,8 +220,7 @@ def _acceptance_default_contract(artifact_dir: Path) -> Tuple[bool, str]:
         except OSError:
             problems.append("PROGRESS.md 不可读")
         else:
-            done = txt.count("- [x]") + txt.count("- [X]")
-            todo = txt.count("- [ ]")
+            done, todo = count_checklist_items(txt)
             if done < 1:
                 problems.append("PROGRESS.md 勾选0<1")
             if todo > 0:
@@ -354,20 +354,30 @@ def check_acceptance_natural(
         return neg_word in prefix_str
 
     def find_positive_done_signal() -> Tuple[bool, str]:
-        """识别未被否定/暂停语境覆盖的完工语义，空字符串表示未命中。"""
+        """识别未被否定/暂停语境覆盖的完工语义，空字符串表示未命中。
+
+        否定优先 (历史缺陷: 首个未否定的信号直接放行, 消息后段的"尚未完成"
+        被忽略 —— "已全部完成。但X尚未完成" 会误判 PASS)。现在全文扫描:
+        任何一处被否定的完工信号都构成否决, 之后才考虑未否定的命中。
+        """
         negation_detected = None
+        unnegated_hit = None
+        has_pause_marker = any(p in last_msg for p in PAUSE_MARKERS)
         for sig in DONE_SIGNALS:
             idx = last_msg.find(sig)
             while idx != -1:
                 prefix = last_msg[max(0, idx - 15):idx].strip()
                 neg_matches = [neg for neg in NEGATION_WORDS if is_real_negation(prefix, neg)]
                 if neg_matches:
-                    negation_detected = f"检测到否定语义 ('{neg_matches[0]}{sig}'), 任务未完工"
-                elif not any(p in last_msg for p in PAUSE_MARKERS):
-                    return True, f"识别到自然完工语义: '{sig}'"
+                    if not negation_detected:
+                        negation_detected = f"检测到否定语义 ('{neg_matches[0]}{sig}'), 任务未完工"
+                elif unnegated_hit is None and not has_pause_marker:
+                    unnegated_hit = f"识别到自然完工语义: '{sig}'"
                 idx = last_msg.find(sig, idx + len(sig))
         if negation_detected:
             return False, negation_detected
+        if unnegated_hit:
+            return True, unnegated_hit
         return False, ""
 
     if checklist_candidates:
@@ -379,8 +389,7 @@ def check_acceptance_natural(
         for primary in checklist_candidates:
             try:
                 txt = primary.read_text(encoding="utf-8", errors="replace")
-                done = txt.count("- [x]") + txt.count("- [X]")
-                todo = txt.count("- [ ]")
+                done, todo = count_checklist_items(txt)
                 try:
                     rel_path = primary.relative_to(cwd)
                 except ValueError:

@@ -170,7 +170,11 @@ class TestAcceptanceCredibility(unittest.TestCase):
         )
 
         self.assertFalse(ok, "仅依赖 worker_statement 时功能验收项不可通过")
-        self.assertIn("缺乏客观执行验证证据", reason)
+        # 先被"仅自述"总闸拦截 (Batch 2 收紧), 到不了功能性细分检查
+        self.assertTrue(
+            "仅引用自述证据" in reason or "缺乏客观执行验证证据" in reason,
+            f"unexpected rejection reason: {reason}",
+        )
 
     def test_item4_missing_runner_or_timeout_recorded_as_mechanical_failure(self):
         """Item 4: 执行语法检查或自测时若运行器缺失或超时，必须记录为 mechanical_failures 并阻止 PASS。"""

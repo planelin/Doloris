@@ -10,6 +10,7 @@ afk_supervisor.evidence — 客观证据采集与双版本哈希引擎
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -24,6 +25,33 @@ from afk_supervisor.baseline import TaskBaseline, delivery_path_blockers
 MAX_SCAN_FILES = 20000
 MAX_SYNTAX_CHECKS = 200
 SYNTAX_BUDGET_SEC = 120.0
+
+
+def count_checklist_items(text: str):
+    """逐行解析 markdown 勾选项, 返回 (已完成数, 未完成数)。
+
+    历史缺陷: 各调用点用子串计数 (text.count("- [x]")), 代码块/引文/教程里的
+    字面 "- [x]" 也被计入, worker 可借伪造内容满足清单断言。这里剥离围栏
+    代码块后按行匹配列表语法, 只认真实清单项; 围栏剥离使伪造内容无法计数,
+    也无法藏匿真实清单 (只会使计数更少, 方向安全)。
+    """
+    done = todo = 0
+    in_fence = False
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        m = re.match(r"^\s*[-*+]\s+\[([xX ])\]", raw)
+        if not m:
+            continue
+        if m.group(1) in ("x", "X"):
+            done += 1
+        else:
+            todo += 1
+    return done, todo
 
 
 def compute_file_sha256(path: Path, chunk_size: int = 65536) -> str:
@@ -221,8 +249,7 @@ def collect_evidence(
         if cand.exists():
             try:
                 txt = cand.read_text(encoding="utf-8", errors="replace")
-                done = txt.count("- [x]") + txt.count("- [X]")
-                todo = txt.count("- [ ]")
+                done, todo = count_checklist_items(txt)
                 clean_name = name.replace(".", "_")
                 items.append(EvidenceItem(
                     id=f"ev_chk_{clean_name}",
@@ -274,12 +301,14 @@ def collect_evidence(
                     category="verification_result",
                     summary=f"JS语法检查失败: {rel}",
                     details=err_out,
+                    status="FAIL",
                 ))
             else:
                 items.append(EvidenceItem(
                     id=f"ev_syntax_js_{clean_id}",
                     category="verification_result",
                     summary=f"JS语法检查通过: {rel}",
+                    status="PASS",
                 ))
         except FileNotFoundError:
             # 运行器缺失不得伪装通过：记录机械失败并明确标注该次核验被跳过。
@@ -301,6 +330,7 @@ def collect_evidence(
                 id=f"ev_syntax_js_{clean_id}",
                 category="verification_result",
                 summary=err_msg,
+                status="FAIL",
             ))
         except Exception as e:
             err_msg = f"JS 语法核验异常 ({rel}): {e}"
@@ -309,6 +339,7 @@ def collect_evidence(
                 id=f"ev_syntax_js_{clean_id}",
                 category="verification_result",
                 summary=err_msg,
+                status="FAIL",
             ))
 
     # (b) Compile without execution or bytecode writes in the reviewed directory.
@@ -328,12 +359,14 @@ def collect_evidence(
                     category="verification_result",
                     summary=f"Python语法检查失败: {rel}",
                     details=err_out,
+                    status="FAIL",
                 ))
             else:
                 items.append(EvidenceItem(
                     id=f"ev_syntax_py_{clean_id}",
                     category="verification_result",
                     summary=f"Python语法检查通过: {rel}",
+                    status="PASS",
                 ))
         except subprocess.TimeoutExpired:
             err_msg = f"Python 语法检查执行超时 ({rel})"
@@ -342,6 +375,7 @@ def collect_evidence(
                 id=f"ev_syntax_py_{clean_id}",
                 category="verification_result",
                 summary=err_msg,
+                status="FAIL",
             ))
         except Exception as e:
             err_msg = f"Python 语法核验异常 ({rel}): {e}"
@@ -350,6 +384,7 @@ def collect_evidence(
                 id=f"ev_syntax_py_{clean_id}",
                 category="verification_result",
                 summary=err_msg,
+                status="FAIL",
             ))
 
     # (c) 显式 acceptance.md 规格核验 (机械断言)
@@ -380,10 +415,8 @@ def collect_evidence(
     for item in items:
         if item.id.startswith("ev_syntax_"):
             item.verification_kind = "syntax"
-            if item.status == "SKIPPED":
-                pass
-            else:
-                item.status = "PASS" if "检查通过" in item.summary else "FAIL"
+            # status 已在创建分支直接标注 (历史缺陷: 从 summary 子串反推,
+            # 名为 'src/检查通过.js' 的失败文件会被误标 PASS)
             item.artifact_revision = art_rev
         elif item.id == "ev_spec_acceptance":
             item.verification_kind = "acceptance_spec"
