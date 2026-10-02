@@ -84,3 +84,31 @@ Thumbs.db
 # Worker delivery dirs (runtime output of supervised runs)
 /work/
 /work-*/
+
+# Atomic write leftovers (storage.atomic_json: <name>.tmp.<pid>.<uuid>)
+*.tmp.*
+
+# Parallel coverage data
+.coverage.*
+
+# Local tool state dirs (never project source)
+.codex/
+.claude/
+.gemini/
+.ants/
+
+# Supervisor run artifacts if ever emitted outside runs/ (defensive, exact names)
+request-*.txt
+response-*.txt
+evidence-*.json
+agy_session.json
+agy_pending_request.json
+agy_400_alert.json
+ui_dump.*
+
+# Editor swap / patch leftovers
+*.swp
+*.swo
+*~
+*.orig
+*.rej
