@@ -40,17 +40,17 @@
 - [x] 审查代理复核 → 全绿 → 提交
 
 ## Batch 3 — 性能
-- [ ] rollout 快照缓存 load_events(path,size,mtime_ns)；goal 4 个 loader 吃快照
-- [ ] compute_artifact_revision_only() 轻量变更检测；check_completion 复核降为 hash-only
-- [ ] find_codex_session_by_id 绑定后跳过全树 rglob
-- [ ] acceptance glob 目录排除 + 文件数上限
-- [ ] 审查代理复核 → 全绿 → 提交
+- [x] rollout 快照缓存 load_events(path,size,mtime_ns)；goal 4 个 loader 吃快照
+- [x] compute_artifact_revision_only() 轻量变更检测；check_completion 复核降为 hash-only
+- [x] find_codex_session_by_id 绑定后跳过全树 rglob
+- [x] acceptance glob 目录排除 + 文件数上限
+- [x] 审查代理复核 → 全绿 → 提交
 
 ## Batch 4 — 结构债
-- [ ] get_sym 收敛（25 处/17 符号；先 verdict 路径，后纯函数，同步改测试，最后删反查）
-- [ ] 死代码清理：get_recent_workspace_files / wait_for_codex_idle / codex_rollout_is_turn_complete / read_rollout_last_message / state.py 死字段（同步更新 supervise.py 门面）
+- [x] get_sym 收敛（25 处/17 符号；先 verdict 路径，后纯函数，同步改测试，最后删反查）
+- [x] 死代码清理：get_recent_workspace_files / wait_for_codex_idle / codex_rollout_is_turn_complete / read_rollout_last_message / state.py 死字段（同步更新 supervise.py 门面）
 - [ ] 视余量拆 run_l2_antigravity（六阶段）与 run_goal_supervisor；不够则记录方案
-- [ ] 审查代理复核 → 全绿 → 提交
+- [x] 审查代理复核 → 全绿 → 提交
 
 ## Batch 5 — 文档与终验
 - [ ] USAGE.md 重写第 8 节（子命令语法/Goal 补章/--resume 修正）；CONTRIBUTING 补 ruff 门槛
@@ -62,4 +62,8 @@
 - 遗留自 Batch 1 审查 (设计取舍, 已记录):
   - goal 静默推进在无窗口主机上会消耗 autopilot 预算至 FAILED (~7.5min); 可考虑注入 RECORDED (未送达) 时不计数
   - DECIDE/REPAIR 采纳路径不校验 revision (无 evidence_packet); 现依赖重试同问语义
-  - observations 无变化跳过保存: 若未来有字段只在 observe_worker 周期保存, 需重新评估
+- Batch 4 未做: run_l2_antigravity (~600行) 与 run_goal_supervisor (~1700行) 的阶段化拆分;
+  建议下会话以纯函数抽取方式做 (六阶段地图见 Batch 2 审查报告)
+- Batch 2 提及的 gui_inject.ps1 手拼 JSON 改 ConvertTo-Json (探针硬阻断被静默吞) 未处理
+- Batch 1-2 的 UNCERTAIN pending: 新 req 轮询沿用旧 initial_line_count, 若 AGY 侧轮转可能漏读 (低概率)
+- 真实 E2E 冒烟 #2 (2026-10-02 21:57): SUCCESS, 3 分钟, reviews=1, terminal_finalized=True (Batch 1 修复生产验证)
